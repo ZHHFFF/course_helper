@@ -12,6 +12,7 @@ import '../../../api/image.dart';
 // [新增] 答案检索模块导入
 import '../../../api/answer_search.dart';
 import '../../../models/answer_result.dart';
+import '../../../utils/network_error.dart';
 import '../widget/answer_search_dialog.dart';
 // [/新增]
 import '../../../models/user.dart';
@@ -91,6 +92,9 @@ class _QuizPageState extends State<QuizPage> {
   int _totalCount = 0;
   final List<String> _failedAccounts = [];
 
+  /// [新增] 其中因网络异常而失败的账号数
+  int _networkFailCount = 0;
+
   List<dynamic> _quizList = [];
   Map<String, dynamic>? _activeData;
 
@@ -112,6 +116,9 @@ class _QuizPageState extends State<QuizPage> {
   Future<void> _searchAnswer(dynamic quiz) async {
     final question = StandardizedQuestion.fromChaoxing(
       Map<String, dynamic>.from(quiz),
+      // 学习通题干里的插图需要鉴权头，并且要把地址转换成可直接访问的地址
+      imageHeaders: HeadersManager.chaoxingHeaders,
+      resolveImageUrl: (url) => CXImageApi.toNewImageUrl(url),
     );
     if (!mounted) return;
     showDialog(
@@ -401,18 +408,27 @@ class _QuizPageState extends State<QuizPage> {
       _isSubmitting = true;
       _totalCount = _selectedAccounts.length;
       _failedAccounts.clear();
+      _networkFailCount = 0;
     });
 
     final submitData = jsonEncode(_constructSubmitData());
 
     try {
+      // [新增] 记录每个账号的异常原因，用于区分网络失败与业务失败
+      final Map<String, String> errorByUid = {};
+
       final results = await ApiService.sendForEachUser<Map<String, dynamic>>(
         _selectedAccounts,
         (user) async {
-          final api = QuizApi(user);
-          return await api.submitAnswer(
-            widget.classId, widget.courseId, widget.active.id, submitData
-          );
+          try {
+            final api = QuizApi(user);
+            return await api.submitAnswer(
+              widget.classId, widget.courseId, widget.active.id, submitData
+            );
+          } catch (e) {
+            errorByUid[user.uid.toString()] = describeErrorShort(e);
+            rethrow;
+          }
         },
       );
 
@@ -421,7 +437,13 @@ class _QuizPageState extends State<QuizPage> {
         final result = results[i];
 
         if (result == null || result['result'] != 1) {
-          _failedAccounts.add('${account.name}: ${result?['errorMsg'] ?? '提交失败'}');
+          final netError = errorByUid[account.uid.toString()];
+          if (netError != null) {
+            _networkFailCount++;
+            _failedAccounts.add('${account.name}: [网络异常] $netError');
+          } else {
+            _failedAccounts.add('${account.name}: ${result?['errorMsg'] ?? '提交失败'}');
+          }
         }
       }
 
@@ -511,7 +533,28 @@ class _QuizPageState extends State<QuizPage> {
     if (!mounted) return;
 
     final successCount = _totalCount - _failedAccounts.length;
+
+    final bool allNetworkFailed = successCount == 0 &&
+        _networkFailCount > 0 &&
+        _networkFailCount == _failedAccounts.length;
+
+    String title;
+    if (successCount == _totalCount) {
+      title = '全部提交成功';
+    } else if (allNetworkFailed) {
+      title = '网络异常，提交未完成';
+    } else if (_networkFailCount > 0) {
+      title = '部分失败（含网络异常）';
+    } else {
+      title = '部分失败';
+    }
+
     String message = '答案提交完成！\n成功: $successCount/$_totalCount';
+    if (_networkFailCount > 0) {
+      message += '\n网络异常: $_networkFailCount 个账号';
+      message += '\n\n提示：网络异常表示请求没有到达服务器，'
+          '通常是断网、超时或接口无法访问。请检查手机网络后重新提交。';
+    }
     if (_failedAccounts.isNotEmpty) {
       message += '\n\n失败账号:\n${_failedAccounts.join('\n')}';
     }
@@ -520,14 +563,14 @@ class _QuizPageState extends State<QuizPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text(
-          successCount == _totalCount ? '全部提交成功' : '部分失败',
+          title,
           style: TextStyle(
             color: successCount == _totalCount
                 ? Theme.of(context).colorScheme.primary
                 : Theme.of(context).colorScheme.error,
           ),
         ),
-        content: Text(message),
+        content: SingleChildScrollView(child: Text(message)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
