@@ -1,6 +1,6 @@
 # 答案检索模块 - 代码变更文档
 
-## v3 更新（本次）—— 修复无法调用 API + 答案一键回填
+## v3 更新（本次）—— 修复无法调用 API + 答案一键回填 + 运行日志
 
 ### 0. 根因：地址少了一段 `/chat/completions`
 
@@ -62,11 +62,66 @@ v2 是把用户填的地址**原样 POST**，没有补全；404 异常又被静�
   填空/简答结构较复杂，改为**复制到剪贴板**并提示手动粘贴
 - **始终不自动提交**，必须由用户核对后手动点提交
 
-### 4. 测试
+### 4. 运行日志系统（新增）
+
+**新增文件**：`lib/utils/app_logger.dart`、`lib/pages/widget/log_viewer.dart`
+
+目的：出问题时不用再靠猜，直接把日志导出来就能定位是 Key、地址、模型还是网络的问题。
+
+`AppLogger`：
+
+- 内存**环形缓冲** 3000 条（`maxEntries`），界面通过 `ValueNotifier<int> revision` 实时刷新
+- 同时**按天落盘** `logs/app-YYYY-MM-DD.log`，单文件超 5MB 自动分卷（`-part2`、`-part3`…）
+- 启动时清理 **7 天前**的旧日志（`keepDays`）
+- 目录优先用 `getExternalStorageDirectory()`（Android 上不需要额外权限就能被文件管理器看到），
+  失败回落到 `getApplicationDocumentsDirectory()`
+- **Key 自动脱敏** `redact()`：`sk-xxx`、`Bearer xxx`、`api_key` / `apikey` / `access_token` /
+  `password` / `secret` / `token` 字段一律打码成「前 6 位 + `****` + 后 4 位」，不足 10 位整体打码
+  - ⚠️ 踩坑：Dart 的 `RegExp` **不支持内联 `(?i)` 标志**，写了会在运行到那一行时直接抛
+    `FormatException`。必须改用 `RegExp(..., caseSensitive: false)`。已加测试锁住
+- 单条消息超过 4000 字符自动截断并标注原长度（避免一次请求把整个日志刷爆）
+- 写文件走 `_writeQueue` 串行化，避免并发写导致顺序错乱
+- 便捷方法 `d/i/w/e(tag, message)`；`exportText({minLevel})` / `flush()` / `clear()`
+
+`LoggingInterceptor`（Dio 拦截器）：
+
+- 请求：method / uri / headers / body，并在 `options.extra` 里塞入开始时间戳
+- 响应：状态码 + 耗时 + body（`logResponseBody: false` 可关掉，图片 base64 用）
+- 异常：`DioExceptionType` + message + 服务端返回体
+
+接线位置：
+
+- `main.dart`：`await AppLogger.init()` 提前到最前面；安装 `FlutterError.onError` 与
+  `PlatformDispatcher.instance.onError` 全局兜底，未捕获异常也会进日志
+- `answer_search.dart`：`LoggingInterceptor(tag: 'AI请求')`，图片下载用
+  `LoggingInterceptor(tag: 'AI图片', logResponseBody: false)`（否则 base64 会淹掉日志）；
+  检索各阶段（开始 / 地址 / 模型 / 超时 / HTTP 非 200 / 内容为空 / 成功 / 异常 / 图片过大）都有落点
+- `accounts.dart`：右上角菜单新增「运行日志」入口
+
+`LogViewerPage`：
+
+- 顶部信息卡：内存条数、当前文件大小、文件路径、保留策略
+- 级别筛选：全部 / 警告及以上 / 仅错误（`LogLevel.weight` 比较）
+- 列表倒序（最新在最上），**长按单条复制**
+- 底部「复制全部」与「导出日志（分享/发送）」
+  - 导出走 `SharePlus.instance.share(ShareParams(files: [XFile(...)]))`，
+    可直接发微信 / QQ / 邮件，或存到文件
+  - ⚠️ 踩坑：`share_plus` 13.x 已移除旧的 `Share.share()`，必须用新的 `SharePlus.instance`
+  - ⚠️ 踩坑：iOS/iPadOS 需要 `sharePositionOrigin`，且要在 `await` 之前先取好，否则会报错
+- 「清空」带二次确认
+
+### 5. 测试
 
 `test/answer_search_test.dart` 从 22 个用例扩充到 **53 个**，新增覆盖：
 地址补全（8 种输入形态）、`enable_thinking` 注入条件、多模态 content 构造、
 错误体解析、404/401 文案、代码围栏剥离、`answerKeys` 匹配、判断题映射、`lettersOf`。
+
+`test/app_logger_test.dart`（新增 **16 个**用例）：脱敏（sk- / Bearer / 大小写 / JSON 字段 /
+camelCase / 短值整体打码 / 普通文本不动 / 空串）、截断（未超长 / 超长标注 / 刚好等于上限）、
+级别权重与标签、`LogEntry.formatTime` 毫秒补零与 `line` 格式、级别筛选。
+
+**合计 69 个用例全部通过**，`flutter analyze` 在我改动的文件上零告警
+（剩余 15 条 info/warning 全部来自上游原有代码）。
 
 ---
 
@@ -149,7 +204,7 @@ v2 是把用户填的地址**原样 POST**，没有补全；404 异常又被静�
 
 ## 文件清单
 
-### 新增文件（5个）
+### 新增文件（7个）
 
 1. `lib/models/answer_result.dart` - 数据模型
    - `StandardizedQuestion` - 标准化题目（`fromChaoxing` / `fromRainClassroomProblem`）
@@ -164,17 +219,30 @@ v2 是把用户填的地址**原样 POST**，没有补全；404 异常又被静�
 3. `lib/pages/widget/answer_search_dialog.dart` - 结果弹窗
 4. `lib/pages/widget/answer_search_settings.dart` - AI 配置页（含连通测试）
 5. `lib/utils/network_error.dart` - 网络错误识别工具（v2 新增）
+6. `lib/utils/app_logger.dart` - 运行日志器 + Dio 日志拦截器（v3 新增）
+   - `LogLevel` / `LogEntry` / `AppLogger`（环形缓冲、按天落盘、分卷、清理、脱敏、导出）
+   - `LoggingInterceptor` - 请求 / 响应 / 异常三阶段自动记录
+7. `lib/pages/widget/log_viewer.dart` - 运行日志查看 / 导出页（v3 新增）
+   - 级别筛选、长按复制、导出分享、清空
 
-### 修改文件（3个）
+### 修改文件（5个）
 
-6. `lib/pages/actives/quiz.dart`（学习通随堂练习页）
+8. `lib/pages/actives/quiz.dart`（学习通随堂练习页）
    - 新增导入 + `_searchAnswer(dynamic quiz)` + 每道题的搜索 IconButton
    - v2：`fromChaoxing` 传入图片鉴权头与地址解析函数；提交失败区分网络异常
-7. `lib/pages/presentation.dart`（雨课堂课堂答题页）
+   - v3：接住弹窗返回的答案，写入 `quiz['personAnswer']['myoption']`；填空/简答复制到剪贴板
+9. `lib/pages/presentation.dart`（雨课堂课堂答题页）
    - 新增导入 + `_searchAnswer()` + "搜索答案"按钮
    - v2：`_currentSlideText()` / `_currentSlideCover()`；`_slides` 保留 `shapes`；提交失败区分网络异常
-8. `lib/pages/accounts.dart`（账号管理页）
-   - 右上角三点菜单新增"答案检索设置"入口（原项目缺这个导航入口）
+   - v3：`_applyPickedAnswer()` 一键回填；补上判断题（`problemType == 6`）的选项渲染
+10. `lib/pages/accounts.dart`（账号管理页）
+    - 右上角三点菜单新增"答案检索设置"入口（原项目缺这个导航入口）
+    - v3：新增「运行日志」入口，跳转 `LogViewerPage`
+11. `lib/main.dart`（应用入口）
+    - v3：`await AppLogger.init()` 提到最前；安装 `FlutterError.onError` 与
+      `PlatformDispatcher.instance.onError` 全局异常兜底
+12. `pubspec.yaml`
+    - v3：新增 `share_plus: ^13.3.0`（导出日志时调起系统分享）
 
 ## 关键设计
 
@@ -184,16 +252,19 @@ v2 是把用户填的地址**原样 POST**，没有补全；404 异常又被静�
 - 配置存储使用 SharedPreferences（复用 `StorageManager`）
 - 图片以 base64 data URL 发送，规避防盗链与鉴权问题
 - 提交路径不改动 `ApiService.sendForEachUser` 的行为，只在闭包内旁路记录异常
+- 日志写入与展示**全部经过脱敏**，导出文件里不会出现完整 API Key
+- 日志落盘失败不影响主流程（全部 `try/catch` 兜底）
 
 ## 未修改的文件
 
 `lib/api/api_service.dart`、`lib/api/quiz.dart`、`lib/api/course.dart`、`lib/session/*`、
 `lib/models/active.dart`、`lib/models/user.dart`、`lib/platform.dart`、`lib/utils/storage.dart`、
-`lib/utils/encrypt.dart`、`lib/pages/courses/*`、`lib/pages/login.dart`、`pubspec.yaml`
+`lib/utils/encrypt.dart`、`lib/pages/courses/*`、`lib/pages/login.dart`
 
 ## 依赖检查
 
 新增代码使用的依赖全部已在 pubspec.yaml 中：
+- `share_plus: ^13.3.0` - 导出日志时调起系统分享（v3 新增）
 - `dio: ^5.9.1` - HTTP 请求（AI API 调用、图片下载）
 - `shared_preferences: ^2.2.2` - 本地存储
 - `flutter` SDK - Material 组件
@@ -218,3 +289,219 @@ v2 是把用户填的地址**原样 POST**，没有补全；404 异常又被静�
 
 **识图功能需要多模态模型**：gpt-4o / qwen-vl-max / glm-4v / gemini-1.5-flash 等。
 纯文本模型（如 deepseek-chat）在题目只存在于 PPT 图片上时无法作答，但题干是文字时仍可正常使用。
+
+---
+
+# v4：PPT 缓存 + 后台自动识题 + AI 搜题
+
+日期：2026-09-20 ｜ 版本：1.2.0+2003 ｜ 分支：`feat/ppt-cache`
+
+## 核心思路
+
+雨课堂取 PPT 是**一次性**接口（`GET /api/v3/lesson/presentation/fetch`），
+一次返回整份 `{title, width, height, slides[]}`，每页的题目信息
+（`slide.problem`：题号、题型、题干、选项）就在那个响应里。
+
+所以「识题」不需要下载图片、不需要翻页、也不需要视觉模型 ——
+整份 PPT 到手的那一刻，几十毫秒就能把所有题扫出来。
+
+## 新增文件
+
+### `lib/cache/`（7 个）
+
+| 文件 | 职责 |
+|---|---|
+| `question_hash.dart` | 题目内容指纹（SHA-256），作为答案缓存的键 |
+| `course_cache.dart` | 课程级目录管理、过期清理、原子写 JSON |
+| `ppt_cache.dart` | 整份 PPT 元数据落盘（老师来回切同一份时不重复请求） |
+| `cached_image.dart` | 幻灯片图片磁盘缓存（自定义 `ImageProvider`）+ 串行预取 |
+| `answer_cache.dart` | 题目 → 建议答案 的读写、内存 LRU、预载 |
+| `answer_queue.dart` | AI 检索队列：并发闸门 2 + in-flight 去重 + 结果广播 |
+| `slide_scanner.dart` | 逐页识题、同题去重、需要识图的题单独标记 |
+
+### `lib/pages/widget/suggested_answer_card.dart`
+
+题目面板里的「建议答案」卡片：检索中 / 有答案 / 失败 三态，
+**只回填，绝不自动提交**。
+
+### 测试（5 个文件，61 个新用例）
+
+`test/question_hash_test.dart`、`test/slide_scanner_test.dart`、
+`test/answer_cache_test.dart`、`test/answer_queue_test.dart`、
+`test/support/cache_test_env.dart`（把 path_provider 指到临时目录的测试脚手架）
+
+## 修改文件
+
+| 文件 | 改动 |
+|---|---|
+| `lib/pages/presentation.dart` | 接入缓存层；整份 PPT 到手后立刻识题 + 排队检索 + 预取图片；新增「回到当前页」按钮；**修掉 `_isLoading` 不复位的 bug** |
+| `lib/pages/widget/answer_search_dialog.dart` | 支持直接展示已有结果（`initial`）、走调用方检索入口（`onSearch`）、显示「来自缓存」 |
+| `lib/api/answer_search.dart` | `fromRainClassroomProblem` 带上 `problemId` |
+| `lib/models/answer_result.dart` | `StandardizedQuestion` 新增 `problemId` 字段 |
+| `pubspec.yaml` | 版本号 1.1.9+2002 → 1.2.0+2003 |
+
+## 磁盘布局
+
+```
+<应用文档目录>/ppt_cache/
+  lessons/
+    <lessonId>/
+      ppt/
+        <presentationId>.json
+        images/<sha1(url)>.bin
+      questions/
+        <questionHash>.json
+      .finished
+```
+
+清理条件（满足任一即删整个课程目录）：
+1. 有 `.finished` 标记且已过 24 小时
+2. 目录内最后一次写入已过 7 天
+
+## 依赖检查
+
+新增代码只用到了 pubspec.yaml 里已有的依赖：
+- `crypto: ^3.0.0` — 题目指纹 / 图片文件名摘要
+- `path_provider: ^2.1.3` — 应用文档目录
+- `path: ^1.9.0` — 路径拼接
+- `dio: ^5.9.1` — 图片字节下载
+- `flutter` SDK — `ImageProvider` / `ValueNotifier`
+
+无需新增依赖。
+
+## 设计要点
+
+1. **题目判定口径**：只认服务器给的 `slide.problem`，不做图像扫描
+2. **选项顺序不排序**：顺序一变答案字母的含义就变了
+3. **题干为空时用课件文字兜底**：否则选项相同的两道题会撞成同一个键
+4. **`empty`/`failed` 只保留 15 分钟**：既不刷屏重试，也不被一次网络抖动永久钉住
+5. **图片预取串行 + 只下载字节**：并发抢带宽，解码吃内存
+6. **默认继续跟随老师**，脱离后出现中立的「回到当前页」按钮
+7. **只回填，不自动提交**
+
+详细说明见 `docs/PPT缓存与自动识题设计_2026-09-20.md`。
+
+## 同批次补充修复
+
+### 1. 时间轴跳页 off-by-one（已修）
+
+`_handleTimelineProblemClick()` 用的是 `targetIndex = slideIndex`（不减 1），
+而 `_toSlide()` / `showpresentation` / `slide` / `slidenav` 都是 `slideIndex - 1`。
+
+同一个 `si` 值不可能既是 0-based 又是 1-based 下标，必有一处错。证据：
+
+1. 两处的 `si` 都来自 `_addTimelineEvents()` 里的 `event['si']`
+2. `hello` 处理器也是取 `event['si']` 然后交给 `_toSlide()`
+3. `_toSlide()` 被 5 个调用点共用，老师翻页跟随一直是正常的
+
+所以 `si` 是 1-based 页码，已改为 `final targetIndex = slideIndex - 1;`。
+这个 bug 在加了「回到当前页」按钮之后才变得看得见 ——
+点开时间轴的题会多跳一页，右上角立刻冒出本不该出现的按钮。
+
+### 2. 同一张图的并发下载互相覆盖（已修）
+
+界面的 `SlideImage` 和后台 `SlideImagePrefetcher` 可能同时要同一张图，
+原来两边都写同一个 `<hash>.bin.tmp`，互相把对方的文件 rename 掉，
+其中一个抛「文件不存在」→ 页面显示莫名的错误图标。
+
+修法：`SlideImageStore._inFlight` 按 `lessonId|url` 做 in-flight 去重，
+临时文件名再带自增序号兜底，失败时把临时文件删掉。
+
+### 3. `CourseCache.writeJson` 临时文件名会撞（已修）
+
+原来固定 `<file>.tmp`，属于「靠调用方保证不并发」的脆弱假设。
+改成带自增序号，失败时清理临时文件。
+
+### 4. 新增 `lib/pages/widget/cache_manager.dart`
+
+「PPT 缓存」管理页：展示占用、显示自动清理规则、提供「清理过期缓存」和
+「清空全部缓存」。入口在账号页右上角菜单，紧挨「运行日志」。
+
+### 5. 新增 `test/course_cache_test.dart`（25 个用例）
+
+锁住保留策略：结束 24h 清、7 天未用清、边界保留、
+结束标记优先于写入时间、统计与清空。
+
+测试总数 130 → **155**，全部通过。
+
+---
+
+# v4.1：补上前台服务声明（后台保活）
+
+日期：2026-09-20 ｜ 版本：1.2.1+2004 ｜ 分支：`feat/ppt-cache`
+
+## 问题：前台服务其实从未启动过
+
+`lib/pages/presentation.dart` 里那套 `_startForegroundService()` /
+`_stopForegroundService()` / `_WebSocketKeepAliveHandler` **一直是死代码**。
+
+原因：`flutter_foreground_task` 插件**不自己声明 `<service>`**，要求宿主 App 声明
+（插件 README 注释：`Warning: Do not change service name.`）。
+插件的 `AndroidManifest.xml` 里只有 4 个权限 + 2 个 receiver，`<service>` 只存在于
+它的 `example` 工程。我们的 `android/app/src/main/AndroidManifest.xml` 只抄了权限，
+漏了 `<service>`。
+
+三重核对均确认没有 `ForegroundService`：
+
+1. Gradle 合并后的 Manifest（`build/app/intermediates/merged_manifests/`）
+2. `aapt2 dump xmltree` 拆 v4 APK
+3. `android/` 全目录 grep
+
+**后果**：没有前台通知、没有唤醒锁、没有 isolate 保活。
+App 切后台或锁屏后 WebSocket 可能被系统冻结或杀掉 → 漏签到、漏题。
+
+**最坑的是静默失败**：Android 上显式 Intent 指向未声明的组件会返回 null 且不抛异常，
+插件拿到 null 后走 `result.success(true)`，Dart 侧以为启动成功了。
+
+**5 秒自检法**：进课堂后拉下通知栏，看有没有「课堂助手 / 正在保持 WebSocket 连接...」
+的通知。没有就是没起来。
+
+## 修复（`android/app/src/main/AndroidManifest.xml`）
+
+在 `<application>` 内、`MainActivity` 之后补上：
+
+```xml
+<service
+    android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+    android:foregroundServiceType="dataSync"
+    android:exported="false"
+    android:stopWithTask="true" />
+```
+
+- service 名不能改（插件硬编码）
+- 用 `dataSync` 而非插件 README 的 `dataSync|remoteMessaging`：我们只声明了
+  `FOREGROUND_SERVICE_DATA_SYNC` 权限，多声明 type 会在 Android 14+ 启动时被拒
+- `stopWithTask="true"`：从最近任务划掉 App 就停服务，不留僵尸
+
+## 待办：唤醒锁没有超时（本次未改）
+
+服务真起来后，插件默认 `allowWakeLock: true` 会持**无超时的 `PARTIAL_WAKE_LOCK`**
+（源码带 `@SuppressLint("WakelockTimeout")`），而 `presentation.dart` 里还显式开了
+`allowWifiLock: true`（`WIFI_MODE_FULL_HIGH_PERF`）。这两个都会明显增加耗电。
+
+建议改（`presentation.dart` 的 `FlutterForegroundTask.init`）：
+
+```dart
+foregroundTaskOptions: ForegroundTaskOptions(
+  eventAction: ForegroundTaskEventAction.nothing(),
+  allowWakeLock: false,
+),
+```
+
+`nothing()` 是安全的：插件 `startRepeatTask()` 对 `NOTHING` 直接 `return`，与保活无关，
+纯粹省掉那个 5 秒心跳。`allowWifiLock` 先保留 `true` 观察。
+
+**为什么分两步**：一次只改一个变量。先确认「服务能起来、后台能收到消息」，
+再单独量耗电；混在一起改，出问题分不清是哪个引起的。
+
+## 文件清单
+
+| 文件 | 改动 |
+|---|---|
+| `android/app/src/main/AndroidManifest.xml` | 新增 `<service>` 声明（+11 行含注释） |
+| `pubspec.yaml` | 版本号 1.2.0+2003 → 1.2.1+2004（装出来 versionCode 4004） |
+| `CHANGES.md` | 补上此前遗漏的 v4 段（`repo\` 一直没有，只有 `src\` / `build\` 有）+ 本节 |
+| `README.md`（工作区） | 重写为面向接手的文档：目录真相源、构建/推送命令、架构铁律、已知问题 |
+
+注意：`src\` / `build\` 补丁集原本只镜像 `lib\` 和 `test\`，
+本次把 `android/app/src/main/AndroidManifest.xml` 也纳入了两个补丁集。

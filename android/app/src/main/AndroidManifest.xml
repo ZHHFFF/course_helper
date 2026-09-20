@@ -47,6 +47,19 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- 前台服务：保持 WebSocket 连接（切后台/锁屏时不被冻结）。
+             flutter_foreground_task 插件不自己声明这个 service，要求宿主 App 声明，
+             且 service 名字不能改。漏了它会导致 startService 静默失败（无通知、无保活）。
+             foregroundServiceType 必须与已声明的 FOREGROUND_SERVICE_DATA_SYNC 权限一致，
+             不要照抄插件 README 的 "dataSync|remoteMessaging"。
+             stopWithTask=true：从最近任务划掉 App 就停服务，不留僵尸。 -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            android:stopWithTask="true" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

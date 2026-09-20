@@ -42,3 +42,34 @@
 您有权使用、修改和分发本代码，但必须严格遵守 GPL v3 的条款。任何分发行为（包括但不限于提供二进制文件、托管源码、作为服务运行）都必须同时提供完整的对应源代码，并保留原始版权声明。
 
 请注意： 违反 GPL 协议可能导致法律诉讼。如果您不确定自己的使用方式是否符合协议，请查阅 GPL v3 官方全文 或咨询法律专业人士。
+
+---
+
+## 开发 / 接手须知（本 fork）
+
+> 完整版见工作区 `D:\CourseHelper\README.md`。这里只放最容易踩的几条。
+
+**构建**（校园网环境，必须走国内镜像）：
+
+```bash
+bash /d/CourseHelper/build-apk.sh all      # pub get + analyze + test + build
+```
+
+**推送**：远端用 `gh`（`https://github.com:443/ZHHFFF/course_helper.git`，注意那个 `:443`）。
+`origin` 指向只读镜像 `ghfast.top`，只能拉不能推。
+CI 只在 push 到 `master` / `main` 时触发，推 `feat/*` 需要本地出包。
+
+**四条最容易踩的坑**：
+
+1. **改代码改 `repo\`**（工作区里真正的工程根，编译/git 都在这里）。
+   `src\` / `build\` 只是给上游的扁平补丁镜像，**不参与构建**。
+2. **雨课堂 PPT 是一次性 JSON**：`/api/v3/lesson/presentation/fetch` 一次返回整份
+   `slides[]`，每页题目就在 `slide.problem`。识题**不需要截图、不需要翻页、不需要视觉模型**。
+3. **题目指纹不能排序选项**：顺序一变「选 A」的含义就变了。
+   题干为空时**必须**退回课件文字，否则选项相同的两道题会撞成同一个键，A 题会复用 B 题的答案。
+4. **`si`（幻灯片页码）是 1-based**，转数组下标要 `-1`。
+
+**已知问题**：`flutter_foreground_task` 要求宿主 App 自己声明 `<service>`，
+此前漏了导致前台服务**静默失败**（切后台可能漏签到、漏题）。已在 `AndroidManifest.xml`
+补上；唤醒锁超时的调整待真机验证通过后再做。详见 `CHANGES.md` 的 v4.1 段。
+
