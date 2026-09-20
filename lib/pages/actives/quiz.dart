@@ -582,7 +582,7 @@ class _QuizPageState extends State<QuizPage> {
                           extensions: [
                             ImageExtension(
                               builder: (context) {
-                                final imageUrl = CXImageApi.toNewImageUrl(contextAttributes['src'] ?? '');
+                                final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
                                 return Image.network(
                                   imageUrl,
                                   headers: HeadersManager.chaoxingHeaders,
@@ -667,7 +667,7 @@ class _QuizPageState extends State<QuizPage> {
               extensions: [
                 ImageExtension(
                   builder: (context) {
-                    final imageUrl = CXImageApi.toNewImageUrl(contextAttributes['src'] ?? '');
+                    final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
                     return Image.network(
                       imageUrl,
                       headers: HeadersManager.chaoxingHeaders,
@@ -728,7 +728,7 @@ class _QuizPageState extends State<QuizPage> {
             extensions: [
               ImageExtension(
                 builder: (context) {
-                  final imageUrl = CXImageApi.toNewImageUrl(contextAttributes['src'] ?? '');
+                  final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
                   return Image.network(
                     imageUrl,
                     headers: HeadersManager.chaoxingHeaders,
