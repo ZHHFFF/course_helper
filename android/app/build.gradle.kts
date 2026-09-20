@@ -11,7 +11,8 @@ plugins {
 
 val keystorePropertiesFile = rootProject.file("key.properties")
 val keystoreProperties = Properties()
-if (keystorePropertiesFile.exists()) {
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 } else {
     println("key.properties not found. Please create it in the android directory.")
@@ -45,20 +46,27 @@ android {
         versionName = flutter.versionName
     }
 
+    // 没配 key.properties 时退回 debug 签名，保证本地至少能出包调试。
+    // 注意：debug 签名的包无法覆盖安装正式版（签名不同），发版必须走 CI 的正式密钥。
     signingConfigs {
-        create("release") {
-            keyAlias = keystoreProperties["keyAlias"] as String
-            keyPassword = keystoreProperties["keyPassword"] as String
-            storeFile = file(keystoreProperties["storeFile"] as String)
-            storePassword = keystoreProperties["storePassword"] as String
+        if (hasReleaseKeystore) {
+            create("release") {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
         }
     }
 
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
-            // signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             
             // 启用代码混淆
             isMinifyEnabled = true
