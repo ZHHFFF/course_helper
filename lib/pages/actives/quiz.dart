@@ -15,6 +15,12 @@ import '../../../models/answer_result.dart';
 import '../../../utils/network_error.dart';
 import '../widget/answer_search_dialog.dart';
 // [/新增]
+// [新增] 自动答题：预搜缺失答案 + 发布后自动提交
+import '../../../api/answer_search.dart';
+import '../../../setting/auto_answer_setting.dart';
+import '../../../session/account.dart';
+import '../../../utils/app_logger.dart';
+// [/新增]
 import '../../../models/user.dart';
 import '../../../models/active.dart';
 import '../widget/accounts_selector.dart';
@@ -106,9 +112,16 @@ class _QuizPageState extends State<QuizPage> {
 
   List<User> _selectedAccounts = [];
 
+  // [新增] 自动答题相关状态
+  /// 已经自动提交过，避免重复提交
+  bool _autoSubmitted = false;
+  /// 正在检索的题目索引，避免重复请求
+  final Set<int> _preSearching = {};
+
   @override
   void initState() {
     super.initState();
+    AutoAnswerSetting.ensureLoaded();
     _initialize();
   }
 
@@ -154,6 +167,148 @@ class _QuizPageState extends State<QuizPage> {
     );
   }
   // [/新增]
+
+  // ==================== [新增] 预搜缺失答案 + 自动提交 ====================
+
+  /// 判断某道题是否已经有作答内容（服务器给了 isanswer，或用户/AI 已填）
+  bool _isQuizAnswered(dynamic quiz) {
+    final personAnswer = quiz['personAnswer'];
+    if (personAnswer is! Map) return false;
+
+    switch (quiz['type']) {
+      case 0:
+      case 1:
+      case 3:
+      case 16:
+        final v = personAnswer['myoption'];
+        return v is String && v.trim().isNotEmpty;
+      case 2:
+      case 9:
+      case 10:
+        final blanks = personAnswer['blankAnswer'];
+        if (blanks is! List || blanks.isEmpty) return false;
+        return blanks.every((b) =>
+            (b is Map ? (b['content'] ?? '') : '')
+                .toString()
+                .trim()
+                .isNotEmpty);
+      case 4:
+      case 5:
+      case 6:
+      case 7:
+      case 18:
+        final c = personAnswer['content'];
+        return c is String && c.trim().isNotEmpty;
+      default:
+        return false;
+    }
+  }
+
+  /// 题目加载完成后的统一收尾：预搜缺失答案 → （按设置）自动提交
+  Future<void> _afterQuizLoaded() async {
+    await AutoAnswerSetting.ensureLoaded();
+    await _preSearchMissingAnswers();
+    await _tryAutoSubmit();
+  }
+
+  /// 服务器没给 isanswer 的题，交给 AI 检索补上
+  Future<void> _preSearchMissingAnswers() async {
+    if (!AutoAnswerSetting.preSearch.value) return;
+    if (_quizList.isEmpty) return;
+
+    final missing = <int>[];
+    for (var i = 0; i < _quizList.length; i++) {
+      if (!_isQuizAnswered(_quizList[i])) missing.add(i);
+    }
+
+    if (missing.isEmpty) {
+      AppLogger.i('预搜答案', '全部 ${_quizList.length} 道题服务器已给出答案，无需检索');
+      return;
+    }
+    AppLogger.i('预搜答案', '${missing.length}/${_quizList.length} 道题需要 AI 检索');
+
+    // 串行检索，避免把 API 打限流
+    for (final index in missing) {
+      if (!mounted) return;
+      await _preSearchOne(index);
+    }
+    AppLogger.i('预搜答案', '预搜结束');
+  }
+
+  /// 检索并回填某一道题
+  Future<void> _preSearchOne(int index) async {
+    if (index < 0 || index >= _quizList.length) return;
+    if (_preSearching.contains(index)) return;
+
+    _preSearching.add(index);
+    try {
+      final quiz = _quizList[index];
+      final question = StandardizedQuestion.fromChaoxing(
+        Map<String, dynamic>.from(quiz),
+        imageHeaders: HeadersManager.chaoxingHeaders,
+        resolveImageUrl: (url) => CXImageApi.toNewImageUrl(url),
+      );
+      if (!question.isUsable) return;
+
+      final results = await AnswerSearchApi.search(question);
+      if (results.isEmpty) {
+        AppLogger.w('预搜答案', '第 ${index + 1} 题没搜到答案');
+        return;
+      }
+      final best = results.first;
+      if (!mounted) return;
+
+      final keys = best.matchOptionKeys(question.options);
+      setState(() {
+        final personAnswer = quiz['personAnswer'];
+        if (personAnswer is Map) {
+          if (keys.isNotEmpty) {
+            personAnswer['myoption'] = keys.join();
+          } else if (!question.isChoice && best.answer.trim().isNotEmpty) {
+            personAnswer['content'] = best.answer.trim();
+          }
+        }
+      });
+      AppLogger.i('预搜答案', '第 ${index + 1} 题已填入：${best.answer}（${best.source}）');
+    } catch (e) {
+      AppLogger.e('预搜答案', '第 ${index + 1} 题检索失败：$e');
+    } finally {
+      _preSearching.remove(index);
+    }
+  }
+
+  /// 所有题都填好后，按设置决定是否自动提交
+  Future<void> _tryAutoSubmit() async {
+    if (!AutoAnswerSetting.autoSubmit.value) return;
+    if (_autoSubmitted || _isSubmitting) return;
+    if (_quizList.isEmpty) return;
+
+    // 还有题没答案就先不交，避免交一份空卷
+    final unanswered = _quizList.where((q) => !_isQuizAnswered(q)).length;
+    if (unanswered > 0) {
+      AppLogger.w('自动答题', '还有 $unanswered 道题没答案，暂不自动提交');
+      return;
+    }
+
+    // 没选账号就默认用全部账号
+    if (_selectedAccounts.isEmpty) {
+      _selectedAccounts = AccountManager.allAccounts;
+    }
+    if (_selectedAccounts.isEmpty) {
+      AppLogger.w('自动答题', '没有可用账号，跳过自动提交');
+      return;
+    }
+
+    // 拟人化延迟，避免「秒交」被风控识别
+    final delay = AutoAnswerSetting.randomDelay();
+    AppLogger.i('自动答题', '${delay.inMilliseconds}ms 后自动提交');
+    await Future<void>.delayed(delay);
+    if (!mounted) return;
+    if (_autoSubmitted || _isSubmitting) return;
+
+    _autoSubmitted = true;
+    await _submitAnswersForAllAccounts();
+  }
 
   Future<void> _initialize() async {
     try {
@@ -308,6 +463,9 @@ class _QuizPageState extends State<QuizPage> {
             _startCountdown();
           }
         });
+
+        // [新增] 题目就绪：先把服务器没给答案的题用 AI 补上，再按设置决定是否自动提交
+        unawaited(_afterQuizLoaded());
       } else {
         setState(() {
           _errorMessage = '解析测验数据失败';
@@ -397,6 +555,9 @@ class _QuizPageState extends State<QuizPage> {
             _startCountdown();
           }
         });
+
+        // [新增] 题目就绪：先把服务器没给答案的题用 AI 补上，再按设置决定是否自动提交
+        unawaited(_afterQuizLoaded());
       } else {
         setState(() {
           _errorMessage = '解析测验数据失败';
