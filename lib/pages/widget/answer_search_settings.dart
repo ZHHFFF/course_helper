@@ -1,5 +1,5 @@
 /// 答案检索设置页
-/// 配置 AI 检索源的 API 地址、密钥和模型名称
+/// 配置 AI 检索源的 API 地址、密钥和模型名称，并支持一键连通测试
 import 'package:flutter/material.dart';
 
 import '../../api/answer_search.dart';
@@ -18,6 +18,12 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
   final _apiKeyController = TextEditingController();
   final _modelController = TextEditingController();
   bool _isLoading = true;
+
+  /// 是否正在做连通测试
+  bool _isTesting = false;
+
+  /// 是否显示 API Key 明文
+  bool _showApiKey = false;
 
   @override
   void initState() {
@@ -60,6 +66,117 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
     }
   }
 
+  /// 连通测试：用当前输入框里的内容直接发一条最小请求
+  Future<void> _testConnection() async {
+    if (_isTesting) return;
+
+    setState(() => _isTesting = true);
+
+    var result = const AIConnectionTestResult(
+      success: false,
+      message: '测试未完成',
+    );
+    try {
+      result = await AnswerSearchApi.testConnection(
+        apiUrl: _apiUrlController.text,
+        apiKey: _apiKeyController.text,
+        model: _modelController.text,
+      );
+    } catch (e) {
+      result = AIConnectionTestResult(
+        success: false,
+        message: '测试异常：$e',
+      );
+    }
+
+    if (!mounted) return;
+    setState(() => _isTesting = false);
+    _showTestResult(result);
+  }
+
+  void _showTestResult(AIConnectionTestResult result) {
+    final theme = Theme.of(context);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(
+              result.success ? Icons.check_circle : Icons.error_outline,
+              color: result.success ? Colors.green : theme.colorScheme.error,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                result.success ? '连接成功' : '连接失败',
+                style: TextStyle(
+                  color: result.success
+                      ? Colors.green
+                      : theme.colorScheme.error,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                result.message,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+              ),
+              if (result.latencyText.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  '耗时：${result.latencyText}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+              if (result.detail != null && result.detail!.trim().isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: SelectableText(
+                    result.detail!,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+              ],
+              if (!result.success) ...[
+                const SizedBox(height: 12),
+                Text(
+                  '排查建议：\n'
+                  '· 确认 API 地址填的是完整的 chat/completions 接口\n'
+                  '· 确认 API Key 没有多余空格或引号\n'
+                  '· 确认模型名称在该服务商下真实存在\n'
+                  '· 确认手机网络可以访问该服务（部分服务需代理）',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -97,7 +214,9 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
                           '1. 学习通题目：服务器直接返回正确答案标记，无需配置AI即可自动获取\n'
                           '2. 雨课堂题目：服务器不返回答案，需配置AI检索源\n'
                           '3. 检索结果仅供参考，不保证正确\n'
-                          '4. AI检索结果仅展示当前题目，不会缓存到本地',
+                          '4. AI检索结果仅展示当前题目，不会缓存到本地\n'
+                          '5. 题目只写在PPT上时，会自动把课件图片发给多模态模型识别\n'
+                          '   （需使用支持识图的模型，如 gpt-4o / qwen-vl-max / glm-4v）',
                           style: TextStyle(fontSize: 13, color: Colors.grey),
                         ),
                       ],
@@ -129,10 +248,21 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            'AI API 配置',
-                            style: TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.bold),
+                          Row(
+                            children: [
+                              const Text(
+                                'AI API 配置',
+                                style: TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.bold),
+                              ),
+                              const Spacer(),
+                              if (_isTesting)
+                                const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                            ],
                           ),
                           const SizedBox(height: 8),
                           const Text(
@@ -154,13 +284,22 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
                           const SizedBox(height: 12),
                           TextField(
                             controller: _apiKeyController,
-                            decoration: const InputDecoration(
+                            obscureText: !_showApiKey,
+                            decoration: InputDecoration(
                               labelText: 'API Key',
                               hintText: 'sk-...',
-                              border: OutlineInputBorder(),
-                              prefixIcon: Icon(Icons.key),
+                              border: const OutlineInputBorder(),
+                              prefixIcon: const Icon(Icons.key),
+                              suffixIcon: IconButton(
+                                icon: Icon(_showApiKey
+                                    ? Icons.visibility_off
+                                    : Icons.visibility),
+                                onPressed: () {
+                                  setState(() => _showApiKey = !_showApiKey);
+                                },
+                                tooltip: _showApiKey ? '隐藏' : '显示',
+                              ),
                             ),
-                            obscureText: true,
                           ),
                           const SizedBox(height: 12),
                           TextField(
@@ -172,6 +311,28 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
                               prefixIcon: Icon(Icons.model_training),
                             ),
                           ),
+                          const SizedBox(height: 16),
+
+                          // [新增] 连通测试按钮
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _isTesting ? null : _testConnection,
+                              icon: _isTesting
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.wifi_tethering, size: 18),
+                              label: Text(_isTesting ? '正在测试连接...' : '测试连接'),
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                              ),
+                            ),
+                          ),
+                          // [/新增]
                         ],
                       ),
                     ),
@@ -192,4 +353,3 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
     );
   }
 }
-
