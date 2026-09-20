@@ -1077,6 +1077,7 @@ class AnswerSearchApi {
       slideText: slideText,
       imageUrls: imageUrl.trim().isEmpty ? const [] : [imageUrl.trim()],
       imageHeaders: imageHeaders,
+      problemId: problem.problemId,
     );
   }
 }

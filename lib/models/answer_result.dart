@@ -25,6 +25,12 @@ class StandardizedQuestion {
   /// 拉取图片所需的请求头（学习通图片需要鉴权）
   final Map<String, String>? imageHeaders;
 
+  /// 服务器给这道题的唯一 ID（雨课堂 problemId / 学习通题目 ID）
+  ///
+  /// 仅用于「题干与选项都为空、内容指纹没有区分度」时兜底当缓存键，
+  /// 不参与正常的内容指纹计算 —— 见 `QuestionHash.of()`。
+  final String problemId;
+
   StandardizedQuestion({
     required this.questionText,
     required this.questionType,
@@ -33,6 +39,7 @@ class StandardizedQuestion {
     this.slideText = '',
     this.imageUrls = const [],
     this.imageHeaders,
+    this.problemId = '',
   });
 
   /// 实际用于提问的文本：优先题干，其次课件文本

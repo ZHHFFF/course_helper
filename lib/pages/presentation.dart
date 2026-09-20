@@ -16,8 +16,19 @@ import '../platform.dart';
 // [新增] 答案检索模块导入
 import '../api/answer_search.dart';
 import '../models/answer_result.dart';
+// [新增] PPT 缓存 + 后台识题
+import '../cache/answer_cache.dart';
+import '../cache/answer_queue.dart';
+import '../cache/cached_image.dart';
+import '../cache/course_cache.dart';
+import '../cache/ppt_cache.dart';
+import '../cache/question_hash.dart';
+import '../cache/slide_scanner.dart';
+// [/新增]
+import '../utils/app_logger.dart';
 import '../utils/network_error.dart';
 import 'widget/answer_search_dialog.dart';
+import 'widget/suggested_answer_card.dart';
 // [/新增]
 
 @pragma('vm:entry-point')
@@ -50,7 +61,8 @@ class PresentationPage extends StatefulWidget {
   State<PresentationPage> createState() => _PresentationPageState();
 }
 
-class _PresentationPageState extends State<PresentationPage> {
+class _PresentationPageState extends State<PresentationPage>
+    with WidgetsBindingObserver {
   WebSocket? _ws;
   final ScrollController _scrollController = ScrollController();
   final PageController _pageController = PageController();
@@ -82,15 +94,58 @@ class _PresentationPageState extends State<PresentationPage> {
   Offset _menuPosition = Offset.zero;
   bool _isFullScreen = false;
 
+  // [新增] PPT 缓存 + 后台识题
+  /// 整份 PPT 的识题结果（拿到 PPT 的那一刻就扫完了）
+  SlideScanResult _scan = const SlideScanResult.empty();
+
+  /// 幻灯片模型（扫描、图片预取用；`_slides` 是给 UI 用的 Map 版）
+  List<PresentationSlide> _slideModels = const [];
+
+  /// 指纹 → 建议答案（缓存命中 或 本次检索拿到的）
+  final Map<String, CachedAnswer> _suggested = {};
+
+  /// 正在排队 / 请求中的指纹
+  final Set<String> _searching = {};
+
+  /// 当前页对应的题目指纹（当前页没题时为 null）
+  String? _currentHash;
+
+  StreamSubscription<AnswerJobResult>? _answerSub;
+  // [/新增]
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _answerSub = AnswerQueue.results.listen(_onAnswerReady);
     _initialize();
     _startForegroundService();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 图片预取只在 App 前台时跑：后台下载既费电又容易被系统掐断
+    SlideImagePrefetcher.paused = state != AppLifecycleState.resumed;
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _answerSub?.cancel();
+
+    // 已经在飞的 AI 请求不打断（让它跑完顺手把答案存下来），
+    // 但排队里还没开跑的全部作废
+    AnswerQueue.cancelPending();
+    SlideImagePrefetcher.cancel();
+    PptCache.clearMemory();
+    AnswerCache.clearMemory();
+
+    // 离开课堂 = 这节课对本人结束了。缓存再留 24 小时，
+    // 防止「下课后还想回去翻两眼」时页面空白
+    if (_currentPresentationId != null) {
+      unawaited(CourseCache.markFinished(widget.lessonId));
+    }
+
     if (_ws != null) {
       final leaveData = {
         "op": "leavelesson",
@@ -109,28 +164,94 @@ class _PresentationPageState extends State<PresentationPage> {
 
   Future<void> _initialize() async {
     await _checkToken();
+
+    // 进课堂先按策略清一遍过期缓存（只 stat 一层目录，很便宜）
+    unawaited(CourseCache.cleanup());
+    // 把本节课已有的答案缓存读进内存，切页时展示是同步的、不闪
+    await AnswerCache.preload(widget.lessonId);
+    AnswerQueue.resetCounters();
+
     _connectWebSocket();
+  }
+
+  /// 后台队列检索完一题
+  void _onAnswerReady(AnswerJobResult result) {
+    if (!mounted) return;
+    setState(() {
+      _suggested[result.hash] = result.answer;
+      _searching.remove(result.hash);
+    });
   }
 
   // [新增] 搜索答案 - 从当前题目提取题干和选项，调用检索模块
   // 检索结果可一键回填到当前作答（只回填，不自动提交）
   Future<void> _searchAnswer() async {
-    if (_currentProblem == null) return;
+    final problem = _currentProblem;
+    if (problem == null) return;
 
-    final question = AnswerSearchApi.fromRainClassroomProblem(
-      _currentProblem!,
-      slideText: _currentSlideText(),
-      imageUrl: _currentSlideCover(),
-    );
+    final question = _questionOfCurrentSlide();
+    final hash = _currentHash ?? QuestionHash.of(question);
+    final cached = _suggested[hash];
     if (!mounted) return;
 
     final picked = await showDialog<AnswerSearchResult>(
       context: context,
-      builder: (context) => AnswerSearchDialog(question: question),
+      builder: (context) => AnswerSearchDialog(
+        question: question,
+        // 已经有真答案就直接摆出来，不用再等一次请求
+        initial: (cached != null && cached.usable)
+            ? AnswerSearchSnapshot(
+                results: cached.results,
+                error: cached.error,
+                fromCache: true,
+              )
+            : null,
+        // 没拿到真答案时，手动点进来就是想要一次真实检索
+        refreshOnOpen: cached == null || !cached.usable,
+        onSearch: ({required bool forceRefresh}) =>
+            _searchThroughQueue(question, hash, forceRefresh: forceRefresh),
+      ),
     );
     if (picked == null || !mounted) return;
 
     _applyPickedAnswer(picked, question);
+  }
+
+  /// 走后台队列检索（自动去重 + 命中缓存 + 并发限流）
+  Future<AnswerSearchSnapshot> _searchThroughQueue(
+    StandardizedQuestion question,
+    String hash, {
+    bool forceRefresh = false,
+  }) async {
+    final result = await AnswerQueue.submit(AnswerJob(
+      lessonId: widget.lessonId,
+      hash: hash,
+      question: question,
+      forceRefresh: forceRefresh,
+    ));
+
+    if (result == null) {
+      // 没配 AI / 被取消 → 退回直接检索，至少还能拿到内置答案
+      final results = await AnswerSearchApi.search(question);
+      if (mounted) setState(() => _searching.remove(hash));
+      return AnswerSearchSnapshot(
+        results: results,
+        error: AnswerSearchApi.lastAIError,
+      );
+    }
+
+    if (mounted) {
+      setState(() {
+        _suggested[result.hash] = result.answer;
+        _searching.remove(result.hash);
+      });
+    }
+
+    return AnswerSearchSnapshot(
+      results: result.answer.results,
+      error: result.answer.error,
+      fromCache: result.fromCache,
+    );
   }
 
   /// 把选中的检索结果写回作答状态
@@ -164,36 +285,40 @@ class _PresentationPageState extends State<PresentationPage> {
   }
   // [/新增]
 
-  /// 当前 PPT 页里的所有文字（题干为空时兜底用）
-  String _currentSlideText() {
-    if (_slides.isEmpty ||
-        _currentSlideIndex < 0 ||
-        _currentSlideIndex >= _slides.length) {
-      return '';
-    }
-    final shapes = _slides[_currentSlideIndex]['shapes'] as List?;
-    if (shapes == null || shapes.isEmpty) return '';
-
-    final buffer = StringBuffer();
-    for (final shape in shapes) {
-      final text = (shape is Shape ? shape.text : null)?.trim() ?? '';
-      if (text.isEmpty) continue;
-      buffer.writeln(text);
-    }
-    return buffer.toString().trim();
+  /// 某一页 PPT 里的所有文字（题干为空时兜底用）
+  String _slideTextAt(int index) {
+    if (index < 0 || index >= _slideModels.length) return '';
+    return SlideScanner.slideTextOf(_slideModels[index]);
   }
 
-  /// 当前 PPT 页的图片地址（题目只写在 PPT 上时，交给多模态模型识别）
-  String _currentSlideCover() {
-    if (_slides.isEmpty ||
-        _currentSlideIndex < 0 ||
-        _currentSlideIndex >= _slides.length) {
-      return '';
+  /// 某一页 PPT 的图片地址（题目只写在 PPT 上时，交给多模态模型识别）
+  String _slideCoverAt(int index) {
+    if (index < 0 || index >= _slideModels.length) return '';
+    return SlideScanner.slideImageOf(_slideModels[index]);
+  }
+
+  String _currentSlideText() => _slideTextAt(_currentSlideIndex);
+
+  String _currentSlideCover() => _slideCoverAt(_currentSlideIndex);
+
+  /// 用当前页信息构建标准化题目
+  StandardizedQuestion _questionOfCurrentSlide() {
+    final problem = _currentProblem;
+    if (problem == null) {
+      return StandardizedQuestion(questionText: '', questionType: 'unknown');
     }
-    final slide = _slides[_currentSlideIndex];
-    final coverAlt = (slide['coverAlt'] as String?)?.trim() ?? '';
-    if (coverAlt.isNotEmpty) return coverAlt;
-    return (slide['cover'] as String?)?.trim() ?? '';
+    return AnswerSearchApi.fromRainClassroomProblem(
+      problem,
+      slideText: _currentSlideText(),
+      imageUrl: _currentSlideCover(),
+    );
+  }
+
+  /// 当前页的题目指纹
+  ///
+  /// 直接取扫描阶段算好的，避免每次切页重算一遍 SHA-256。
+  void _refreshCurrentHash() {
+    _currentHash = _scan.forSlide(_currentSlideIndex)?.hash;
   }
   // [/新增]
 
@@ -335,11 +460,13 @@ class _PresentationPageState extends State<PresentationPage> {
     if (targetIndex < 0) return;
 
     setState(() {
+      // _currentLessonSlideIndex = 老师当前所在页（「回到当前页」按钮靠它判断）
       _currentLessonSlideIndex = targetIndex;
       _currentSlideIndex = targetIndex;
       if (targetIndex < _slides.length) {
         _currentProblem = _slides[targetIndex]['problem'];
       }
+      _refreshCurrentHash();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -369,6 +496,8 @@ class _PresentationPageState extends State<PresentationPage> {
       switch (op) {
         case 'hello':
           if (messageText == 'lesson finished') {
+            // 课堂结束 → 打标记，缓存再留 24 小时就清掉
+            unawaited(CourseCache.markFinished(widget.lessonId));
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -522,6 +651,7 @@ class _PresentationPageState extends State<PresentationPage> {
             final dt = eventData['dt'];
 
             if (code == 'LESSON_FINISH') {
+              unawaited(CourseCache.markFinished(widget.lessonId));
               setState(() {
                 _timeline.add(TimelineEvent(
                   type: 'event',
@@ -605,35 +735,145 @@ class _PresentationPageState extends State<PresentationPage> {
       _isLoading = true;
     });
 
+    Presentation? presentation;
     try {
       final pptData = await RCCourseApi().getPresentation(presentationId);
       if (pptData != null) {
-        final presentation = Presentation.fromJson(pptData);
-        setState(() {
-          _slides = presentation.slides
-              .map((slide) => {
-                    'index': slide.index,
-                    'cover': slide.cover,
-                    'coverAlt': slide.coverAlt,
-                    'thumbnail': slide.thumbnail,
-                    'problem': slide.problem,
-                    // [新增] 保留形状文本，用于题干缺失时兜底
-                    'shapes': slide.shapes,
-                  })
-              .toList();
-          _totalCount = presentation.slides.length;
-          _currentPresentationId = presentationId;
-          if (_slides.isNotEmpty && _currentSlideIndex >= 0 && _currentSlideIndex < _slides.length) {
-            _currentProblem = presentation.slides[_currentSlideIndex].problem;
-          }
-          _isLoading = false;
-        });
+        // 整份 PPT 元数据落盘：老师来回切同一份时不用重复请求
+        unawaited(PptCache.save(widget.lessonId, presentationId, pptData));
+        presentation = Presentation.fromJson(pptData);
       }
     } catch (e) {
       debugPrint('加载 PPT 失败：$e');
+      AppLogger.w('Presentation', '加载 PPT 失败：$e');
+    }
+
+    // 请求失败就退回上次的缓存，别让界面空着
+    presentation ??= await PptCache.load(widget.lessonId, presentationId);
+
+    if (!mounted) return;
+
+    if (presentation == null) {
+      // 修 bug：原实现在 pptData 为 null 时不会复位 _isLoading，
+      // 界面会永远停在「加载 PPT 中…」
       setState(() {
         _isLoading = false;
       });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('PPT 加载失败，可稍后重试')),
+      );
+      return;
+    }
+
+    final slides = presentation.slides;
+    setState(() {
+      _slideModels = slides;
+      _slides = slides
+          .map((slide) => {
+                'index': slide.index,
+                'cover': slide.cover,
+                'coverAlt': slide.coverAlt,
+                'thumbnail': slide.thumbnail,
+                'problem': slide.problem,
+                // [新增] 保留形状文本，用于题干缺失时兜底
+                'shapes': slide.shapes,
+              })
+          .toList();
+      _totalCount = slides.length;
+      _currentPresentationId = presentationId;
+      if (_slides.isNotEmpty &&
+          _currentSlideIndex >= 0 &&
+          _currentSlideIndex < _slides.length) {
+        _currentProblem = slides[_currentSlideIndex].problem;
+      }
+      _isLoading = false;
+    });
+
+    // 整份 PPT 到手 = 所有题都到手了。识题是纯内存计算，几十毫秒的事，
+    // 所以是「拿到就全判完」，不需要等用户翻页、更不需要等图片下载
+    _indexQuestions(slides);
+  }
+
+  /// 拿到整份 PPT 后立刻做的事：识题 → 排队检索 → 预取图片
+  void _indexQuestions(List<PresentationSlide> slides) {
+    final scan = SlideScanner.scanSlides(slides);
+
+    // 先把已在缓存里的答案同步塞进来，切页时展示是同步的、不会闪
+    final suggested = <String, CachedAnswer>{};
+    for (final item in scan.questions) {
+      final hit = AnswerCache.readMemory(widget.lessonId, item.hash);
+      if (hit != null) suggested[item.hash] = hit;
+    }
+
+    setState(() {
+      _scan = scan;
+      _suggested
+        ..clear()
+        ..addAll(suggested);
+      // 换了一份 PPT → 上一份的「检索中」标记全部作废
+      _searching.clear();
+      _refreshCurrentHash();
+    });
+
+    AppLogger.i(
+      'Presentation',
+      '识题完成：共 ${scan.total} 题'
+          '（可自动检索 ${scan.autoSearchable.length}，'
+          '需识图 ${scan.visionOnly.length}，'
+          '跳过空壳 ${scan.skippedNotUsable}，'
+          '同题重复 ${scan.duplicateCount}）',
+    );
+
+    // 后台把整份 PPT 的图拉下来（只下载字节、不解码，不吃内存）
+    SlideImagePrefetcher.start(
+      widget.lessonId,
+      SlideScanner.imageUrlsOf(slides),
+    );
+
+    unawaited(_enqueueScan(scan));
+  }
+
+  /// 把扫出来的题逐条丢进 AI 队列
+  ///
+  /// 队列自带并发闸门（2）和 in-flight 去重，所以这里可以放心地一次全丢进去。
+  Future<void> _enqueueScan(SlideScanResult scan) async {
+    await AnswerSearchApi.initialize();
+    if (!mounted) return;
+
+    if (!AnswerSearchApi.isAIConfigured) {
+      AppLogger.i('Presentation', '未配置 AI，跳过自动检索（只展示已有缓存）');
+      return;
+    }
+
+    final todo = scan.autoSearchable
+        .where((item) => !(_suggested[item.hash]?.isFresh() ?? false))
+        .toList();
+
+    setState(() {
+      _searching
+        ..clear()
+        ..addAll(todo.map((item) => item.hash));
+    });
+
+    for (final item in todo) {
+      unawaited(
+        AnswerQueue.submit(AnswerJob(
+          lessonId: widget.lessonId,
+          hash: item.hash,
+          question: item.question,
+        )).then((result) {
+          if (!mounted) return;
+          setState(() {
+            if (result != null) _suggested[result.hash] = result.answer;
+            _searching.remove(item.hash);
+          });
+        }).catchError((Object e) {
+          AppLogger.w('Presentation', '自动检索失败（${item.hash}）：$e');
+          if (mounted) {
+            setState(() => _searching.remove(item.hash));
+          }
+        }),
+      );
     }
   }
 
@@ -655,6 +895,134 @@ class _PresentationPageState extends State<PresentationPage> {
     });
   }
 
+  /// PPT 右上角浮层：页码 + 脱离老师那页时出现的「回到当前页」按钮
+  ///
+  /// 默认跟随老师（老师翻页时 [_toSlide] 会把两边的下标一起改掉）。
+  /// 用户手动翻页只会改 `_currentSlideIndex`，于是两个下标不相等 → 按钮出现。
+  /// 按钮名字保持中立，不出现「同步/跟随」这类词。
+  Widget _buildSlideOverlay() {
+    final scheme = Theme.of(context).colorScheme;
+    final following = _currentSlideIndex == _currentLessonSlideIndex;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (!following) ...[
+          Material(
+            color: scheme.primary,
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => _toSlide(_currentLessonSlideIndex + 1),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.my_location, size: 14, color: scheme.onPrimary),
+                    const SizedBox(width: 4),
+                    Text(
+                      '回到当前页',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: scheme.onPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+        ],
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: following
+              ? RichText(
+                  text: TextSpan(
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    children: [
+                      TextSpan(
+                        text: '当前 ',
+                        style: TextStyle(color: scheme.primary),
+                      ),
+                      TextSpan(
+                        text: '${_currentSlideIndex + 1}/$_totalCount',
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                )
+              : Text(
+                  '${_currentSlideIndex + 1}/$_totalCount',
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+
+  /// 建议答案卡片（只展示，用户点了「填入」才会写进作答状态）
+  Widget _buildSuggestedCard() {
+    final hash = _currentHash;
+    if (hash == null) return const SizedBox.shrink();
+
+    final problem = _currentProblem;
+    final scanned = _scan.forSlide(_currentSlideIndex);
+    final question = scanned?.question ??
+        (problem == null
+            ? StandardizedQuestion(questionText: '', questionType: 'unknown')
+            : _questionOfCurrentSlide());
+
+    final options = (problem?.options ?? const <ProblemOption>[])
+        .map((o) => StandardizedOption(key: o.key, value: o.value))
+        .toList();
+
+    final cached = _suggested[hash];
+
+    return SuggestedAnswerCard(
+      cached: cached,
+      isSearching: _searching.contains(hash),
+      needsVision: scanned?.needsVision ?? false,
+      options: options,
+      onApply: () {
+        final best = cached?.best;
+        if (best != null) _applyPickedAnswer(best, question);
+      },
+      onDetails: _searchAnswer,
+      onRetry: () => _retryCurrent(hash),
+    );
+  }
+
+  /// 手动重新检索当前页这道题（忽略缓存）
+  Future<void> _retryCurrent(String hash) async {
+    final problem = _currentProblem;
+    if (problem == null) return;
+
+    final question =
+        _scan.forSlide(_currentSlideIndex)?.question ?? _questionOfCurrentSlide();
+
+    setState(() {
+      _searching.add(hash);
+      _suggested.remove(hash);
+    });
+
+    await _searchThroughQueue(question, hash, forceRefresh: true);
+  }
+
   Widget _buildFullScreenPPT() {
     return Stack(
       children: [
@@ -665,6 +1033,9 @@ class _PresentationPageState extends State<PresentationPage> {
             setState(() {
               _currentSlideIndex = index;
               _currentProblem = _slides[index]['problem'];
+              // 注意：这里**不**动 _currentLessonSlideIndex ——
+              // 用户手动翻页就表示脱离了老师那页，按钮才会出现
+              _refreshCurrentHash();
             });
           },
           itemBuilder: (context, index) {
@@ -710,8 +1081,9 @@ class _PresentationPageState extends State<PresentationPage> {
                           });
                         }
                       },
-                      child: Image.network(
-                        cover,
+                      // 走本课程的磁盘图片缓存（预取过就是秒开，断网也能看）
+                      child: Image(
+                        image: SlideImage(widget.lessonId, cover),
                         fit: BoxFit.contain,
                         width: double.infinity,
                         height: double.infinity,
@@ -744,47 +1116,7 @@ class _PresentationPageState extends State<PresentationPage> {
         Positioned(
           right: 16,
           top: 16,
-          child: Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 6,
-            ),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: _currentSlideIndex == _currentLessonSlideIndex
-                ? RichText(
-                    text: TextSpan(
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      children: [
-                        TextSpan(
-                          text: '当前 ',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                        ),
-                        TextSpan(
-                          text: '${_currentSlideIndex + 1}/$_totalCount',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                : Text(
-                    '${_currentSlideIndex + 1}/$_totalCount',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-          ),
+          child: _buildSlideOverlay(),
         ),
       ],
     );
@@ -841,6 +1173,8 @@ class _PresentationPageState extends State<PresentationPage> {
                               setState(() {
                                 _currentSlideIndex = index;
                                 _currentProblem = _slides[index]['problem'];
+                                // 同全屏视图：手动翻页不改变老师所在页
+                                _refreshCurrentHash();
                               });
                             },
                             itemBuilder: (context, index) {
@@ -886,8 +1220,9 @@ class _PresentationPageState extends State<PresentationPage> {
                                             });
                                           }
                                         },
-                                        child: Image.network(
-                                          cover,
+                                        // 走本课程的磁盘图片缓存
+                                        child: Image(
+                                          image: SlideImage(widget.lessonId, cover),
                                           fit: BoxFit.contain,
                                           width: double.infinity,
                                           height: double.infinity,
@@ -920,47 +1255,7 @@ class _PresentationPageState extends State<PresentationPage> {
                           Positioned(
                             right: 16,
                             top: 16,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 6,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: _currentSlideIndex == _currentLessonSlideIndex
-                                  ? RichText(
-                                      text: TextSpan(
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                        children: [
-                                          TextSpan(
-                                            text: '当前 ',
-                                            style: TextStyle(
-                                              color: Theme.of(context).colorScheme.primary,
-                                            ),
-                                          ),
-                                          TextSpan(
-                                            text: '${_currentSlideIndex + 1}/$_totalCount',
-                                            style: TextStyle(
-                                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    )
-                                  : Text(
-                                      '${_currentSlideIndex + 1}/$_totalCount',
-                                      style: TextStyle(
-                                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                            ),
+                            child: _buildSlideOverlay(),
                           ),
                         ],
                       ),
@@ -1077,6 +1372,8 @@ class _PresentationPageState extends State<PresentationPage> {
                                       ),
                                       const SizedBox(height: 16),
                                       _buildAnswerOptions(),
+                                      // [新增] 建议答案（后台自动检索的结果，只展示不提交）
+                                      _buildSuggestedCard(),
                                       // [新增] 搜索答案按钮 - 在答案选项下方
                                       const SizedBox(height: 8),
                                       Align(
@@ -1318,6 +1615,7 @@ class _PresentationPageState extends State<PresentationPage> {
           _unlockedProblemIds.add(event.problemId!);
         }
         _countdownSeconds = 0;
+        _refreshCurrentHash();
       });
     }
   }

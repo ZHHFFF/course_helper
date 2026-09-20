@@ -3,6 +3,10 @@
 ///
 /// 选择某条结果后可通过「填入答案」按钮回传给调用页（`Navigator.pop(context, result)`），
 /// 由调用页决定怎么写入作答状态；关闭（× / 关闭按钮）返回 null，不修改任何作答。
+///
+/// 后台自动检索（`AnswerQueue`）已经把答案缓存起来了，所以支持两种进入方式：
+/// - 传 [initial]：直接把缓存结果摆出来，不再等一次请求
+/// - 传 [onSearch]：走调用页的检索入口（会命中缓存 / 复用 in-flight 请求）
 library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,12 +14,46 @@ import 'package:flutter/services.dart';
 import '../../api/answer_search.dart';
 import '../../models/answer_result.dart';
 
+/// 一次检索的结果快照
+///
+/// 用来把「结果 + 失败原因 + 是否来自缓存」一起在调用页和弹窗之间传递。
+class AnswerSearchSnapshot {
+  final List<AnswerSearchResult> results;
+
+  /// 失败原因（没有失败则为 null）
+  final String? error;
+
+  /// 是否直接命中缓存（没有发请求）
+  final bool fromCache;
+
+  const AnswerSearchSnapshot({
+    required this.results,
+    this.error,
+    this.fromCache = false,
+  });
+
+  bool get isEmpty => results.isEmpty;
+}
+
 class AnswerSearchDialog extends StatefulWidget {
   final StandardizedQuestion question;
+
+  /// 预置结果（一般是缓存里已有的答案）
+  final AnswerSearchSnapshot? initial;
+
+  /// 打开时是否强制重新检索一次
+  final bool refreshOnOpen;
+
+  /// 自定义检索入口；为 null 时直接调 `AnswerSearchApi.search`
+  final Future<AnswerSearchSnapshot> Function({required bool forceRefresh})?
+      onSearch;
 
   const AnswerSearchDialog({
     super.key,
     required this.question,
+    this.initial,
+    this.refreshOnOpen = false,
+    this.onSearch,
   });
 
   @override
@@ -33,18 +71,34 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
   /// 最近一次请求的诊断信息
   AIRequestInfo? _requestInfo;
 
+  /// 当前展示的结果是否直接来自缓存
+  bool _fromCache = false;
+
   @override
   void initState() {
     super.initState();
-    _performSearch();
+    _performSearch(forceRefresh: widget.refreshOnOpen);
   }
 
-  Future<void> _performSearch() async {
+  Future<void> _performSearch({bool forceRefresh = false}) async {
+    // 已有可用结果且不要求刷新 → 直接摆出来，一次请求都不发
+    final initial = widget.initial;
+    if (!forceRefresh && initial != null && initial.results.isNotEmpty) {
+      setState(() {
+        _results = initial.results;
+        _aiErrorHint = initial.error;
+        _fromCache = true;
+        _isSearching = false;
+      });
+      return;
+    }
+
     setState(() {
       _isSearching = true;
       _errorMessage = null;
       _aiErrorHint = null;
       _requestInfo = null;
+      _fromCache = false;
       _results.clear();
     });
 
@@ -58,22 +112,29 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
     }
 
     try {
-      final results = await AnswerSearchApi.search(widget.question);
-      if (mounted) {
-        setState(() {
-          _results = results;
-          _aiErrorHint = AnswerSearchApi.lastAIError;
-          _requestInfo = AnswerSearchApi.lastRequestInfo;
-          _isSearching = false;
-        });
-      }
+      final snapshot = widget.onSearch != null
+          ? await widget.onSearch!(forceRefresh: forceRefresh)
+          : AnswerSearchSnapshot(
+              results: await AnswerSearchApi.search(widget.question),
+              error: AnswerSearchApi.lastAIError,
+            );
+
+      if (!mounted) return;
+      setState(() {
+        _results = snapshot.results;
+        _fromCache = snapshot.fromCache;
+        // 命中缓存时 AnswerSearchApi.lastAIError 是上一次请求留下的，
+        // 不能拿来当本次的失败原因
+        _aiErrorHint = snapshot.fromCache ? snapshot.error : AnswerSearchApi.lastAIError;
+        _requestInfo = snapshot.fromCache ? null : AnswerSearchApi.lastRequestInfo;
+        _isSearching = false;
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = '检索失败: $e';
-          _isSearching = false;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = '检索失败: $e';
+        _isSearching = false;
+      });
     }
   }
 
@@ -135,11 +196,28 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
           const Icon(Icons.search, size: 20),
           const SizedBox(width: 8),
           const Text('答案检索'),
+          const SizedBox(width: 8),
+          if (_fromCache && !_isSearching)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                '来自缓存',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
           const Spacer(),
           if (!_isSearching)
             IconButton(
               icon: const Icon(Icons.refresh, size: 20),
-              onPressed: _performSearch,
+              // 走 forceRefresh：忽略缓存，真的再问一次
+              onPressed: () => _performSearch(forceRefresh: true),
               tooltip: '重新搜索',
             ),
         ],
