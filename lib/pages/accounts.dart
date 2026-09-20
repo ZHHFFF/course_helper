@@ -12,6 +12,7 @@ import 'widget/avatar.dart';
 import 'widget/answer_search_settings.dart';
 import 'widget/log_viewer.dart';
 import 'widget/cache_manager.dart';
+import 'widget/keep_alive_checker.dart';
 import 'login.dart';
 
 class AccountsPage extends StatefulWidget {
@@ -463,6 +464,13 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                     builder: (_) => const CacheManagerPage(),
                   ),
                 );
+              } else if (result == 'keep_alive_checker') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const KeepAliveCheckerPage(),
+                  ),
+                );
               }
             },
             itemBuilder: (BuildContext context) => [
@@ -531,6 +539,15 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                   Icon(Icons.sd_storage_outlined, size: 20),
                   SizedBox(width: 8),
                   Text('PPT 缓存'),
+                ]),
+              ),
+              // 前台服务自检菜单项
+              const PopupMenuItem<String>(
+                value: 'keep_alive_checker',
+                child: Row(children: [
+                  Icon(Icons.power_settings_new, size: 20),
+                  SizedBox(width: 8),
+                  Text('前台服务自检'),
                 ]),
               ),
               // 关于菜单项

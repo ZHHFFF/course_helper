@@ -680,3 +680,150 @@ Activity 一旦被系统重建（低内存、开发者选项「不保留活动�
 
 也就是说 v4 里真正的「静默失败」只有两个：Manifest 漏声明 `<service>`（v4.1 修）
 和 `startService()` 返回值被丢弃（v4.2 修）。这条线可以收了。
+
+---
+
+# v4.4：让「不进课堂也能验证前台服务」
+
+日期：2026-09-20 ｜ 版本：1.2.4+2007 ｜ 分支：`feat/ppt-cache-fgs-diag`
+（从 `feat/ppt-cache` 的 `f5f002b` 分出的子分支，**只在本地，未推送**）
+
+## 起因：真机验证被卡住了
+
+v4.3 补完 `<service>` 之后要在真机上验，结果发现**根本没法验**：
+
+`PresentationPage` 只能从「正在上课的课程」列表点进去
+（`lib/pages/courses/list.dart:543`），而那个列表是雨课堂的**实时**课堂列表。
+周日晚上没有课 → 列表显示「暂无正在上课的课程」→ 进不去课堂页
+→ `initState` 里的 `_startForegroundService()` 永远不会被调用。
+
+也就是说：**前台服务只有上课时才会启动，可你恰恰只能在不上课时才有空验证它。**
+
+## 改法
+
+### 1. 抽出 `lib/utils/keep_alive_service.dart`（纯搬运，行为不变）
+
+原来这套逻辑是 `_PresentationPageState` 的私有方法，现在搬到 `KeepAliveService`：
+
+| 成员 | 作用 |
+|---|---|
+| `start()` | `init()` → `startService()` → 再申请权限 |
+| `stop()` | 停止，并接住返回值 |
+| `isRunning()` | 服务在不在跑 |
+| `notificationPermission()` | 通知权限状态 |
+| `isIgnoringBatteryOptimizations()` | 有没有电池优化豁免 |
+| `requestBatteryOptimizationExemption()` | 自检页手动触发，不受「只问一次」限制 |
+| `refreshNotification()` | 权限后补上来时重新推通知 |
+| `lastResult` | `ValueNotifier<String>`，自检页显示最近一次操作结果 |
+| `tag` | `'ForegroundService'`，日志 tag |
+
+`WebSocketKeepAliveHandler` 和顶层 `keepAliveCallback()` 也一起搬了过来。
+
+**行为完全没变，只是搬家** —— 这样真机测试结果对原有逻辑依然有效。
+`presentation.dart` 里的两个方法缩成了三行委托。
+
+### 2. 接通跨 isolate 上报通道（补上之前半成品的缺口）
+
+`WebSocketKeepAliveHandler` 现在会上报 `started` / `timeout` / `stopped`，
+主 isolate 侧写进 `AppLogger`。
+
+**关键点：`FlutterForegroundTask.initCommunicationPort()` 必须显式调用。**
+插件的 `init()` 和 `startService()` 都不管这件事；不调的话
+`sendDataToMain` 是**静默 no-op** —— 又一个同类陷阱
+（见 v4.2 的「静默失败」主题）。
+
+另外 `_onKeepAliveTaskData` 必须是**顶层函数**：`addTaskDataCallback`
+内部用 `contains` 去重，实例方法的 tear-off 每次都是新对象、去不掉重，
+事件会被重复记 N 遍。
+
+### 3. 新增「前台服务自检」页
+
+`lib/pages/widget/keep_alive_checker.dart`，入口在账号页右上角菜单，
+紧挨「运行日志」「PPT 缓存」。
+
+- 状态：服务是否在跑 / 通知权限 / 电池优化豁免 / 最近一次操作结果
+- 操作：启动 / 停止 / 刷新 / 申请电池优化豁免
+- 现场日志：最近 20 条 `ForegroundService` 日志
+- 附命令行验证方法
+
+正常使用不需要它 —— 进课堂服务会自己起、离开课堂会自己停。
+
+## 真机验证（一加 13 / PJZ110 / Android 15 / API 35）
+
+### ✅ 已验证：`<service>` 声明在真机上确实生效
+
+不用进课堂，直接用 adb 探测组件是否存在 —— 这个手法值得记住：
+
+```bash
+adb shell am startservice -n com.anerycoft.coursehelper/com.pravera.flutter_foreground_task.service.ForegroundService
+adb shell am startservice -n com.anerycoft.coursehelper/com.anerycoft.coursehelper.DoesNotExistService
+```
+
+| 目标 | 返回 |
+|---|---|
+| `ForegroundService` | `Error: Requires permission not exported from uid 10196` |
+| 不存在的服务（对照） | `Error: Not found; no service started.` |
+
+两者错误**不同** → 系统成功解析到了我们的组件，只是因为 `exported="false"`
+拒绝启动。**修复前这里会和不存在的服务报一样的 "Not found"。**
+
+### ✅ 旁证：通知渠道从来没被创建过
+
+```bash
+adb shell dumpsys notification_manager | grep websocket_service
+```
+
+空的。通知渠道是第一次推通知时才创建的；应用从 2026-09-16 就装着、也用过，
+渠道却从来没有过 → **前台服务确实一次都没起来过**，和之前的判断吻合。
+
+### ✅ 签名一致性（顺带确认了「为什么签名不一致」）
+
+| | 签名证书 SHA-256 |
+|---|---|
+| 已装的 v3（本地构建） | `e66761c4...c04a80` |
+| v4.3（本地构建） | `e66761c4...c04a80` |
+
+**本地构建之间签名一致**，`adb install -r` 直接覆盖安装，不用卸载、不丢数据。
+
+之前遇到的签名冲突来自 **CI 构建**：`.github/workflows/build-apk.yml` 里的
+「Generate test keystore」步骤**每次跑都 `keytool -genkeypair` 生成一对全新的随机密钥**：
+
+```yaml
+- name: Generate test keystore
+  run: |
+    keytool -genkeypair -v -keystore android/anerycoft.jks \
+      -keyalg RSA -keysize 2048 -validity 10000 -alias anerycoft \
+      -storepass android -keypass android \
+      -dname "CN=test, OU=test, O=test, L=test, ST=test, C=CN"
+```
+
+所以**每个 CI 包的签名都不一样**，彼此也装不上去。本地 `android/anerycoft.jks`
+是固定的（被 `android/.gitignore` 忽略、没进仓库），所以本地包彼此兼容。
+
+> 要彻底统一签名：把 CI 那步改成「从 GitHub Secrets 取固定 keystore 并 base64 解码」，
+> 而不是现场生成。
+
+### ❌ 还没验的（留给下次）
+
+1. **自检页没实际点过** —— 页面上线了、包也装上了，但「启动服务」按钮没点过。
+2. **服务从未被观察到真的在跑** —— 没看到通知、没看到 `dumpsys` 里有活的服务。
+3. **切后台 / 锁屏存活**未测。
+4. **真实课堂的端到端**未测（需要一节正在上的课）。
+
+## 未改动的（刻意留着）
+
+- `eventAction: ForegroundTaskEventAction.repeat(5000)` 仍是 `repeat`。
+  `WebSocketKeepAliveHandler.onRepeatEvent()` 是空实现，所以这 5 秒一次纯属空转；
+  插件源码 `ForegroundTask.kt:112` 对 `NOTHING` 直接 `return`，
+  改成 `nothing()` 与保活无关、纯粹省电。**留到真机确认服务能跑起来之后再改**，
+  一次只动一个变量。
+- `allowWakeLock` 保持默认 `true`（代码里显式注释了理由）。
+  息屏后 CPU 靠它不睡，WebSocket 收消息才不会被拖到超时 ——
+  这是本 App 的核心价值，耗电换可靠。要改的话是一次真正的取舍，得单独量。
+
+## 验证
+
+- 测试 159/159 通过；`flutter analyze` 零错误（15 条 info/warning 全来自上游文件）
+- 产物 `dist\课程助手_v4.4_前台服务自检_arm64.apk`，70,932,373 字节，
+  MD5 `e5dec3fceda50bc9b80b64dc0ce7b3e9`，`versionCode 4007` / `versionName 1.2.4`，仅 arm64-v8a
+- 已 `adb install -r` 到一加 13 上，版本号确认 `4007`

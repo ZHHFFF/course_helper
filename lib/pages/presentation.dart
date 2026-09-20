@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, WebSocket, File;
+import 'dart:io' show WebSocket, File;
 
 import '../api/course.dart';
 import '../api/image.dart';
@@ -26,38 +25,17 @@ import '../cache/question_hash.dart';
 import '../cache/slide_scanner.dart';
 // [/新增]
 import '../utils/app_logger.dart';
+import '../utils/keep_alive_service.dart';
 import '../utils/network_error.dart';
-import '../utils/storage.dart';
 import 'widget/answer_search_dialog.dart';
 import 'widget/suggested_answer_card.dart';
 // [/新增]
 
-/// 权限弹窗的超时兜底
-///
-/// 插件的 `requestNotificationPermission()` / `requestIgnoreBatteryOptimization()`
-/// 都是 `startActivityForResult` 模式：Dart 侧的 Future 只在
-/// `onRequestPermissionsResult` / `onActivityResult` 回来时才完成，**插件没有超时**。
-/// Activity 一旦被系统重建，那个回调就永远不来了 → await 卡死。
-const Duration _permissionTimeout = Duration(seconds: 30);
-
-/// 「电池优化豁免」问过一次就不再问
-const String _batteryOptAskedKey = 'foreground_service_battery_opt_asked';
-
-@pragma('vm:entry-point')
-void _startForegroundCallback() {
-  FlutterForegroundTask.setTaskHandler(_WebSocketKeepAliveHandler());
-}
-
-class _WebSocketKeepAliveHandler extends TaskHandler {
-  @override
-  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
-
-  @override
-  void onRepeatEvent(DateTime timestamp) {}
-
-  @override
-  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
-}
+// 前台服务的启动/停止/权限申请/跨 isolate 上报，全部搬到了
+// `lib/utils/keep_alive_service.dart`。
+// 搬家的原因：原来这套逻辑是本文件的私有方法，只有进课堂才会跑，
+// 于是「不进课堂就测不了」—— 而没有正在上课的课程时根本进不去。
+// 抽出去之后「前台服务自检」页也能调，随时能验。
 
 class PresentationPage extends StatefulWidget {
   final String lessonId;
@@ -419,126 +397,11 @@ class _PresentationPageState extends State<PresentationPage>
   /// `await` 就会卡死在这里 —— 服务根本没机会启动。所以顺序是：
   /// **先起服务，再弹权限**，权限各自带超时兜底。
   Future<void> _startForegroundService() async {
-    try {
-      FlutterForegroundTask.init(
-        androidNotificationOptions: AndroidNotificationOptions(
-          channelId: 'websocket_service',
-          channelName: 'WebSocket Background Service',
-          channelDescription: 'Keep WebSocket connection alive'
-        ),
-        iosNotificationOptions: const IOSNotificationOptions(
-          showNotification: false
-        ),
-        foregroundTaskOptions: ForegroundTaskOptions(
-          eventAction: ForegroundTaskEventAction.repeat(5000),
-          allowWifiLock: true
-        ),
-      );
-
-      // 返回值必须看。插件内部会等 5 秒确认 isRunningService 变成 true，
-      // 起不来就返回 ServiceRequestFailure（ServiceTimeoutException）。
-      // 原来直接 await 把返回值丢掉，失败就被无声吞掉了 ——
-      // AndroidManifest.xml 漏声明 <service> 正是这样藏了这么久。
-      final ServiceRequestResult result;
-      if (await FlutterForegroundTask.isRunningService) {
-        result = await FlutterForegroundTask.restartService();
-      } else {
-        result = await FlutterForegroundTask.startService(
-          notificationTitle: '课堂助手',
-          notificationText: '正在保持 WebSocket 连接...',
-          callback: _startForegroundCallback,
-        );
-      }
-
-      switch (result) {
-        case ServiceRequestSuccess():
-          AppLogger.i('ForegroundService', '前台服务已启动');
-        case ServiceRequestFailure(:final error):
-          AppLogger.e(
-            'ForegroundService',
-            '前台服务启动失败：$error。检查 AndroidManifest.xml 是否声明了 '
-                'com.pravera.flutter_foreground_task.service.ForegroundService',
-          );
-          // 服务都没起来，权限申请也就没意义了
-          return;
-      }
-    } catch (e, s) {
-      AppLogger.e('ForegroundService', '前台服务启动异常：$e');
-      debugPrint('前台服务启动异常：$e\n$s');
-      return;
-    }
-
-    // 服务已经在跑了，再来处理权限 —— 这一步再怎么出问题都影响不到服务
-    unawaited(_requestForegroundPermissions());
-  }
-
-  /// 申请前台服务需要的两个权限（**必须在服务启动之后调用**）
-  Future<void> _requestForegroundPermissions() async {
-    if (!Platform.isAndroid) return;
-
-    // 1) 通知权限
-    // Android 13+ 不申请的话服务照样在跑，但那条常驻通知不会显示 ——
-    // 「拉通知栏看有没有通知」这个验证手段就会给出假阴性。
-    // 只在 denied 时申请，permanently_denied 就不反复弹窗了。
-    try {
-      final current = await FlutterForegroundTask.checkNotificationPermission()
-          .timeout(_permissionTimeout);
-      if (current == NotificationPermission.denied) {
-        final after =
-            await FlutterForegroundTask.requestNotificationPermission()
-                .timeout(_permissionTimeout);
-        AppLogger.i('ForegroundService', '通知权限申请结果：$after');
-        if (after == NotificationPermission.granted) {
-          // 通知是在没权限的时候推出去的，现在有权限了得重新推一次才会显示
-          await _refreshServiceNotification();
-        }
-      }
-    } catch (e) {
-      AppLogger.w('ForegroundService', '申请通知权限失败或超时：$e');
-    }
-
-    // 2) 电池优化豁免
-    // 国产 ROM 上这个对后台存活影响很大，值得问；但只在没问过的时候问一次，
-    // 否则每次进课堂都弹一个系统设置页，拒绝之后还会一直弹。
-    try {
-      if (StorageManager.prefs.getBool(_batteryOptAskedKey) ?? false) return;
-
-      final ignoring = await FlutterForegroundTask.isIgnoringBatteryOptimizations
-          .timeout(_permissionTimeout);
-      if (ignoring) return;
-
-      await StorageManager.prefs.setBool(_batteryOptAskedKey, true);
-      await FlutterForegroundTask.requestIgnoreBatteryOptimization()
-          .timeout(_permissionTimeout);
-    } catch (e) {
-      AppLogger.w('ForegroundService', '申请电池优化豁免失败或超时：$e');
-    }
-  }
-
-  /// 权限后补上来时，让那条常驻通知重新推一次
-  Future<void> _refreshServiceNotification() async {
-    try {
-      if (!await FlutterForegroundTask.isRunningService) return;
-      await FlutterForegroundTask.updateService(
-        notificationTitle: '课堂助手',
-        notificationText: '正在保持 WebSocket 连接...',
-      );
-    } catch (e) {
-      AppLogger.w('ForegroundService', '刷新前台通知失败：$e');
-    }
+    await KeepAliveService.start();
   }
 
   Future<void> _stopForegroundService() async {
-    try {
-      if (await FlutterForegroundTask.isRunningService) {
-        final result = await FlutterForegroundTask.stopService();
-        if (result is ServiceRequestFailure) {
-          AppLogger.w('ForegroundService', '前台服务停止失败：${result.error}');
-        }
-      }
-    } catch (e) {
-      AppLogger.w('ForegroundService', '前台服务停止异常：$e');
-    }
+    await KeepAliveService.stop();
   }
 
   Future<void> _connectWebSocket() async {
