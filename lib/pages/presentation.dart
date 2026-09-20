@@ -3,9 +3,12 @@ import 'package:image_picker/image_picker.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show WebSocket, File;
+import 'dart:math' as math;
 
 import '../api/course.dart';
 import '../api/image.dart';
@@ -16,7 +19,10 @@ import '../platform.dart';
 // [新增] 答案检索模块导入
 import '../api/answer_search.dart';
 import '../models/answer_result.dart';
+import '../setting/auto_answer_setting.dart';
+import '../utils/app_logger.dart';
 import '../utils/network_error.dart';
+import '../utils/ppt_exporter.dart';
 import 'widget/answer_search_dialog.dart';
 // [/新增]
 
@@ -82,9 +88,32 @@ class _PresentationPageState extends State<PresentationPage> {
   Offset _menuPosition = Offset.zero;
   bool _isFullScreen = false;
 
+  // ============ [新增] PPT 预取 ============
+  bool _isPrefetching = false;
+  int _prefetchDone = 0;
+  int _prefetchTotal = 0;
+
+  // ============ [新增] 预搜答案 / 自动提交 ============
+  /// problemId -> 已搜好的答案
+  final Map<String, AnswerSearchResult> _preSearchedAnswers = {};
+  /// 正在搜的 problemId，防止重复请求
+  final Set<String> _preSearching = {};
+  /// 已经自动提交过的 problemId，防止重复提交
+  final Set<String> _autoSubmitted = {};
+  bool _isExporting = false;
+
+  // ============ [新增] 诊断：预搜到底提前了多少 ============
+  /// 进入课堂（收到 hello）的时刻
+  DateTime? _lessonEnteredAt;
+  /// problemId -> 预搜完成的时刻
+  final Map<String, DateTime> _preSearchedAt = {};
+  /// problemId -> 老师发布的时刻（unlockproblem）
+  final Map<String, DateTime> _unlockedAt = {};
+
   @override
   void initState() {
     super.initState();
+    AutoAnswerSetting.ensureLoaded();
     _initialize();
     _startForegroundService();
   }
@@ -412,12 +441,15 @@ class _PresentationPageState extends State<PresentationPage> {
           setState(() {
             _isInitialized = true;
           });
+          // [诊断] 记录进课堂时刻，用来算「预搜比发布早了多少」
+          _lessonEnteredAt ??= DateTime.now();
+          AppLogger.i('诊断', '进入课堂，开始计时');
           break;
 
         case 'unlockproblem':
           final problemData = data['problem'];
           if (problemData != null) {
-            final problemId = problemData['prob'];
+            final problemId = problemData['prob']?.toString();
             final limit = problemData['limit'];
             final dt = problemData['dt'];
             if (limit != null && limit > 0) {
@@ -431,6 +463,14 @@ class _PresentationPageState extends State<PresentationPage> {
                 }
               });
               _startCountdown(limit);
+            }
+
+            // [新增] 题目刚发布：填入预搜答案，并按设置决定是否自动提交
+            if (problemId != null && problemId.isNotEmpty) {
+              unawaited(_handleProblemPublished(
+                problemId,
+                dt: dt is int ? dt : null,
+              ));
             }
           }
           break;
@@ -628,12 +668,317 @@ class _PresentationPageState extends State<PresentationPage> {
           }
           _isLoading = false;
         });
+
+        // [新增] 幻灯片就绪后，后台并行做两件事：
+        //   1. 把整份 PPT 图片预取到本地缓存（翻页秒开）
+        //   2. 把所有题目的答案提前搜好（老师一发布就能直接交）
+        unawaited(_prefetchSlideImages());
+        unawaited(_preSearchAllAnswers());
       }
     } catch (e) {
       debugPrint('加载 PPT 失败：$e');
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+
+  // ==================== [新增] PPT 图片预取 ====================
+
+  /// 取某一页的图片地址（优先 coverAlt）
+  String _slideImageUrl(Map<String, dynamic> slide) {
+    final alt = (slide['coverAlt'] as String?)?.trim() ?? '';
+    if (alt.isNotEmpty) return alt;
+    return (slide['cover'] as String?)?.trim() ?? '';
+  }
+
+  /// 取某一页里的全部文字（题干为空时兜底）
+  String _slideTextAt(int index) {
+    if (index < 0 || index >= _slides.length) return '';
+    final shapes = _slides[index]['shapes'] as List?;
+    if (shapes == null || shapes.isEmpty) return '';
+    final buffer = StringBuffer();
+    for (final shape in shapes) {
+      final text = (shape is Shape ? shape.text : null)?.trim() ?? '';
+      if (text.isEmpty) continue;
+      buffer.writeln(text);
+    }
+    return buffer.toString().trim();
+  }
+
+  /// 把整份 PPT 的图片预取到本地缓存 —— 翻页时就不用再等网络了
+  Future<void> _prefetchSlideImages() async {
+    await AutoAnswerSetting.ensureLoaded();
+    if (!AutoAnswerSetting.prefetch.value) return;
+    if (_isPrefetching) return;
+
+    final urls = <String>[];
+    final seen = <String>{};
+    for (final slide in _slides) {
+      final url = _slideImageUrl(slide);
+      if (url.isNotEmpty && seen.add(url)) urls.add(url);
+    }
+    if (urls.isEmpty) return;
+
+    setState(() {
+      _isPrefetching = true;
+      _prefetchTotal = urls.length;
+      _prefetchDone = 0;
+    });
+
+    AppLogger.i('PPT预取', '开始预取 ${urls.length} 张图片');
+
+    final cache = DefaultCacheManager();
+    const concurrency = 3; // 限流，别把带宽打满影响课堂其它请求
+
+    for (var i = 0; i < urls.length; i += concurrency) {
+      if (!mounted) return;
+      final batch = urls.skip(i).take(concurrency).toList();
+      await Future.wait(batch.map((url) async {
+        try {
+          await cache.downloadFile(url);
+        } catch (e) {
+          debugPrint('预取图片失败：$url（$e）');
+        }
+      }));
+      if (!mounted) return;
+      setState(() {
+        _prefetchDone = math.min(i + concurrency, urls.length);
+      });
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isPrefetching = false;
+    });
+    AppLogger.i('PPT预取', '预取完成 $_prefetchDone/$_prefetchTotal');
+  }
+
+  // ==================== [新增] 预搜答案 ====================
+
+  /// 把一道题标准化成检索问题（带上所在页文字和图片，题目只写在 PPT 上时交给多模态模型）
+  StandardizedQuestion _questionOf(Problem problem) {
+    final idx = _slides.indexWhere(
+      (s) => (s['problem'] as Problem?)?.problemId == problem.problemId,
+    );
+    String slideText = '';
+    String imageUrl = '';
+    if (idx >= 0) {
+      slideText = _slideTextAt(idx);
+      imageUrl = _slideImageUrl(_slides[idx]);
+    }
+    return AnswerSearchApi.fromRainClassroomProblem(
+      problem,
+      slideText: slideText,
+      imageUrl: imageUrl,
+    );
+  }
+
+  /// 进课堂后把所有题目的答案提前搜好（不等老师发布）
+  Future<void> _preSearchAllAnswers() async {
+    await AutoAnswerSetting.ensureLoaded();
+    if (!AutoAnswerSetting.preSearch.value) return;
+
+    final problems = <Problem>[];
+    for (final slide in _slides) {
+      final p = slide['problem'];
+      if (p is Problem &&
+          p.problemId.isNotEmpty &&
+          !_preSearchedAnswers.containsKey(p.problemId)) {
+        problems.add(p);
+      }
+    }
+    if (problems.isEmpty) return;
+
+    AppLogger.i('预搜答案', '开始预搜 ${problems.length} 道题');
+
+    // 串行搜：课堂上可能同时好几道题，并发容易把 API 打限流
+    for (final problem in problems) {
+      if (!mounted) return;
+      await _preSearchOne(problem);
+    }
+    AppLogger.i('预搜答案', '预搜结束，已缓存 ${_preSearchedAnswers.length} 条');
+  }
+
+  /// 搜一道题并缓存结果
+  Future<void> _preSearchOne(Problem problem) async {
+    final id = problem.problemId;
+    if (id.isEmpty) return;
+    if (_preSearchedAnswers.containsKey(id)) return;
+    if (_preSearching.contains(id)) return;
+
+    _preSearching.add(id);
+    try {
+      final question = _questionOf(problem);
+      if (!question.isUsable) {
+        AppLogger.w('预搜答案', '第 $id 题题干为空且没有课件图片，跳过');
+        return;
+      }
+
+      final results = await AnswerSearchApi.search(question);
+      if (results.isEmpty) {
+        AppLogger.w('预搜答案', '第 $id 题没搜到答案');
+        return;
+      }
+
+      final best = results.first;
+      _preSearchedAnswers[id] = best;
+      _preSearchedAt[id] = DateTime.now();
+      AppLogger.i('预搜答案', '第 $id 题已搜到：${best.answer}（来源 ${best.source}）');
+
+      // 正好是当前题目时顺手填上
+      if (mounted && _currentProblem?.problemId == id) {
+        _applyAnswerToState(best, question, silent: true);
+      }
+    } catch (e) {
+      AppLogger.e('预搜答案', '第 $id 题检索失败：$e');
+    } finally {
+      _preSearching.remove(id);
+    }
+  }
+
+  // ==================== [新增] 自动填入 / 自动提交 ====================
+
+  /// 把检索结果写进作答状态
+  ///
+  /// [silent] 为 true 时不弹 SnackBar（预搜/自动提交场景不需要打扰用户）
+  /// 返回是否成功填入了内容
+  bool _applyAnswerToState(
+    AnswerSearchResult picked,
+    StandardizedQuestion question, {
+    bool silent = false,
+  }) {
+    final rawOptions = _currentProblem?.options ?? const [];
+    final options = rawOptions
+        .map((o) => StandardizedOption(key: o.key, value: o.value))
+        .toList();
+
+    final keys = picked.matchOptionKeys(options);
+
+    bool filled = false;
+    String message;
+
+    if (keys.isNotEmpty) {
+      setState(() {
+        _answer = keys;
+      });
+      filled = true;
+      message = '已填入 ${keys.join('、')}';
+    } else if (!question.isChoice && picked.answer.trim().isNotEmpty) {
+      setState(() {
+        _textAnswer = picked.answer.trim();
+      });
+      filled = true;
+      message = '已填入答案文本';
+    } else {
+      message = '未能匹配到选项，请手动选择';
+    }
+
+    if (!silent && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      );
+    }
+    return filled;
+  }
+
+  /// 老师发布题目（unlockproblem）后：填入预搜答案 → 自动提交
+  Future<void> _handleProblemPublished(String problemId, {int? dt}) async {
+    await AutoAnswerSetting.ensureLoaded();
+
+    // [诊断] 记录发布时刻，并算出「预搜比发布早了多少」
+    final unlockedAt = DateTime.now();
+    _unlockedAt[problemId] = unlockedAt;
+    _logPreSearchLeadTime(problemId, unlockedAt);
+
+    // 切到题目所在那一页，保证 _currentProblem 指向正确的题
+    final idx = _slides.indexWhere(
+      (s) => (s['problem'] as Problem?)?.problemId == problemId,
+    );
+    if (idx >= 0 && idx != _currentSlideIndex) {
+      _toSlide(idx + 1, animate: false);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+    if (!mounted) return;
+
+    if (dt != null && _currentProblem != null) {
+      _currentProblem = _currentProblem!.copyWith(dt: dt);
+    }
+
+    // 没预搜到就现场补一次
+    var cached = _preSearchedAnswers[problemId];
+    if (cached == null && _currentProblem != null) {
+      await _preSearchOne(_currentProblem!);
+      cached = _preSearchedAnswers[problemId];
+    }
+    if (!mounted) return;
+
+    if (cached != null && _currentProblem != null) {
+      final question = _questionOf(_currentProblem!);
+      _applyAnswerToState(cached, question, silent: true);
+    }
+
+    if (!AutoAnswerSetting.autoSubmit.value) return;
+    if (_autoSubmitted.contains(problemId)) return;
+
+    // 拟人化延迟，避免「秒交」被风控识别
+    final delay = AutoAnswerSetting.randomDelay();
+    AppLogger.i('自动答题', '第 $problemId 题 ${delay.inMilliseconds}ms 后自动提交');
+    await Future<void>.delayed(delay);
+    if (!mounted) return;
+
+    if (_answer == null && _textAnswer == null && _uploadedImageUrls.isEmpty) {
+      AppLogger.w('自动答题', '第 $problemId 题没有可提交的答案，跳过自动提交');
+      return;
+    }
+
+    _autoSubmitted.add(problemId);
+    await _submitAnswer();
+  }
+
+  /// [诊断] 打印「预搜比老师发布早了多少」
+  ///
+  /// 这是判断预搜方案是否成立的关键指标，真机验证时看这一条就够了：
+  /// - 早 → 预搜有效，自动提交基本能赶上
+  /// - 晚 → 说明题目在发布前拿不到，得改策略
+  void _logPreSearchLeadTime(String problemId, DateTime unlockedAt) {
+    final enteredAt = _lessonEnteredAt;
+    final searchedAt = _preSearchedAt[problemId];
+
+    final unlockSinceEnter = enteredAt == null
+        ? null
+        : unlockedAt.difference(enteredAt).inMilliseconds / 1000.0;
+
+    if (searchedAt == null) {
+      AppLogger.w(
+        '诊断',
+        '题目 $problemId：发布时【还没有】预搜结果'
+        '（进课堂 ${unlockSinceEnter?.toStringAsFixed(1) ?? '?'}s 后发布）'
+        '→ 这次走的是现场补搜',
+      );
+      return;
+    }
+
+    final searchSinceEnter = enteredAt == null
+        ? null
+        : searchedAt.difference(enteredAt).inMilliseconds / 1000.0;
+    final lead = unlockedAt.difference(searchedAt).inMilliseconds / 1000.0;
+
+    if (lead >= 0) {
+      AppLogger.i(
+        '诊断',
+        '题目 $problemId：预搜比发布【早 ${lead.toStringAsFixed(1)}s】'
+        '（进课堂 ${searchSinceEnter?.toStringAsFixed(1) ?? '?'}s 搜好，'
+        '${unlockSinceEnter?.toStringAsFixed(1) ?? '?'}s 时老师发布）',
+      );
+    } else {
+      AppLogger.w(
+        '诊断',
+        '题目 $problemId：预搜比发布【晚 ${(-lead).toStringAsFixed(1)}s】'
+        '（${unlockSinceEnter?.toStringAsFixed(1) ?? '?'}s 发布，'
+        '${searchSinceEnter?.toStringAsFixed(1) ?? '?'}s 才搜好）'
+        '→ 说明题目在发布前拿不到',
+      );
     }
   }
 
@@ -797,6 +1142,40 @@ class _PresentationPageState extends State<PresentationPage> {
         title: Text(widget.title),
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
+        actions: [
+          // [新增] PPT 预取进度
+          if (_isPrefetching && _prefetchTotal > 0)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Text(
+                  '缓存 $_prefetchDone/$_prefetchTotal',
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                ),
+              ),
+            ),
+          // [新增] 导出 PDF
+          IconButton(
+            tooltip: '导出整份 PPT 为 PDF',
+            onPressed: _isExporting ? null : _exportPresentationPdf,
+            icon: _isExporting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.picture_as_pdf_outlined),
+          ),
+          // [新增] 自动答题设置
+          IconButton(
+            tooltip: '自动答题设置',
+            onPressed: _showAutoAnswerSettings,
+            icon: const Icon(Icons.auto_awesome_outlined),
+          ),
+        ],
       ),
       body: _isLoading
           ? const Center(
@@ -1758,6 +2137,142 @@ class _PresentationPageState extends State<PresentationPage> {
         );
       }
     }
+  }
+
+  // ==================== [新增] 导出整份 PPT 为 PDF ====================
+
+  Future<void> _exportPresentationPdf() async {
+    if (_isExporting) return;
+
+    if (_slides.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('还没有加载到 PPT')),
+      );
+      return;
+    }
+
+    setState(() => _isExporting = true);
+
+    try {
+      // 1. 把每一页的图片取到本地（缓存里已经有的话直接命中）
+      final cache = DefaultCacheManager();
+      final paths = <String>[];
+      final seen = <String>{};
+      for (final slide in _slides) {
+        final url = _slideImageUrl(slide);
+        if (url.isEmpty || !seen.add(url)) continue;
+        try {
+          final file = await cache.getSingleFile(url);
+          paths.add(file.path);
+        } catch (e) {
+          debugPrint('导出 PDF：取图失败 $url（$e）');
+        }
+      }
+
+      if (paths.isEmpty) {
+        throw Exception('没有取到任何幻灯片图片');
+      }
+
+      // 2. 在后台 isolate 里合成 PDF
+      final result = await PptExporter.build(paths);
+      if (!result.ok || result.bytes == null) {
+        throw Exception(result.error ?? '生成 PDF 失败');
+      }
+
+      // 3. 落盘 + 调起系统分享
+      final dir = await getApplicationDocumentsDirectory();
+      final rawName = 'PPT_${widget.title}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final safeName = rawName.replaceAll(RegExp(r'[\\/:*?"<>|\s]+'), '_');
+      final out = File('${dir.path}/$safeName');
+      await out.writeAsBytes(result.bytes!);
+
+      if (!mounted) return;
+      final box = context.findRenderObject() as RenderBox?;
+      final origin =
+          box != null ? box.localToGlobal(Offset.zero) & box.size : null;
+
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(out.path, mimeType: 'application/pdf')],
+          subject: '${widget.title} 课件',
+          text: '共 ${result.written} 页',
+          sharePositionOrigin: origin,
+        ),
+      );
+
+      AppLogger.i('导出PDF', '已导出 ${result.written}/${result.total} 页 → ${out.path}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已导出 ${result.written}/${result.total} 页')),
+        );
+      }
+    } catch (e) {
+      AppLogger.e('导出PDF', '$e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导出失败：$e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
+  // ==================== [新增] 自动答题设置面板 ====================
+
+  Future<void> _showAutoAnswerSettings() async {
+    await AutoAnswerSetting.ensureLoaded();
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('自动答题设置'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ValueListenableBuilder<bool>(
+                valueListenable: AutoAnswerSetting.preSearch,
+                builder: (context, value, _) => SwitchListTile(
+                  value: value,
+                  onChanged: (v) => AutoAnswerSetting.setPreSearch(v),
+                  title: const Text('进课堂即预搜答案'),
+                  subtitle: const Text('不等老师发布，先把所有题目的答案搜好'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              ValueListenableBuilder<bool>(
+                valueListenable: AutoAnswerSetting.autoSubmit,
+                builder: (context, value, _) => SwitchListTile(
+                  value: value,
+                  onChanged: (v) => AutoAnswerSetting.setAutoSubmit(v),
+                  title: const Text('发布后自动提交'),
+                  subtitle: const Text('老师一发题就自动交，不用手动点提交'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              ValueListenableBuilder<bool>(
+                valueListenable: AutoAnswerSetting.prefetch,
+                builder: (context, value, _) => SwitchListTile(
+                  value: value,
+                  onChanged: (v) => AutoAnswerSetting.setPrefetch(v),
+                  title: const Text('预取整份 PPT 图片'),
+                  subtitle: const Text('进课堂后后台下载全部幻灯片，翻页秒开'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

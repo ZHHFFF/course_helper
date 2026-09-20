@@ -9,6 +9,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../../api/answer_search.dart';
+import '../../config/gateway.dart';
 
 class AnswerSearchSettingsPage extends StatefulWidget {
   const AnswerSearchSettingsPage({super.key});
@@ -65,9 +66,17 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
     final config = AnswerSearchApi.getAIConfig();
 
     // 先写输入框（会触发地址预览的 setState），再统一刷新状态
-    _apiUrlController.text = config['apiUrl'] as String;
+    final storedUrl = config['apiUrl'] as String;
+    final storedModel = config['model'] as String;
+
+    // 没填过 + 构建时配了官方网关 → 预填官方地址，学生只需粘贴卡号
+    _apiUrlController.text = storedUrl.trim().isEmpty && hasOfficialGateway
+        ? kOfficialGatewayUrl
+        : storedUrl;
     _apiKeyController.text = config['apiKey'] as String;
-    _modelController.text = config['model'] as String;
+    _modelController.text = storedModel.trim().isEmpty && hasOfficialGateway
+        ? kOfficialGatewayModel
+        : storedModel;
     _timeoutController.text = '${config['timeoutSeconds']}';
 
     if (!mounted) return;

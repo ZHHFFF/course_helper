@@ -79,6 +79,9 @@ dependencies:
   native_exif: ^0.8.0
   # 运行日志导出：调起系统分享（可直接发微信/QQ/邮件）
   share_plus: ^13.3.0
+  # PPT 导出 PDF
+  pdf: ^3.11.1
+  image: ^4.3.0
 
 
 dev_dependencies:

@@ -49,7 +49,11 @@ jobs:
         run: flutter test
 
       - name: Build release APK (arm64-v8a only)
-        run: flutter build apk --release --split-per-abi --target-platform android-arm64
+        # GATEWAY_URL 从 Secrets 注入（Settings → Secrets and variables → Actions）。
+        # 没配就是空字符串 → 「官方服务」预设不出现，学生仍可自己填 API，保持原行为。
+        run: |
+          flutter build apk --release --split-per-abi --target-platform android-arm64 \
+            --dart-define=GATEWAY_URL=${{ secrets.GATEWAY_URL }}
 
       - name: Show APK size
         run: ls -lh build/app/outputs/flutter-apk/

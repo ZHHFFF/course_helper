@@ -12,6 +12,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import '../config/gateway.dart';
 import '../models/answer_result.dart';
 import '../models/presentation.dart';
 import '../utils/app_logger.dart';
@@ -615,7 +616,17 @@ class AnswerSearchApi {
   static const int defaultTimeoutSeconds = AIAnswerProvider.defaultTimeoutSeconds;
 
   /// 内置的服务商预设
-  static const List<AIProviderPreset> presets = [
+  ///
+  /// 若构建时注入了 `GATEWAY_URL`（见 `lib/config/gateway.dart`），
+  /// 会在最前面插入「官方服务」——学生只要把卡号粘贴到 API Key 就能用。
+  static final List<AIProviderPreset> presets = [
+    if (hasOfficialGateway)
+      AIProviderPreset(
+        name: kOfficialGatewayName,
+        apiUrl: kOfficialGatewayUrl,
+        model: kOfficialGatewayModel,
+        hint: kOfficialGatewayHint,
+      ),
     AIProviderPreset(
       name: '阿里云百炼',
       apiUrl:
@@ -704,9 +715,19 @@ class AnswerSearchApi {
       return;
     }
 
-    final apiUrl = prefs.getString(_apiUrlKey) ?? '';
+    final storedUrl = (prefs.getString(_apiUrlKey) ?? '').trim();
+    final storedModel = (prefs.getString(_modelKey) ?? '').trim();
+
+    // 地址/模型没填过、而构建时配了官方网关 → 自动用官方服务，
+    // 学生只要把卡号填到 API Key 就能用（「零配置」）
+    final apiUrl = storedUrl.isEmpty && hasOfficialGateway
+        ? kOfficialGatewayUrl
+        : storedUrl;
+    final model = storedModel.isEmpty && hasOfficialGateway
+        ? kOfficialGatewayModel
+        : (storedModel.isEmpty ? 'gpt-3.5-turbo' : storedModel);
+
     final apiKey = prefs.getString(_apiKeyKey) ?? '';
-    final model = prefs.getString(_modelKey) ?? 'gpt-3.5-turbo';
     final disableThinking =
         prefs.getBool(_disableThinkingKey) ?? defaultDisableThinking;
     final timeoutSeconds =
