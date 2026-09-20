@@ -610,3 +610,73 @@ switch (result) {
 纯粹省掉每 5 秒一次的 `onRepeatEvent`。而我们的
 `_WebSocketKeepAliveHandler.onRepeatEvent()` 是空实现 ——
 现在服务真起来了，这 5 秒一次的空转就变成实打实的耗电了。
+
+---
+
+# v4.3：权限弹窗不再挡在服务前面
+
+日期：2026-09-20 ｜ 版本：1.2.3+2006 ｜ 分支：`feat/ppt-cache`
+
+## 问题：关键路径上放了两个会弹系统界面的 await
+
+v4.2 把权限申请加进 `_startForegroundService()` 之后，执行顺序变成了：
+
+```
+申请通知权限 → 申请电池优化豁免 → init() → startService()
+```
+
+前两步都会弹系统界面，而插件用的是 `startActivityForResult` 模式：
+Dart 侧的 Future **只在 `onActivityResult` / `onRequestPermissionsResult`
+回来时才完成，插件没有超时**
+（`MethodCallHandlerImpl.kt:121` 把 result 存进 `methodResults[requestCode]`，
+只在 `onActivityResult` 里才 `success(...)`）。
+
+Activity 一旦被系统重建（低内存、开发者选项「不保留活动」、进程被杀），
+那个回调就永远不来了 → `await` 卡死 → **`startService()` 根本没机会执行**。
+等于把「服务能不能起来」这件事，押在两个和它无关的系统弹窗上。
+
+顺带还有个 UX 问题：电池优化豁免是**每次进课堂都弹**，
+用户拒绝之后照样每次弹一个系统设置页。
+
+## 改法
+
+1. **顺序倒过来**：`init()` → `startService()` → 再申请权限。
+   服务是关键路径，权限是锦上添花，不能让锦上添花挡住关键路径。
+   服务启动失败时直接 `return`，不再申请权限（服务都没起来，申请也没意义）。
+2. **两个权限各自加 `.timeout(30s)` 兜底**。
+   这只是保险，真正靠得住的是第 1 条。
+3. **电池优化豁免只问一次**：用 `StorageManager.prefs` 存
+   `foreground_service_battery_opt_asked`，问过就不再问。
+4. **权限后补上来时重新推一次通知**：通知是在没权限的时候推出去的，
+   用户授权后不会自己冒出来，需要 `updateService()` 重新推。
+   否则「拉通知栏看有没有通知」这个验证手段会再次给出假阴性。
+
+## 新增
+
+- 顶层常量 `_permissionTimeout`（30s）、`_batteryOptAskedKey`
+- 新方法 `_requestForegroundPermissions()`、`_refreshServiceNotification()`
+- `import '../utils/storage.dart';`
+
+## 验证
+
+- 测试 159/159 通过；`flutter analyze` 仍是 15 条上游告警、新增代码零告警
+- 产物 `dist\课程助手_v4.3_权限不挡服务_arm64.apk`，`versionCode 4006` / `versionName 1.2.3`
+
+## 顺手做的审计（没发现问题，记录一下）
+
+顺着「静默失败」这条线把 v4 新代码的错误处理全扫了一遍：
+`lib/cache/` 七个模块 + `suggested_answer_card.dart` + `cache_manager.dart`，
+以及 `presentation.dart` 里的 `_initialize()` / `_indexQuestions()` /
+`_enqueueScan()` / `_onAnswerReady()`。
+
+结论是**干净**的：
+
+- `AnswerQueue._execute()` 用 `finally` 归还并发额度，异常也会
+  `complete(_RawAnswer(failed: true))`，不会让调用方永远等
+- `SlideImagePrefetcher._pump()` 每张图单独 try/catch，失败计数 + debug 日志
+- `PptCache` / `CourseCache` 的每个 `catch` 都有日志或明确的 best-effort 注释
+  （`catch (_)` 只用在 stat 失败、文件被删、标记文件损坏这类真正无所谓的地方）
+- `_enqueueScan()` 的 `.catchError` 会写日志并清掉 `_searching` 状态
+
+也就是说 v4 里真正的「静默失败」只有两个：Manifest 漏声明 `<service>`（v4.1 修）
+和 `startService()` 返回值被丢弃（v4.2 修）。这条线可以收了。
