@@ -16,6 +16,7 @@ import '../platform.dart';
 // [新增] 答案检索模块导入
 import '../api/answer_search.dart';
 import '../models/answer_result.dart';
+import '../utils/network_error.dart';
 import 'widget/answer_search_dialog.dart';
 // [/新增]
 
@@ -114,12 +115,49 @@ class _PresentationPageState extends State<PresentationPage> {
   // [新增] 搜索答案 - 从当前题目提取题干和选项，调用检索模块
   Future<void> _searchAnswer() async {
     if (_currentProblem == null) return;
-    final question = AnswerSearchApi.fromRainClassroomProblem(_currentProblem!);
+
+    final question = AnswerSearchApi.fromRainClassroomProblem(
+      _currentProblem!,
+      slideText: _currentSlideText(),
+      imageUrl: _currentSlideCover(),
+    );
     if (!mounted) return;
     showDialog(
       context: context,
       builder: (context) => AnswerSearchDialog(question: question),
     );
+  }
+
+  /// 当前 PPT 页里的所有文字（题干为空时兜底用）
+  String _currentSlideText() {
+    if (_slides.isEmpty ||
+        _currentSlideIndex < 0 ||
+        _currentSlideIndex >= _slides.length) {
+      return '';
+    }
+    final shapes = _slides[_currentSlideIndex]['shapes'] as List?;
+    if (shapes == null || shapes.isEmpty) return '';
+
+    final buffer = StringBuffer();
+    for (final shape in shapes) {
+      final text = (shape is Shape ? shape.text : null)?.trim() ?? '';
+      if (text.isEmpty) continue;
+      buffer.writeln(text);
+    }
+    return buffer.toString().trim();
+  }
+
+  /// 当前 PPT 页的图片地址（题目只写在 PPT 上时，交给多模态模型识别）
+  String _currentSlideCover() {
+    if (_slides.isEmpty ||
+        _currentSlideIndex < 0 ||
+        _currentSlideIndex >= _slides.length) {
+      return '';
+    }
+    final slide = _slides[_currentSlideIndex];
+    final coverAlt = (slide['coverAlt'] as String?)?.trim() ?? '';
+    if (coverAlt.isNotEmpty) return coverAlt;
+    return (slide['cover'] as String?)?.trim() ?? '';
   }
   // [/新增]
 
@@ -128,17 +166,35 @@ class _PresentationPageState extends State<PresentationPage> {
     if (lessonToken == null) {
       final allAccounts = AccountManager.allAccounts;
 
+      // [新增] 记录网络异常，避免和业务错误混在一起
+      final Map<String, String> errorByUid = {};
+
       final results = await ApiService.sendForEachUser(
         allAccounts,
         (user) async {
-          final api = RCCourseApi(user);
-          return await api.checkIn(widget.lessonId);
+          try {
+            final api = RCCourseApi(user);
+            return await api.checkIn(widget.lessonId);
+          } catch (e) {
+            errorByUid[user.uid.toString()] = describeErrorShort(e);
+            rethrow;
+          }
         },
       );
 
       for (int i = 0; i < results.length; i++) {
         final result = results[i];
         final user = allAccounts[i];
+
+        final netError = errorByUid[user.uid.toString()];
+        if (netError != null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Uid${user.uid} 网络异常：$netError'))
+            );
+          }
+          continue;
+        }
 
         if (result != 0) {
           if (result == 50070){
@@ -525,6 +581,8 @@ class _PresentationPageState extends State<PresentationPage> {
                     'coverAlt': slide.coverAlt,
                     'thumbnail': slide.thumbnail,
                     'problem': slide.problem,
+                    // [新增] 保留形状文本，用于题干缺失时兜底
+                    'shapes': slide.shapes,
                   })
               .toList();
           _totalCount = presentation.slides.length;
@@ -1264,21 +1322,31 @@ class _PresentationPageState extends State<PresentationPage> {
     int successCount = 0;
     final List<String> failedAccounts = [];
 
+    // [新增] 记录每个账号的异常原因，用于区分网络失败与业务失败
+    final Map<String, String> errorByUid = {};
+
     final results = await ApiService.sendForEachUser(
       allAccounts,
       (user) async {
-        final api = RCCourseApi(user);
-        return await api.answer(
-          problemId,
-          problemType,
-          retry: isTimeout,
-          time: isTimeout ? problemDt : null,
-          options: _answer,
-          content: _textAnswer,
-          imageUrls: imageUrls
-        );
+        try {
+          final api = RCCourseApi(user);
+          return await api.answer(
+            problemId,
+            problemType,
+            retry: isTimeout,
+            time: isTimeout ? problemDt : null,
+            options: _answer,
+            content: _textAnswer,
+            imageUrls: imageUrls
+          );
+        } catch (e) {
+          errorByUid[user.uid.toString()] = describeErrorShort(e);
+          rethrow;
+        }
       },
     );
+
+    int networkFailCount = 0;
 
     for (int i = 0; i < results.length; i++) {
       final result = results[i];
@@ -1287,11 +1355,22 @@ class _PresentationPageState extends State<PresentationPage> {
       if (result != null && result['code'] == 0) {
         successCount++;
       } else {
-        failedAccounts.add('${user.name}: ${result?["msg"] ?? "提交失败"}');
+        final netError = errorByUid[user.uid.toString()];
+        if (netError != null) {
+          networkFailCount++;
+          failedAccounts.add('${user.name}: [网络异常] $netError');
+        } else {
+          failedAccounts.add('${user.name}: ${result?["msg"] ?? "提交失败"}');
+        }
       }
     }
 
-    _showSubmitResult(successCount, allAccounts.length, failedAccounts);
+    _showSubmitResult(
+      successCount,
+      allAccounts.length,
+      failedAccounts,
+      networkFailCount: networkFailCount,
+    );
 
     setState(() {
       _countdownSeconds = 0;
@@ -1300,10 +1379,35 @@ class _PresentationPageState extends State<PresentationPage> {
     });
   }
 
-  void _showSubmitResult(int successCount, int totalCount, List<String> failedAccounts) {
+  void _showSubmitResult(
+    int successCount,
+    int totalCount,
+    List<String> failedAccounts, {
+    int networkFailCount = 0,
+  }) {
     if (!mounted) return;
 
+    final bool allNetworkFailed = successCount == 0 &&
+        networkFailCount > 0 &&
+        networkFailCount == failedAccounts.length;
+
+    String title;
+    if (successCount == totalCount) {
+      title = '全部提交成功';
+    } else if (allNetworkFailed) {
+      title = '网络异常，提交未完成';
+    } else if (networkFailCount > 0) {
+      title = '部分失败（含网络异常）';
+    } else {
+      title = '部分失败';
+    }
+
     String message = '答案提交完成！\n成功：$successCount/$totalCount';
+    if (networkFailCount > 0) {
+      message += '\n网络异常：$networkFailCount 个账号';
+      message += '\n\n提示：网络异常表示请求没有到达服务器，'
+          '通常是断网、超时或接口无法访问。请检查手机网络后重新提交。';
+    }
     if (failedAccounts.isNotEmpty) {
       message += '\n\n失败账号:\n${failedAccounts.join('\n')}';
     }
@@ -1312,13 +1416,14 @@ class _PresentationPageState extends State<PresentationPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text(
-          successCount == totalCount ? '全部提交成功' : '部分失败',
+          title,
           style: TextStyle(
-            color: successCount == totalCount ?
-            Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.error,
+            color: successCount == totalCount
+                ? Theme.of(context).colorScheme.primary
+                : Theme.of(context).colorScheme.error,
           ),
         ),
-        content: Text(message),
+        content: SingleChildScrollView(child: Text(message)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
