@@ -43,3 +43,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Android 签名 —— 绝对不能提交！
+# CI 构建时会生成这两个文件，本地构建后它们会出现在 android/ 目录里，
+# 一次 `git add -A` 就会把签名密钥提交上去（后果：别人能用你的密钥签恶意包，
+# 而且因为签名相同，能覆盖安装你的正版）。
+android/key.properties
+*.jks
+*.keystore
