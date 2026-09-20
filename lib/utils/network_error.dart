@@ -3,6 +3,8 @@
 /// 用于区分「网络层失败」（断网 / 连接失败 / 超时 / 证书异常）与
 /// 「业务层失败」（服务器正常返回但业务码非成功），
 /// 这样答题提交失败时能明确告诉用户到底是网络问题还是业务问题。
+library;
+
 import 'dart:async';
 import 'dart:io';
 
@@ -178,7 +180,7 @@ RequestErrorInfo _fromDio(DioException e) {
         message: '请求被拒绝（HTTP $code）',
         error: e,
       );
-    case DioExceptionType.unknown:
+    default:
       final inner = e.error;
       if (inner is SocketException) {
         return RequestErrorInfo(
@@ -196,6 +198,13 @@ RequestErrorInfo _fromDio(DioException e) {
           error: e,
         );
       }
+      if (e.type == DioExceptionType.transformTimeout) {
+        return RequestErrorInfo(
+          kind: RequestErrorKind.network,
+          message: '响应超时：数据解析耗时过长',
+          error: e,
+        );
+      }
       return RequestErrorInfo(
         kind: RequestErrorKind.unknown,
         message: '请求失败：$text',
@@ -203,4 +212,3 @@ RequestErrorInfo _fromDio(DioException e) {
       );
   }
 }
-
