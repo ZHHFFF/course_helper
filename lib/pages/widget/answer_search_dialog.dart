@@ -22,6 +22,9 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
   List<AnswerSearchResult> _results = [];
   String? _errorMessage;
 
+  /// AI 检索失败的原因（用于给出更具体的提示）
+  String? _aiErrorHint;
+
   @override
   void initState() {
     super.initState();
@@ -32,14 +35,25 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
     setState(() {
       _isSearching = true;
       _errorMessage = null;
+      _aiErrorHint = null;
       _results.clear();
     });
+
+    // 题目内容都没拿到，直接提示，不用发请求
+    if (!widget.question.isUsable) {
+      setState(() {
+        _isSearching = false;
+        _errorMessage = '未能获取到题目内容\n（题干为空，且当前课件页没有可识别的图片）';
+      });
+      return;
+    }
 
     try {
       final results = await AnswerSearchApi.search(widget.question);
       if (mounted) {
         setState(() {
           _results = results;
+          _aiErrorHint = AnswerSearchApi.lastAIError;
           _isSearching = false;
         });
       }
@@ -64,6 +78,15 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
     if (confidence >= 0.8) return '高';
     if (confidence >= 0.5) return '中';
     return '低';
+  }
+
+  /// 题目来源描述
+  String get _questionSourceText {
+    final q = widget.question;
+    if (q.hasText && q.hasImage) return '题干 + 课件图片';
+    if (q.hasText) return q.questionText.trim().isNotEmpty ? '题干' : '课件文本';
+    if (q.hasImage) return '课件图片（AI 识图）';
+    return '未获取到';
   }
 
   @override
@@ -104,62 +127,147 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                       Text(_errorMessage!, textAlign: TextAlign.center),
                     ],
                   )
-                : _results.isEmpty
-                    ? const Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.search_off, size: 48, color: Colors.grey),
-                          SizedBox(height: 8),
-                          Text('未找到相关答案'),
-                          SizedBox(height: 4),
-                          Text(
-                            '可尝试在设置中配置AI检索源',
-                            style: TextStyle(fontSize: 12, color: Colors.grey),
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildQuestionPreview(),
+                      const SizedBox(height: 8),
+                      if (_results.isEmpty)
+                        _buildEmptyResult()
+                      else
+                        Flexible(
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: _results.length,
+                            itemBuilder: (context, index) =>
+                                _buildResultCard(_results[index]),
                           ),
-                        ],
-                      )
-                    : Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // 题干预览
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(8),
-                            margin: const EdgeInsets.only(bottom: 8),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              widget.question.questionText,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
-                              ),
-                            ),
-                          ),
-                          Flexible(
-                            child: ListView.builder(
-                              shrinkWrap: true,
-                              itemCount: _results.length,
-                              itemBuilder: (context, index) =>
-                                  _buildResultCard(_results[index]),
-                            ),
-                          ),
-                        ],
-                      ),
+                        ),
+                    ],
+                  ),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('关闭'),
         ),
+      ],
+    );
+  }
+
+  /// 题干预览 + 题型 + 来源
+  Widget _buildQuestionPreview() {
+    final theme = Theme.of(context);
+    final q = widget.question;
+    final previewText = q.hasText ? q.effectiveText : '（题目来自课件图片）';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              // 题型标签
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  q.typeLabel,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: theme.colorScheme.onPrimary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              // 来源标签
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: q.hasImage
+                      ? Colors.purple.withValues(alpha: 0.15)
+                      : theme.colorScheme.secondaryContainer,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  _questionSourceText,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: q.hasImage
+                        ? Colors.purple.shade700
+                        : theme.colorScheme.onSecondaryContainer,
+                  ),
+                ),
+              ),
+              if (q.options.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                Text(
+                  '${q.options.length} 个选项',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            previewText,
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 12,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyResult() {
+    final theme = Theme.of(context);
+    final hint = _aiErrorHint;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.search_off, size: 48, color: Colors.grey),
+        const SizedBox(height: 8),
+        const Text('未找到相关答案'),
+        const SizedBox(height: 6),
+        if (hint != null)
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+            ),
+            child: Text(
+              'AI 检索失败：$hint',
+              style: TextStyle(fontSize: 11, color: Colors.orange.shade800),
+            ),
+          )
+        else
+          Text(
+            '可尝试在设置中配置AI检索源',
+            style: TextStyle(
+              fontSize: 12,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
       ],
     );
   }
@@ -298,4 +406,3 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
     );
   }
 }
-
