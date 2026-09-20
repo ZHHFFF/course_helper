@@ -41,13 +41,29 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Build release APK
+      # 先做静态检查：只有真正的编译错误才会让这一步失败
+      - name: Analyze (errors only)
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Run unit tests
+        run: flutter test test/answer_search_test.dart
+
+      - name: Build release APK (universal)
         run: flutter build apk --release
 
-      - name: Upload APK
+      - name: Keep universal APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk /tmp/course-helper-universal.apk
+
+      # 额外产出一份按 CPU 架构拆分的小体积包（体积约减少 60%）
+      - name: Build release APK (split per ABI)
+        continue-on-error: true
+        run: flutter build apk --release --split-per-abi
+
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: course-helper-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: |
+            /tmp/course-helper-universal.apk
+            build/app/outputs/flutter-apk/app-*-release.apk
           if-no-files-found: error
-
