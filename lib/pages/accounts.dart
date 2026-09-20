@@ -9,6 +9,7 @@ import '../models/user.dart';
 import '../platform.dart';
 import '../push/easemob.dart';
 import 'widget/avatar.dart';
+import 'widget/answer_search_settings.dart';
 import 'login.dart';
 
 class AccountsPage extends StatefulWidget {
@@ -34,10 +35,10 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     // 监听账户变更事件
     _accountChangeSubscription =
         AccountChangeNotifier().accountChanges.listen((_) {
-          if (mounted) {
-            _loadAccounts();
-          }
-        });
+      if (mounted) {
+        _loadAccounts();
+      }
+    });
 
     // 监听环信连接状态变化
     EasemobIM().setConnectionCallback((connected) {
@@ -439,6 +440,13 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
             onSelected: (String result) {
               if (result == 'about') {
                 _showAboutDialog();
+              } else if (result == 'answer_search_settings') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AnswerSearchSettingsPage(),
+                  ),
+                );
               }
             },
             itemBuilder: (BuildContext context) => [
@@ -481,6 +489,15 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                     );
                   },
                 ),
+              ),
+              // 答案检索设置菜单项
+              const PopupMenuItem<String>(
+                value: 'answer_search_settings',
+                child: Row(children: [
+                  Icon(Icons.search, size: 20),
+                  SizedBox(width: 8),
+                  Text('答案检索设置'),
+                ]),
               ),
               // 关于菜单项
               const PopupMenuItem<String>(
