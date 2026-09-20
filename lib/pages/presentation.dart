@@ -316,9 +316,21 @@ class _PresentationPageState extends State<PresentationPage>
 
   /// 当前页的题目指纹
   ///
-  /// 直接取扫描阶段算好的，避免每次切页重算一遍 SHA-256。
+  /// 正常情况下直接取扫描阶段算好的，避免每次切页重算一遍 SHA-256。
+  /// 扫描阶段没收录这一页时（题目是个「空壳」被跳过了）才现算一个，
+  /// 这样手动检索拿到的结果仍然有地方展示。
   void _refreshCurrentHash() {
-    _currentHash = _scan.forSlide(_currentSlideIndex)?.hash;
+    final scanned = _scan.forSlide(_currentSlideIndex);
+    if (scanned != null) {
+      _currentHash = scanned.hash;
+      return;
+    }
+
+    if (_currentProblem == null) {
+      _currentHash = null;
+      return;
+    }
+    _currentHash = QuestionHash.of(_questionOfCurrentSlide());
   }
   // [/新增]
 
@@ -1592,7 +1604,10 @@ class _PresentationPageState extends State<PresentationPage>
 
     final slideIndex = event.slideIndex;
     if (slideIndex != null && slideIndex > 0) {
-      final targetIndex = slideIndex;
+      // 时间轴里的 si 是 1-based 页码（和 _toSlide / showpresentation 同一个来源），
+      // 之前这里少减了 1，会导致点开时间轴的题之后页面比老师那页多出一页，
+      // 右上角立刻冒出「回到当前页」按钮
+      final targetIndex = slideIndex - 1;
 
       if (_pageController.hasClients) {
         _pageController.animateToPage(

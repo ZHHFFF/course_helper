@@ -11,6 +11,7 @@ import '../push/easemob.dart';
 import 'widget/avatar.dart';
 import 'widget/answer_search_settings.dart';
 import 'widget/log_viewer.dart';
+import 'widget/cache_manager.dart';
 import 'login.dart';
 
 class AccountsPage extends StatefulWidget {
@@ -455,6 +456,13 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                     builder: (_) => const LogViewerPage(),
                   ),
                 );
+              } else if (result == 'ppt_cache') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const CacheManagerPage(),
+                  ),
+                );
               }
             },
             itemBuilder: (BuildContext context) => [
@@ -514,6 +522,15 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                   Icon(Icons.receipt_long, size: 20),
                   SizedBox(width: 8),
                   Text('运行日志'),
+                ]),
+              ),
+              // PPT 缓存菜单项
+              const PopupMenuItem<String>(
+                value: 'ppt_cache',
+                child: Row(children: [
+                  Icon(Icons.sd_storage_outlined, size: 20),
+                  SizedBox(width: 8),
+                  Text('PPT 缓存'),
                 ]),
               ),
               // 关于菜单项

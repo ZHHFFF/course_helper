@@ -362,17 +362,26 @@ class CourseCache {
   ///
   /// 先写 `.tmp` 再 rename，避免进程被杀时留下半截文件
   /// （下次读到坏 JSON 会当成「没有缓存」，虽然不致命但会白跑一次 AI）。
+  /// 临时名带自增序号，两个并发写同一个目标时也不会互相覆盖。
+  static int _tmpSeq = 0;
+
   static Future<void> writeJson(File file, Map<String, dynamic> data) async {
+    File? tmp;
     try {
       final parent = file.parent;
       if (!await parent.exists()) await parent.create(recursive: true);
 
-      final tmp = File('${file.path}.tmp');
+      tmp = File('${file.path}.${++_tmpSeq}.tmp');
       await tmp.writeAsString(jsonEncode(data), flush: true);
       if (await file.exists()) await file.delete();
       await tmp.rename(file.path);
     } catch (e) {
       AppLogger.w(_tag, '写入缓存失败 ${p.basename(file.path)}：$e');
+      try {
+        if (tmp != null && await tmp.exists()) await tmp.delete();
+      } catch (_) {
+        // 清理临时文件失败不影响主流程
+      }
     }
   }
 }

@@ -89,11 +89,39 @@ class SlideImageStore {
     return file.readAsBytes();
   }
 
-  /// 下载并落盘
+  /// 同一张图的并发下载只跑一次
   ///
-  /// 先写 `.tmp` 再 rename：中途失败不会留下半张图，
-  /// 下次判断「磁盘里有没有」时不会被半个文件骗到。
-  static Future<File> download(String lessonId, String url) async {
+  /// 界面上的 [SlideImage] 和后台的 [SlideImagePrefetcher] 完全可能同时要同一张图。
+  /// 不共享的话两边会往同一个临时文件上写，然后互相把对方 rename 掉，
+  /// 结果其中一个报「文件不存在」→ 页面显示一个莫名其妙的错误图标。
+  static final Map<String, Future<File>> _inFlight = {};
+
+  /// 下载并落盘
+  static Future<File> download(String lessonId, String url) {
+    final key = '${CourseCache.safeName(lessonId)}|$url';
+    final pending = _inFlight[key];
+    if (pending != null) return pending;
+
+    final completer = Completer<File>();
+    _inFlight[key] = completer.future;
+
+    _downloadOnce(lessonId, url).then(
+      (file) {
+        _inFlight.remove(key);
+        if (!completer.isCompleted) completer.complete(file);
+      },
+      onError: (Object error, StackTrace stack) {
+        _inFlight.remove(key);
+        if (!completer.isCompleted) completer.completeError(error, stack);
+      },
+    );
+
+    return completer.future;
+  }
+
+  static int _tmpSeq = 0;
+
+  static Future<File> _downloadOnce(String lessonId, String url) async {
     final target = await fileFor(lessonId, url);
     final response = await _dio.get<List<int>>(url);
     final data = response.data;
@@ -102,10 +130,21 @@ class SlideImageStore {
       throw StateError('图片内容为空');
     }
 
-    final tmp = File('${target.path}.tmp');
-    await tmp.writeAsBytes(data, flush: true);
-    if (await target.exists()) await target.delete();
-    await tmp.rename(target.path);
+    // 临时文件名带自增序号：就算磁盘上有上次残留的 .tmp 也不会互相踩
+    final tmp = File('${target.path}.${++_tmpSeq}.tmp');
+    try {
+      await tmp.writeAsBytes(data, flush: true);
+      if (await target.exists()) await target.delete();
+      await tmp.rename(target.path);
+    } catch (e) {
+      // 别把半个文件留在磁盘上，下次「磁盘里有没有」会被它骗到
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {
+        // 清理失败无所谓，主流程的异常更重要
+      }
+      rethrow;
+    }
     return target;
   }
 
