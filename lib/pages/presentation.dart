@@ -13,6 +13,11 @@ import '../api/api_service.dart';
 import '../models/presentation.dart';
 import '../session/account.dart';
 import '../platform.dart';
+// [新增] 答案检索模块导入
+import '../api/answer_search.dart';
+import '../models/answer_result.dart';
+import 'widget/answer_search_dialog.dart';
+// [/新增]
 
 @pragma('vm:entry-point')
 void _startForegroundCallback() {
@@ -49,8 +54,8 @@ class _PresentationPageState extends State<PresentationPage> {
   final ScrollController _scrollController = ScrollController();
   final PageController _pageController = PageController();
 
-  int _currentSlideIndex = 0; // 当前浏览的页码
-  int _currentLessonSlideIndex = 0; // 课堂播放的页码
+  int _currentSlideIndex = 0;
+  int _currentLessonSlideIndex = 0;
   int _totalCount = 0;
   List<Map<String, dynamic>> _slides = [];
   String? _currentPresentationId;
@@ -61,26 +66,20 @@ class _PresentationPageState extends State<PresentationPage> {
   final List<TimelineEvent> _timeline = [];
 
   Problem? _currentProblem;
-  String? _timelineProblemId; // 从timeline点击的题目
+  String? _timelineProblemId;
   List<String>? _answer;
   String? _textAnswer;
   bool _isProblemExpanded = true;
-  
-  // 图片选择相关
+
   final List<XFile> _selectedImages = [];
   static const int _maxImageCount = 9;
-  final List<String> _uploadedImageUrls = []; // 已上传的图片 URL
-  
-  // 倒计时相关
+  final List<String> _uploadedImageUrls = [];
+
   int? _countdownSeconds;
   Timer? _countdownTimer;
-  
-  // 菜单位置
-  Offset _menuPosition = Offset.zero;
-  
-  // 全屏状态
-  bool _isFullScreen = false;
 
+  Offset _menuPosition = Offset.zero;
+  bool _isFullScreen = false;
 
   @override
   void initState() {
@@ -91,7 +90,6 @@ class _PresentationPageState extends State<PresentationPage> {
 
   @override
   void dispose() {
-    // 发送离开课堂消息
     if (_ws != null) {
       final leaveData = {
         "op": "leavelesson",
@@ -113,11 +111,23 @@ class _PresentationPageState extends State<PresentationPage> {
     _connectWebSocket();
   }
 
+  // [新增] 搜索答案 - 从当前题目提取题干和选项，调用检索模块
+  Future<void> _searchAnswer() async {
+    if (_currentProblem == null) return;
+    final question = AnswerSearchApi.fromRainClassroomProblem(_currentProblem!);
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (context) => AnswerSearchDialog(question: question),
+    );
+  }
+  // [/新增]
+
   Future<void> _checkToken() async {
     final lessonToken = RCCourseApi().lessonToken;
     if (lessonToken == null) {
       final allAccounts = AccountManager.allAccounts;
-      
+
       final results = await ApiService.sendForEachUser(
         allAccounts,
         (user) async {
@@ -129,10 +139,9 @@ class _PresentationPageState extends State<PresentationPage> {
       for (int i = 0; i < results.length; i++) {
         final result = results[i];
         final user = allAccounts[i];
-        
+
         if (result != 0) {
           if (result == 50070){
-            // 该课堂已开启动态二维码签到，请扫码签到进班
             if (mounted) {
               showDialog(
                 context: context,
@@ -157,18 +166,16 @@ class _PresentationPageState extends State<PresentationPage> {
               );
             }
           }
-        } 
+        }
       }
     }
   }
 
   Future<void> _startForegroundService() async {
-    // 请求忽略电池优化
     if (!await FlutterForegroundTask.isIgnoringBatteryOptimizations) {
       await FlutterForegroundTask.requestIgnoreBatteryOptimization();
     }
 
-    // 初始化前台服务
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'websocket_service',
@@ -184,7 +191,6 @@ class _PresentationPageState extends State<PresentationPage> {
       ),
     );
 
-    // 启动前台服务
     if (await FlutterForegroundTask.isRunningService) {
       await FlutterForegroundTask.restartService();
     } else {
@@ -265,7 +271,7 @@ class _PresentationPageState extends State<PresentationPage> {
       final op = data['op'];
 
       debugPrint('WebSocket S2C：$message');
-      
+
       final messageText = data['message'];
 
       switch (op) {
@@ -296,21 +302,21 @@ class _PresentationPageState extends State<PresentationPage> {
               }
             }
           }
-          
+
           final targetPresId = latestPresId ?? presentationId;
           final targetSlideIndex = latestSlideIndex ?? slideIndex;
-          
+
           if (targetPresId != null) {
             await _loadPresentation(targetPresId);
             if (targetSlideIndex != null && targetSlideIndex > 0) {
               _toSlide(targetSlideIndex, animate: false);
             }
           }
-          
+
           if (timeline != null) {
             _addTimelineEvents(timeline);
           }
-          
+
           setState(() {
             _isInitialized = true;
           });
@@ -319,7 +325,6 @@ class _PresentationPageState extends State<PresentationPage> {
         case 'unlockproblem':
           final problemData = data['problem'];
           if (problemData != null) {
-            // WebSocket 消息中使用 'prob' 或 'sid' 作为题目ID
             final problemId = problemData['prob'];
             final limit = problemData['limit'];
             final dt = problemData['dt'];
@@ -342,16 +347,15 @@ class _PresentationPageState extends State<PresentationPage> {
           final presentationId = data['presentation'];
           final slideIndex = data['slideindex'];
           final timeline = data['timeline'] as List?;
-          // final shownow = data['shownow'] ?? false;
-          
+
           if (presentationId != null && presentationId != _currentPresentationId) {
             await _loadPresentation(presentationId);
           }
-          
+
           if (slideIndex != null) {
             _toSlide(slideIndex);
           }
-          
+
           if (timeline != null) {
             _addTimelineEvents(timeline);
           }
@@ -367,7 +371,6 @@ class _PresentationPageState extends State<PresentationPage> {
           break;
 
         case 'extendtime':
-          // 延时
           final problemData = data['problem'];
           if (problemData != null) {
             final extend = problemData['extend'];
@@ -382,7 +385,6 @@ class _PresentationPageState extends State<PresentationPage> {
           break;
 
         case 'callpaused':
-          // 随机点名
           final eventData = data['event'];
           if (eventData != null) {
             final code = eventData['code'];
@@ -401,13 +403,12 @@ class _PresentationPageState extends State<PresentationPage> {
           break;
 
         case 'showfinished':
-          // 幻灯片结束放映
           final eventData = data['event'];
           if (eventData != null) {
             final code = eventData['code'];
             final title = eventData['title'];
             final dt = eventData['dt'];
-            
+
             if (code == 'SHOW_FINISH') {
               setState(() {
                 _timeline.add(TimelineEvent(
@@ -422,13 +423,12 @@ class _PresentationPageState extends State<PresentationPage> {
           break;
 
         case 'lessonfinished':
-          // 下课
           final eventData = data['event'];
           if (eventData != null) {
             final code = eventData['code'];
             final title = eventData['title'];
             final dt = eventData['dt'];
-            
+
             if (code == 'LESSON_FINISH') {
               setState(() {
                 _timeline.add(TimelineEvent(
@@ -458,7 +458,7 @@ class _PresentationPageState extends State<PresentationPage> {
       final limit = event['limit'];
       final prob = event['prob'];
       final pres = event['pres'];
-      
+
       if (type != null) {
         String eventType = type;
         String eventTitle = title ?? '';
@@ -473,7 +473,7 @@ class _PresentationPageState extends State<PresentationPage> {
         if (eventType == 'slide') {
           continue;
         }
-        
+
         setState(() {
           _timeline.add(TimelineEvent(
             type: eventType,
@@ -494,7 +494,7 @@ class _PresentationPageState extends State<PresentationPage> {
         });
       }
     }
-    
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -508,11 +508,11 @@ class _PresentationPageState extends State<PresentationPage> {
 
   Future<void> _loadPresentation(String presentationId) async {
     if (_isLoading || presentationId == _currentPresentationId) return;
-    
+
     setState(() {
       _isLoading = true;
     });
-    
+
     try {
       final pptData = await RCCourseApi().getPresentation(presentationId);
       if (pptData != null) {
@@ -550,7 +550,7 @@ class _PresentationPageState extends State<PresentationPage> {
         timer.cancel();
         return;
       }
-      
+
       setState(() {
         if (_countdownSeconds != null && _countdownSeconds! > 0) {
           _countdownSeconds = _countdownSeconds! - 1;
@@ -587,7 +587,7 @@ class _PresentationPageState extends State<PresentationPage> {
                       onLongPress: () async {
                         final RenderBox? overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
                         if (overlay == null) return;
-                        
+
                         final result = await showMenu<String>(
                           context: context,
                           position: RelativeRect.fromLTRB(
@@ -607,7 +607,7 @@ class _PresentationPageState extends State<PresentationPage> {
                             ),
                           ],
                         );
-                        
+
                         if (result == 'save') {
                           await _saveImageToGallery(cover);
                         } else if (result == 'fullscreen') {
@@ -736,7 +736,6 @@ class _PresentationPageState extends State<PresentationPage> {
                   ? _buildFullScreenPPT()
                   : Column(
                   children: [
-                    // PPT 区域 - 根据屏幕宽度自动计算高度（保持幻灯片比例）
                     AspectRatio(
                       aspectRatio: 16 / 9,
                       child: Stack(
@@ -764,7 +763,7 @@ class _PresentationPageState extends State<PresentationPage> {
                                         onLongPress: () async {
                                           final RenderBox? overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
                                           if (overlay == null) return;
-                                          
+
                                           final result = await showMenu<String>(
                                             context: context,
                                             position: RelativeRect.fromLTRB(
@@ -784,7 +783,7 @@ class _PresentationPageState extends State<PresentationPage> {
                                               ),
                                             ],
                                           );
-                                          
+
                                           if (result == 'save') {
                                             await _saveImageToGallery(cover);
                                           } else if (result == 'fullscreen') {
@@ -984,7 +983,21 @@ class _PresentationPageState extends State<PresentationPage> {
                                       ),
                                       const SizedBox(height: 16),
                                       _buildAnswerOptions(),
-                                      if ((_currentProblem != null && _unlockedProblemIds.contains(_currentProblem!.problemId)) || 
+                                      // [新增] 搜索答案按钮 - 在答案选项下方
+                                      const SizedBox(height: 8),
+                                      Align(
+                                        alignment: Alignment.centerRight,
+                                        child: TextButton.icon(
+                                          onPressed: _searchAnswer,
+                                          icon: const Icon(Icons.search, size: 18),
+                                          label: const Text('搜索答案'),
+                                          style: TextButton.styleFrom(
+                                            foregroundColor: Theme.of(context).colorScheme.primary,
+                                          ),
+                                        ),
+                                      ),
+                                      // [/新增]
+                                      if ((_currentProblem != null && _unlockedProblemIds.contains(_currentProblem!.problemId)) ||
                                           (_timelineProblemId != null && _unlockedProblemIds.contains(_timelineProblemId!))) ...[
                                         const SizedBox(height: 16),
                                         Row(
@@ -1032,7 +1045,7 @@ class _PresentationPageState extends State<PresentationPage> {
   Widget _buildTimelineItem(TimelineEvent event) {
     Color bgColor;
     IconData icon;
-    
+
     switch (event.type) {
       case 'event':
         switch (event.code) {
@@ -1057,10 +1070,6 @@ class _PresentationPageState extends State<PresentationPage> {
             icon = Icons.info;
         }
         break;
-      // case 'slide':
-      //   bgColor = Colors.blue;
-      //   icon = Icons.slideshow;
-      //   break;
       case 'problem':
         bgColor = Colors.purple;
         icon = Icons.quiz;
@@ -1073,7 +1082,7 @@ class _PresentationPageState extends State<PresentationPage> {
         bgColor = Colors.grey;
         icon = Icons.info;
     }
-    
+
     return GestureDetector(
       onTap: event.type == 'problem' ? () => _handleTimelineProblemClick(event) : null,
       child: Container(
@@ -1167,7 +1176,7 @@ class _PresentationPageState extends State<PresentationPage> {
   String _formatTime(DateTime time) {
     final now = DateTime.now();
     final diff = now.difference(time);
-    
+
     if (diff.inMinutes < 1) {
       return '刚刚';
     } else if (diff.inMinutes < 60) {
@@ -1185,18 +1194,15 @@ class _PresentationPageState extends State<PresentationPage> {
 
   Future<void> _handleTimelineProblemClick(TimelineEvent event) async {
     if (event.problemId == null || event.presentationId == null) return;
-    
-    // 如果当前不在对应的 presentation，先加载
+
     if (event.presentationId != _currentPresentationId) {
       await _loadPresentation(event.presentationId!);
     }
-    
-    // 找到对应的 slide 索引
+
     final slideIndex = event.slideIndex;
     if (slideIndex != null && slideIndex > 0) {
       final targetIndex = slideIndex;
-      
-      // 跳转到对应页面
+
       if (_pageController.hasClients) {
         _pageController.animateToPage(
           targetIndex,
@@ -1204,17 +1210,15 @@ class _PresentationPageState extends State<PresentationPage> {
           curve: Curves.easeInOut
         );
       }
-      
+
       setState(() {
         _currentSlideIndex = targetIndex;
-        // 设置当前题目
         if (targetIndex >= 0 && targetIndex < _slides.length) {
           _currentProblem = _slides[targetIndex]['problem'];
           if (_currentProblem != null && event.problemDt != null) {
             _currentProblem = _currentProblem!.copyWith(dt: event.problemDt);
           }
         }
-        // 记录从 timeline 点击的 problemId
         _timelineProblemId = event.problemId;
         if (event.problemId != null && !_unlockedProblemIds.contains(event.problemId!)) {
           _unlockedProblemIds.add(event.problemId!);
@@ -1225,14 +1229,12 @@ class _PresentationPageState extends State<PresentationPage> {
   }
 
   Future<void> _submitAnswer() async {
-    // 优先使用 _currentProblem，如果为空则使用 _timelineProblemId
     final problemId = _currentProblem?.problemId ?? _timelineProblemId;
     if (problemId == null) return;
 
     final problemType = _currentProblem?.problemType ?? 0;
     final problemDt = _currentProblem?.dt;
 
-    // 检查是否有答案或图片
     if (_answer == null && _textAnswer == null && _uploadedImageUrls.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1242,16 +1244,14 @@ class _PresentationPageState extends State<PresentationPage> {
       return;
     }
 
-    // 判断是否超时（倒计时结束）
     final isTimeout = _countdownSeconds != null && _countdownSeconds! <= 0;
-    
-    // 为所有用户提交答案（带已上传的图片 URL）
+
     await _submitForAllAccounts(problemId, problemType, _uploadedImageUrls, isTimeout, problemDt);
   }
 
   Future<void> _submitForAllAccounts(String problemId, int problemType, List<String>? imageUrls, bool isTimeout, int? problemDt) async {
     final allAccounts = AccountManager.allAccounts;
-    
+
     if (allAccounts.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1283,7 +1283,7 @@ class _PresentationPageState extends State<PresentationPage> {
     for (int i = 0; i < results.length; i++) {
       final result = results[i];
       final user = allAccounts[i];
-      
+
       if (result != null && result['code'] == 0) {
         successCount++;
       } else {
@@ -1292,8 +1292,7 @@ class _PresentationPageState extends State<PresentationPage> {
     }
 
     _showSubmitResult(successCount, allAccounts.length, failedAccounts);
-    
-    // 提交成功后禁用按钮并清空图片
+
     setState(() {
       _countdownSeconds = 0;
       _selectedImages.clear();
@@ -1332,16 +1331,16 @@ class _PresentationPageState extends State<PresentationPage> {
 
   Widget _buildAnswerOptions() {
     if (_currentProblem == null) return const SizedBox.shrink();
-    
+
     switch (_currentProblem!.problemType) {
-      case 1: // 单选题 // 判断题在PPT是单选题
-      case 3: // 投票题
+      case 1:
+      case 3:
         return _buildChoiceOptions();
-      case 2: // 多选题
+      case 2:
         return _buildMultipleChoiceOptions();
-      case 4: // 填空题
+      case 4:
         return _buildFillBlankInputs();
-      case 5: // 主观题
+      case 5:
         return _buildShortAnswerInputs();
       default:
         return const SizedBox.shrink();
@@ -1360,7 +1359,6 @@ class _PresentationPageState extends State<PresentationPage> {
       );
 
       if (images.isNotEmpty) {
-        // 并行上传所有图片
         final uploadFutures = images.map((image) async {
           try {
             final file = File(image.path);
@@ -1376,10 +1374,8 @@ class _PresentationPageState extends State<PresentationPage> {
           }
         }).toList();
 
-        // 等待所有上传完成
         final results = await Future.wait(uploadFutures);
 
-        // 更新状态
         if (mounted) {
           setState(() {
             for (final result in results) {
@@ -1487,17 +1483,16 @@ class _PresentationPageState extends State<PresentationPage> {
 
   Widget _buildFillBlankInputs() {
     if (_currentProblem == null) return const SizedBox.shrink();
-    
-    // 解析题目中的填空位置
+
     final body = _currentProblem!.body;
     final blanks = <String>[];
     final pattern = RegExp(r'\[填空\d*\]');
     final matches = pattern.allMatches(body);
-    
+
     for (var match in matches) {
       blanks.add(match.group(0) ?? '');
     }
-    
+
     if (blanks.isEmpty) {
       return TextField(
         decoration: const InputDecoration(
@@ -1509,8 +1504,7 @@ class _PresentationPageState extends State<PresentationPage> {
         },
       );
     }
-    
-    // 多个填空，显示多个输入框
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: List.generate(blanks.length, (index) {
@@ -1523,7 +1517,6 @@ class _PresentationPageState extends State<PresentationPage> {
               border: const OutlineInputBorder(),
             ),
             onChanged: (value) {
-              // 存储所有答案
               final answers = List<String>.from(_answer ?? []);
               while (answers.length <= index) {
                 answers.add('');
@@ -1539,12 +1532,12 @@ class _PresentationPageState extends State<PresentationPage> {
 
   Widget _buildChoiceOptions() {
     if (_currentProblem == null) return const SizedBox.shrink();
-      
+
     final options = _currentProblem!.options;
     if (options == null || options.isEmpty) {
       return const SizedBox.shrink();
     }
-      
+
     return RadioGroup<String>(
       groupValue: _answer?.firstOrNull,
       onChanged: (value) {
@@ -1569,12 +1562,12 @@ class _PresentationPageState extends State<PresentationPage> {
 
   Widget _buildMultipleChoiceOptions() {
     if (_currentProblem == null) return const SizedBox.shrink();
-    
+
     final options = _currentProblem!.options;
     if (options == null || options.isEmpty) {
       return const SizedBox.shrink();
     }
-    
+
     return Column(
       children: options.map((option) {
         final key = option.key;
@@ -1603,14 +1596,12 @@ class _PresentationPageState extends State<PresentationPage> {
 
   Future<void> _saveImageToGallery(String imageUrl) async {
     try {
-      // 从缓存中获取图片文件
       final file = await DefaultCacheManager().getSingleFile(imageUrl);
       final bytes = await file.readAsBytes();
-            
+
       await PhotoManager.editor.saveImage(
         bytes,
         filename: 'RainClassroom_${DateTime.now().millisecondsSinceEpoch}.jpg'
-        // 不会被使用
       );
 
       if (mounted) {
@@ -1636,7 +1627,6 @@ class TimelineEvent {
   final int? total;
   final int? limit;
   final DateTime timestamp;
-  // problem
   final String? problemId;
   final String? presentationId;
   final int? problemDt;
