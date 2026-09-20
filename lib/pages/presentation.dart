@@ -5,7 +5,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show WebSocket, File;
+import 'dart:io' show Platform, WebSocket, File;
 
 import '../api/course.dart';
 import '../api/image.dart';
@@ -401,39 +401,77 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   Future<void> _startForegroundService() async {
-    if (!await FlutterForegroundTask.isIgnoringBatteryOptimizations) {
-      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
-    }
+    try {
+      // Android 13+ 必须申请通知权限：不申请的话前台服务照样在跑，
+      // 但那条常驻通知不会显示 —— 等于「服务到底起没起」肉眼看不出来。
+      // 只在 denied 时申请，permanently_denied 就不反复弹窗了。
+      // iOS 侧 showNotification 是 false，别去打扰用户。
+      if (Platform.isAndroid &&
+          await FlutterForegroundTask.checkNotificationPermission() ==
+              NotificationPermission.denied) {
+        await FlutterForegroundTask.requestNotificationPermission();
+      }
 
-    FlutterForegroundTask.init(
-      androidNotificationOptions: AndroidNotificationOptions(
-        channelId: 'websocket_service',
-        channelName: 'WebSocket Background Service',
-        channelDescription: 'Keep WebSocket connection alive'
-      ),
-      iosNotificationOptions: const IOSNotificationOptions(
-        showNotification: false
-      ),
-      foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(5000),
-        allowWifiLock: true
-      ),
-    );
+      if (!await FlutterForegroundTask.isIgnoringBatteryOptimizations) {
+        await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+      }
 
-    if (await FlutterForegroundTask.isRunningService) {
-      await FlutterForegroundTask.restartService();
-    } else {
-      await FlutterForegroundTask.startService(
-        notificationTitle: '课堂助手',
-        notificationText: '正在保持 WebSocket 连接...',
-        callback: _startForegroundCallback,
+      FlutterForegroundTask.init(
+        androidNotificationOptions: AndroidNotificationOptions(
+          channelId: 'websocket_service',
+          channelName: 'WebSocket Background Service',
+          channelDescription: 'Keep WebSocket connection alive'
+        ),
+        iosNotificationOptions: const IOSNotificationOptions(
+          showNotification: false
+        ),
+        foregroundTaskOptions: ForegroundTaskOptions(
+          eventAction: ForegroundTaskEventAction.repeat(5000),
+          allowWifiLock: true
+        ),
       );
+
+      // 返回值必须看。插件内部会等 5 秒确认 isRunningService 变成 true，
+      // 起不来就返回 ServiceRequestFailure（ServiceTimeoutException）。
+      // 原来直接 await 把返回值丢掉，失败就被无声吞掉了 ——
+      // AndroidManifest.xml 漏声明 <service> 正是这样藏了这么久。
+      final ServiceRequestResult result;
+      if (await FlutterForegroundTask.isRunningService) {
+        result = await FlutterForegroundTask.restartService();
+      } else {
+        result = await FlutterForegroundTask.startService(
+          notificationTitle: '课堂助手',
+          notificationText: '正在保持 WebSocket 连接...',
+          callback: _startForegroundCallback,
+        );
+      }
+
+      switch (result) {
+        case ServiceRequestSuccess():
+          AppLogger.i('ForegroundService', '前台服务已启动');
+        case ServiceRequestFailure(:final error):
+          AppLogger.e(
+            'ForegroundService',
+            '前台服务启动失败：$error。检查 AndroidManifest.xml 是否声明了 '
+                'com.pravera.flutter_foreground_task.service.ForegroundService',
+          );
+      }
+    } catch (e, s) {
+      AppLogger.e('ForegroundService', '前台服务启动异常：$e');
+      debugPrint('前台服务启动异常：$e\n$s');
     }
   }
 
   Future<void> _stopForegroundService() async {
-    if (await FlutterForegroundTask.isRunningService) {
-      await FlutterForegroundTask.stopService();
+    try {
+      if (await FlutterForegroundTask.isRunningService) {
+        final result = await FlutterForegroundTask.stopService();
+        if (result is ServiceRequestFailure) {
+          AppLogger.w('ForegroundService', '前台服务停止失败：${result.error}');
+        }
+      }
+    } catch (e) {
+      AppLogger.w('ForegroundService', '前台服务停止异常：$e');
     }
   }
 

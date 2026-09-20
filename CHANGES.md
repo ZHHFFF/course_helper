@@ -505,3 +505,108 @@ foregroundTaskOptions: ForegroundTaskOptions(
 
 注意：`src\` / `build\` 补丁集原本只镜像 `lib\` 和 `test\`，
 本次把 `android/app/src/main/AndroidManifest.xml` 也纳入了两个补丁集。
+
+---
+
+# v4.2：让前台服务「起没起来」看得见
+
+日期：2026-09-20 ｜ 版本：1.2.2+2005 ｜ 分支：`feat/ppt-cache`
+
+v4.1 补上 `<service>` 之后，又发现两处会让验证失真 —— 都会让人误判「修了也没用」。
+
+## 1. 通知权限从没申请过（已修）
+
+Android 13+ 的 `POST_NOTIFICATIONS` 是运行时权限。**没申请时前台服务照样在跑，
+但那条常驻通知不会显示。** 于是「拉通知栏看有没有通知」这个验证方法会给出**假阴性**。
+
+插件的 `startService()` **不会**自动申请；只有显式调用
+`requestNotificationPermission()` 才会。原代码只申请了电池优化豁免。
+
+修法（`lib/pages/presentation.dart` 的 `_startForegroundService()`）：
+
+```dart
+if (Platform.isAndroid &&
+    await FlutterForegroundTask.checkNotificationPermission() ==
+        NotificationPermission.denied) {
+  await FlutterForegroundTask.requestNotificationPermission();
+}
+```
+
+- 只在 `denied` 时申请，`permanently_denied` 不再反复弹窗
+- 限定 Android：iOS 侧 `showNotification` 是 false，不该去打扰用户
+- 为此把 `import 'dart:io' show WebSocket, File;` 改成 `show Platform, WebSocket, File;`
+
+## 2. `startService()` 的返回值被 `await` 丢掉了（已修）
+
+插件内部会等 5 秒确认 `isRunningService` 变成 `true`，起不来就返回
+`ServiceRequestFailure(ServiceTimeoutException)`。
+
+原代码：
+
+```dart
+await FlutterForegroundTask.startService(...);   // 返回值直接丢弃
+```
+
+**这个失败信号本来拿得到，是自己扔了。** 也就是说这个 bug 有两层隐身：
+第一层是 Android 对未声明组件不报错，第二层是我们把插件给的错误信号扔了。
+
+修法：接住 `ServiceRequestResult`，`switch` 到 `AppLogger`：
+
+```dart
+final ServiceRequestResult result;
+if (await FlutterForegroundTask.isRunningService) {
+  result = await FlutterForegroundTask.restartService();
+} else {
+  result = await FlutterForegroundTask.startService(...);
+}
+
+switch (result) {
+  case ServiceRequestSuccess():
+    AppLogger.i('ForegroundService', '前台服务已启动');
+  case ServiceRequestFailure(:final error):
+    AppLogger.e('ForegroundService',
+        '前台服务启动失败：$error。检查 AndroidManifest.xml 是否声明了 '
+        'com.pravera.flutter_foreground_task.service.ForegroundService');
+}
+```
+
+`_stopForegroundService()` 同样接住了返回值（失败记 warn）。
+外层再包一层 try/catch，异常也进日志，不再有静默路径。
+
+## 3. 新增护栏测试 `test/android_manifest_test.dart`（4 个用例）
+
+这个 bug 在仓库里藏了很久，因为它**没有任何东西守着**。用 4 条断言钉住：
+
+1. 声明了 `com.pravera.flutter_foreground_task.service.ForegroundService`
+2. `foregroundServiceType="dataSync"`，且与已声明的 `FOREGROUND_SERVICE_DATA_SYNC`
+   权限一致（不照抄插件的 `dataSync|remoteMessaging` —— 那会在 Android 14+ 启动时被拒）
+3. `stopWithTask="true"`
+4. `exported="false"`
+
+断言只作用在切出来的那个 `<service>` 元素上，不会被文件里别的
+`android:exported="false"`（receiver）蒙混过关。
+
+**有效性实测**：临时删掉 `<service>` 跑测试 → 4 条断言全红；还原 → 全绿。
+
+## 验证
+
+- 测试 155 → **159**，全部通过
+- `flutter analyze` 仍是 15 条 info/warning，全部来自上游文件，新增代码零告警
+- 产物 `dist\课程助手_v4.2_前台服务自检_arm64.apk`，70,932,189 字节，
+  MD5 `8ad36c565301e55a5c40850eb714c326`，`versionCode 4005` / `versionName 1.2.2`，仅 arm64-v8a
+- **确认新代码真进包**：`libapp.so` 里能搜到 UTF-16LE 编码的
+  `前台服务已启动` / `前台服务启动失败`（v4 的包里搜不到）。
+  注意 Dart AOT 快照里的中文是 **UTF-16LE**，用 UTF-8 搜会误判成「没打进去」
+- `aapt2 dump xmltree` 确认 APK 内含 `ForegroundService`，
+  `foregroundServiceType=0x1`（dataSync）、`stopWithTask=true`、`exported=false`
+- v4 与 v4.2 的 `libapp.so` 大小**恰好都是** 10,158,984 字节，但 SHA-256 不同 ——
+  **别用文件大小判断改动有没有进包**，用字符串探测或哈希
+
+## 仍待处理
+
+唤醒锁那组（`allowWakeLock: false` + `eventAction: nothing()`）依旧没动，
+等真机确认服务能起来后再单独改。插件源码已确认 `startRepeatTask()` 对 `NOTHING`
+直接 `return`（`ForegroundTask.kt:112`），所以 `nothing()` 与保活无关，
+纯粹省掉每 5 秒一次的 `onRepeatEvent`。而我们的
+`_WebSocketKeepAliveHandler.onRepeatEvent()` 是空实现 ——
+现在服务真起来了，这 5 秒一次的空转就变成实打实的耗电了。
