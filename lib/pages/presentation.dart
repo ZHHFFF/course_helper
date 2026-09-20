@@ -3,6 +3,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform, WebSocket, File;
@@ -27,6 +29,7 @@ import '../cache/slide_scanner.dart';
 // [/新增]
 import '../utils/app_logger.dart';
 import '../utils/network_error.dart';
+import '../utils/ppt_exporter.dart';
 import '../utils/storage.dart';
 import 'widget/answer_search_dialog.dart';
 import 'widget/suggested_answer_card.dart';
@@ -105,6 +108,9 @@ class _PresentationPageState extends State<PresentationPage>
 
   Offset _menuPosition = Offset.zero;
   bool _isFullScreen = false;
+
+  /// [新增] 正在导出 PDF（防止重复点击）
+  bool _isExporting = false;
 
   // [新增] PPT 缓存 + 后台识题
   /// 整份 PPT 的识题结果（拿到 PPT 的那一刻就扫完了）
@@ -1245,6 +1251,23 @@ class _PresentationPageState extends State<PresentationPage>
         title: Text(widget.title),
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
+        actions: [
+          // [新增] 导出整份 PPT 为 PDF
+          IconButton(
+            tooltip: '导出整份 PPT 为 PDF',
+            onPressed: _isExporting ? null : _exportPresentationPdf,
+            icon: _isExporting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.picture_as_pdf_outlined),
+          ),
+        ],
       ),
       body: _isLoading
           ? const Center(
@@ -2174,6 +2197,94 @@ class _PresentationPageState extends State<PresentationPage>
           SnackBar(content: Text('保存失败: $e')),
         );
       }
+    }
+  }
+
+  // ==================== [新增] 导出整份 PPT 为 PDF ====================
+
+  /// 把当前这份 PPT 的所有页面合成一个 PDF
+  ///
+  /// - 图片走 [SlideImageStore]（磁盘缓存 + 并发去重），不另起一套缓存
+  /// - 合成放在后台 isolate（`PptExporter.build`），不卡 UI
+  /// - 完成后调起系统分享，可直接存到文件 / 发微信
+  Future<void> _exportPresentationPdf() async {
+    if (_isExporting) return;
+
+    if (_slideModels.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('还没有加载到 PPT')),
+      );
+      return;
+    }
+
+    setState(() => _isExporting = true);
+
+    try {
+      // 1. 逐页取本地图片（缓存命中直接返回，没有才下载）
+      final paths = <String>[];
+      final seen = <String>{};
+      for (final slide in _slideModels) {
+        final url = (slide.coverAlt.trim().isNotEmpty
+                ? slide.coverAlt
+                : slide.cover)
+            .trim();
+        if (url.isEmpty || !seen.add(url)) continue;
+        try {
+          final file = await SlideImageStore.fileFor(widget.lessonId, url);
+          paths.add(file.path);
+        } catch (e) {
+          AppLogger.w('导出PDF', '取图失败 $url：$e');
+        }
+      }
+
+      if (paths.isEmpty) {
+        throw Exception('没有取到任何幻灯片图片');
+      }
+
+      // 2. 后台 isolate 合成
+      final result = await PptExporter.build(paths);
+      if (!result.ok || result.bytes == null) {
+        throw Exception(result.error ?? '生成 PDF 失败');
+      }
+
+      // 3. 落盘 + 系统分享
+      final dir = await getApplicationDocumentsDirectory();
+      final raw =
+          'PPT_${widget.title}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final safe = raw.replaceAll(RegExp(r'[\\/:*?"<>|\s]+'), '_');
+      final out = File('${dir.path}/$safe');
+      await out.writeAsBytes(result.bytes!);
+
+      if (!mounted) return;
+      final box = context.findRenderObject() as RenderBox?;
+      final origin =
+          box != null ? box.localToGlobal(Offset.zero) & box.size : null;
+
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(out.path, mimeType: 'application/pdf')],
+          subject: '${widget.title} 课件',
+          text: '共 ${result.written} 页',
+          sharePositionOrigin: origin,
+        ),
+      );
+
+      AppLogger.i(
+          '导出PDF', '已导出 ${result.written}/${result.total} 页 → ${out.path}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已导出 ${result.written}/${result.total} 页')),
+        );
+      }
+    } catch (e) {
+      AppLogger.e('导出PDF', '$e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导出失败：$e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
     }
   }
 }
