@@ -9,6 +9,11 @@ import 'package:image_picker/image_picker.dart';
 import '../../../api/api_service.dart';
 import '../../../api/quiz.dart';
 import '../../../api/image.dart';
+// [新增] 答案检索模块导入
+import '../../../api/answer_search.dart';
+import '../../../models/answer_result.dart';
+import '../widget/answer_search_dialog.dart';
+// [/新增]
 import '../../../models/user.dart';
 import '../../../models/active.dart';
 import '../widget/accounts_selector.dart';
@@ -17,9 +22,9 @@ class QuizPage extends StatefulWidget {
   final Active active;
   final String courseId;
   final String classId;
-  
+
   const QuizPage({
-    super.key, 
+    super.key,
     required this.active,
     required this.courseId,
     required this.classId
@@ -32,10 +37,10 @@ class QuizPage extends StatefulWidget {
 class CountdownDisplay extends StatelessWidget {
   final ValueNotifier<String> timeNotifier;
   final bool isManualEnd;
-  
+
   const CountdownDisplay({
-    super.key, 
-    required this.timeNotifier, 
+    super.key,
+    required this.timeNotifier,
     required this.isManualEnd
   });
 
@@ -47,24 +52,24 @@ class CountdownDisplay extends StatelessWidget {
         return Container(
           width: double.infinity,
           padding: const EdgeInsets.all(12),
-          color: isManualEnd 
-              ? Colors.orange.shade100 
+          color: isManualEnd
+              ? Colors.orange.shade100
               : Theme.of(context).colorScheme.primaryContainer,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.start,
             children: [
               Icon(
                 isManualEnd ? Icons.access_time : Icons.timer,
-                color: isManualEnd 
-                    ? Colors.orange 
+                color: isManualEnd
+                    ? Colors.orange
                     : Theme.of(context).colorScheme.primary,
               ),
               const SizedBox(width: 8),
               Text(
                 isManualEnd ? '手动结束' : '剩余：$time',
                 style: TextStyle(
-                  color: isManualEnd 
-                      ? Colors.orange 
+                  color: isManualEnd
+                      ? Colors.orange
                       : Theme.of(context).colorScheme.primary,
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
@@ -79,38 +84,44 @@ class CountdownDisplay extends StatelessWidget {
 }
 
 class _QuizPageState extends State<QuizPage> {
-  // 页面状态
   bool _isLoading = true;
   bool _isSubmitting = false;
   String? _errorMessage;
-  
-  // 批量提交状态
+
   int _totalCount = 0;
   final List<String> _failedAccounts = [];
-  
-  // 测验数据
+
   List<dynamic> _quizList = [];
   Map<String, dynamic>? _activeData;
-  
-  // 倒计时相关
+
   Timer? _countdownTimer;
   final ValueNotifier<String> _remainingTimeNotifier = ValueNotifier('');
-  bool _isManualEnd = false; // 手动结束标记
-  
-  // 输入控制器缓存
+  bool _isManualEnd = false;
+
   final Map<String, TextEditingController> _controllers = {};
-  
-  // 账号选择
+
   List<User> _selectedAccounts = [];
-  
+
   @override
   void initState() {
     super.initState();
     _initialize();
   }
-  
+
+  // [新增] 搜索答案 - 提取题干和选项，调用检索模块
+  Future<void> _searchAnswer(dynamic quiz) async {
+    final question = StandardizedQuestion.fromChaoxing(
+      Map<String, dynamic>.from(quiz),
+    );
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (context) => AnswerSearchDialog(question: question),
+    );
+  }
+  // [/新增]
+
   Future<void> _initialize() async {
-    // 先请求HTML并检查活动状态
     try {
       final response = await ApiService.sendRequest(widget.active.url, responseType: ResponseType.plain);
       if (response == null) {
@@ -121,11 +132,10 @@ class _QuizPageState extends State<QuizPage> {
         return;
       }
       String htmlContent = response.data.toString();
-      
-      // 使用正则表达式匹配activeStatus
+
       RegExp activeStatusRegex = RegExp(r'activeStatus: (.+?),');
       Match? statusMatch = activeStatusRegex.firstMatch(htmlContent);
-      
+
       if (statusMatch != null) {
         String status = statusMatch.group(1)!;
 
@@ -138,7 +148,6 @@ class _QuizPageState extends State<QuizPage> {
           });
         }
       } else {
-        // 没有找到activeStatus，正常加载
         await _loadQuizDataFromHtml(htmlContent);
       }
     } catch (e) {
@@ -150,43 +159,39 @@ class _QuizPageState extends State<QuizPage> {
   }
 
   void _startCountdown() {
-    // 解析活动结束时间
     final endTime = _activeData?['endTime'];
     final isManualEnd = _activeData?['endTime'] == null;
-    
+
     setState(() {
       _isManualEnd = isManualEnd;
     });
-    
+
     if (isManualEnd) {
-      // 手动结束情况
       _remainingTimeNotifier.value = '手动结束';
       return;
     }
-    
+
     if (endTime != null) {
       _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         final now = DateTime.now().millisecondsSinceEpoch;
         final remaining = endTime - now;
-        
+
         if (remaining <= 0) {
           _remainingTimeNotifier.value = '0分钟';
           timer.cancel();
           return;
         }
-        
+
         final minutes = (remaining / 60000).floor();
         final seconds = ((remaining % 60000) / 1000).floor();
-        
-        // 构造新时间字符串
+
         String newTime;
         if (minutes > 0) {
           newTime = '$minutes分$seconds秒';
         } else {
           newTime = '$seconds秒';
         }
-        
-        // 只在时间真正改变时更新ValueNotifier
+
         if (_remainingTimeNotifier.value != newTime) {
           _remainingTimeNotifier.value = newTime;
         }
@@ -198,7 +203,6 @@ class _QuizPageState extends State<QuizPage> {
   void dispose() {
     _countdownTimer?.cancel();
     _remainingTimeNotifier.dispose();
-    // 清理所有输入控制器
     for (var controller in _controllers.values) {
       controller.dispose();
     }
@@ -208,47 +212,41 @@ class _QuizPageState extends State<QuizPage> {
 
   Future<void> _loadQuizDataFromHtml(String htmlContent) async {
     try {
-      // 提取 quizList 数据 - 使用更精确的正则表达式
-      // 匹配 quizList = 开头，直到 ]; 结尾（数组结束）
       RegExp quizListRegex = RegExp(r'quizList\s*=\s*(\[.*?\]);', multiLine: true, dotAll: true);
       RegExp activeRegex = RegExp(r'active\s*=\s*(\{.*?\});', multiLine: true, dotAll: true);
-        
+
       Match? quizListMatch = quizListRegex.firstMatch(htmlContent);
       Match? activeMatch = activeRegex.firstMatch(htmlContent);
-        
+
       if (quizListMatch != null && activeMatch != null) {
         String quizListJson = quizListMatch.group(1)!;
         String activeJson = activeMatch.group(1)!;
-        
-        // 解析JSON数据
+
         List<dynamic> quizList = json.decode(quizListJson);
         Map<String, dynamic> activeData = json.decode(activeJson);
-        
+
         setState(() {
           _quizList = quizList;
           _activeData = activeData;
           _isLoading = false;
-          
-          // 初始化每个题目的答题数据
+
           for (var quiz in _quizList) {
             if (quiz['personAnswer'] == null) {
               quiz['personAnswer'] = {};
             }
-            
-            // 根据题目类型初始化答题数据
+
             switch (quiz['type']) {
-              case 0: // 单选题
-              case 1: // 多选题
-              case 3: // 判断题
-              case 16: // 判断题
+              case 0:
+              case 1:
+              case 3:
+              case 16:
                 quiz['personAnswer']['myoption'] = '';
                 break;
-              case 2: // 填空题
-              case 9: // 分录题
-              case 10: // 资料题
+              case 2:
+              case 9:
+              case 10:
                 if (quiz['personAnswer']['blankAnswer'] == null) {
                   quiz['personAnswer']['blankAnswer'] = [];
-                  // 初始化填空题的空格
                   if (quiz['answer'] != null) {
                     for (int i = 0; i < quiz['answer'].length; i++) {
                       quiz['personAnswer']['blankAnswer'].add({'content': ''});
@@ -256,11 +254,11 @@ class _QuizPageState extends State<QuizPage> {
                   }
                 }
                 break;
-              case 4: // 简答题
-              case 5: // 名词解释
-              case 6: // 论述题
-              case 7: // 计算题
-              case 18: // 口语题
+              case 4:
+              case 5:
+              case 6:
+              case 7:
+              case 18:
                 quiz['personAnswer']['content'] = '';
                 if (quiz['personAnswer']['recs'] == null) {
                   quiz['personAnswer']['recs'] = [];
@@ -271,8 +269,7 @@ class _QuizPageState extends State<QuizPage> {
                 break;
             }
           }
-          
-          // 启动倒计时
+
           if (_activeData != null) {
             _startCountdown();
           }
@@ -301,84 +298,77 @@ class _QuizPageState extends State<QuizPage> {
         });
         return;
       }
-      
-      // 解析HTML中的JavaScript数据
+
       String htmlContent = response.data.toString();
-        
-        // 提取 quizList 数据
-        RegExp quizListRegex = RegExp(r'quizList\s*=\s*(\[.*?\]);', multiLine: true, dotAll: true);
-        RegExp activeRegex = RegExp(r'active\s*=\s*(\{.*?\});', multiLine: true, dotAll: true);
-        
-        Match? quizListMatch = quizListRegex.firstMatch(htmlContent);
-        Match? activeMatch = activeRegex.firstMatch(htmlContent);
-        
-        if (quizListMatch != null && activeMatch != null) {
-          String quizListJson = quizListMatch.group(1)!;
-          String activeJson = activeMatch.group(1)!;
-          
-          // 解析JSON数据
-          List<dynamic> quizList = json.decode(quizListJson);
-          Map<String, dynamic> activeData = json.decode(activeJson);
-          
-          setState(() {
-            _quizList = quizList;
-            _activeData = activeData;
-            _isLoading = false;
-            
-            // 初始化每个题目的答题数据
-            for (var quiz in _quizList) {
-              if (quiz['personAnswer'] == null) {
-                quiz['personAnswer'] = {};
-              }
-              
-              // 根据题目类型初始化答题数据
-              switch (quiz['type']) {
-                case 0: // 单选题
-                case 1: // 多选题
-                case 3: // 判断题
-                case 16: // 判断题
-                  quiz['personAnswer']['myoption'] = '';
-                  break;
-                case 2: // 填空题
-                case 9: // 分录题
-                case 10: // 资料题
-                  if (quiz['personAnswer']['blankAnswer'] == null) {
-                    quiz['personAnswer']['blankAnswer'] = [];
-                    // 初始化填空题的空格
-                    if (quiz['answer'] != null) {
-                      for (int i = 0; i < quiz['answer'].length; i++) {
-                        quiz['personAnswer']['blankAnswer'].add({'content': ''});
-                      }
+
+      RegExp quizListRegex = RegExp(r'quizList\s*=\s*(\[.*?\]);', multiLine: true, dotAll: true);
+      RegExp activeRegex = RegExp(r'active\s*=\s*(\{.*?\});', multiLine: true, dotAll: true);
+
+      Match? quizListMatch = quizListRegex.firstMatch(htmlContent);
+      Match? activeMatch = activeRegex.firstMatch(htmlContent);
+
+      if (quizListMatch != null && activeMatch != null) {
+        String quizListJson = quizListMatch.group(1)!;
+        String activeJson = activeMatch.group(1)!;
+
+        List<dynamic> quizList = json.decode(quizListJson);
+        Map<String, dynamic> activeData = json.decode(activeJson);
+
+        setState(() {
+          _quizList = quizList;
+          _activeData = activeData;
+          _isLoading = false;
+
+          for (var quiz in _quizList) {
+            if (quiz['personAnswer'] == null) {
+              quiz['personAnswer'] = {};
+            }
+
+            switch (quiz['type']) {
+              case 0:
+              case 1:
+              case 3:
+              case 16:
+                quiz['personAnswer']['myoption'] = '';
+                break;
+              case 2:
+              case 9:
+              case 10:
+                if (quiz['personAnswer']['blankAnswer'] == null) {
+                  quiz['personAnswer']['blankAnswer'] = [];
+                  if (quiz['answer'] != null) {
+                    for (int i = 0; i < quiz['answer'].length; i++) {
+                      quiz['personAnswer']['blankAnswer'].add({'content': ''});
                     }
                   }
-                  break;
-                case 4: // 简答题
-                case 5: // 名词解释
-                case 6: // 论述题
-                case 7: // 计算题
-                case 18: // 口语题
-                  quiz['personAnswer']['content'] = '';
-                  if (quiz['personAnswer']['recs'] == null) {
-                    quiz['personAnswer']['recs'] = [];
-                  }
-                  if (quiz['personAnswer']['imgs'] == null) {
-                    quiz['personAnswer']['imgs'] = [];
-                  }
-                  break;
-              }
+                }
+                break;
+              case 4:
+              case 5:
+              case 6:
+              case 7:
+              case 18:
+                quiz['personAnswer']['content'] = '';
+                if (quiz['personAnswer']['recs'] == null) {
+                  quiz['personAnswer']['recs'] = [];
+                }
+                if (quiz['personAnswer']['imgs'] == null) {
+                  quiz['personAnswer']['imgs'] = [];
+                }
+                break;
             }
-            
-            // 启动倒计时
-            if (_activeData != null) {
-              _startCountdown();
-            }
-          });
-        } else {
-          setState(() {
-            _errorMessage = '解析测验数据失败';
-            _isLoading = false;
-          });
-        }
+          }
+
+          if (_activeData != null) {
+            _startCountdown();
+          }
+        });
+      } else {
+        setState(() {
+          _errorMessage = '解析测验数据失败';
+          _isLoading = false;
+        });
+      }
     } catch (e) {
       setState(() {
         _errorMessage = '加载数据出错: $e';
@@ -396,8 +386,7 @@ class _QuizPageState extends State<QuizPage> {
       }
       return;
     }
-    
-    // 先检查活动状态
+
     final status = await QuizApi.checkStatus(widget.classId, widget.active.id);
     if (status != null && !status){
       if (mounted) {
@@ -407,7 +396,7 @@ class _QuizPageState extends State<QuizPage> {
         return;
       }
     }
-    
+
     setState(() {
       _isSubmitting = true;
       _totalCount = _selectedAccounts.length;
@@ -427,16 +416,15 @@ class _QuizPageState extends State<QuizPage> {
         },
       );
 
-      // 处理结果
       for (int i = 0; i < _selectedAccounts.length; i++) {
         final account = _selectedAccounts[i];
         final result = results[i];
-        
+
         if (result == null || result['result'] != 1) {
           _failedAccounts.add('${account.name}: ${result?['errorMsg'] ?? '提交失败'}');
         }
       }
-      
+
       _showSubmitResult();
     } finally {
       if (mounted) {
@@ -448,42 +436,36 @@ class _QuizPageState extends State<QuizPage> {
   }
 
   List<dynamic> _constructSubmitData() {
-    // 构造要提交的数据格式
     return _quizList.map((quiz) {
       final quizData = Map<String, dynamic>.from(quiz);
-      
-      // 检查并自动填充未作答的题目
       _autoFillAnswers(quizData);
-
       return quizData;
     }).toList();
   }
-  
+
   void _autoFillAnswers(Map<String, dynamic> quizData) {
     final quizType = quizData['type'];
     final answers = quizData['answer'] as List?;
-    
+
     if (answers == null || answers.isEmpty) return;
-    
+
     switch (quizType) {
-      case 0: // 单选题
-      case 3: // 判断题
-      case 16: // 判断题
-        if (quizData['personAnswer']['myoption'] == null || 
+      case 0:
+      case 3:
+      case 16:
+        if (quizData['personAnswer']['myoption'] == null ||
             quizData['personAnswer']['myoption'] == '') {
-          // 寻找正确答案
           final correctOption = answers.firstWhere(
             (option) => option['isanswer'] == true,
-            orElse: () => answers.first, // 如果找不到正确答案，选择第一个
+            orElse: () => answers.first,
           );
           quizData['personAnswer']['myoption'] = correctOption['name'];
         }
         break;
-        
-      case 1: // 多选题
-        if (quizData['personAnswer']['myoption'] == null || 
+
+      case 1:
+        if (quizData['personAnswer']['myoption'] == null ||
             quizData['personAnswer']['myoption'] == '') {
-          // 寻找所有正确答案
           final correctOptions = answers
               .where((option) => option['isanswer'] == true)
               .map((option) => option['name'] as String)
@@ -492,14 +474,13 @@ class _QuizPageState extends State<QuizPage> {
           quizData['personAnswer']['myoption'] = correctOptions.join('');
         }
         break;
-        
-      case 2: // 填空题
+
+      case 2:
         final blankAnswers = quizData['personAnswer']['blankAnswer'] as List?;
         if (blankAnswers != null) {
           for (int i = 0; i < blankAnswers.length; i++) {
             final blank = blankAnswers[i];
             if (blank['content'] == null || blank['content'] == '') {
-              // 使用对应位置的正确答案（提取纯文本，分号分隔取第一个）
               if (i < answers.length) {
                 final correctAnswer = answers[i];
                 final htmlContent = correctAnswer['content'] ?? '';
@@ -510,16 +491,13 @@ class _QuizPageState extends State<QuizPage> {
           }
         }
         break;
-        
-      case 4: // 简答题
-        if (quizData['personAnswer']['content'] == null || 
+
+      case 4:
+        if (quizData['personAnswer']['content'] == null ||
             quizData['personAnswer']['content'] == '') {
           if (answers.isNotEmpty) {
-            // 使用第一个答案
             final correctAnswer = answers[0];
             final htmlAnswer = correctAnswer['answer'] ?? '';
-            // 如果有多个答案用分号分隔，只取第一个
-            // 不分割其实也算分
             final textAnswer = _extractTextFromHtml(htmlAnswer);
             final firstAnswer = textAnswer.split(';').first.trim();
             quizData['personAnswer']['content'] = firstAnswer;
@@ -544,8 +522,8 @@ class _QuizPageState extends State<QuizPage> {
         title: Text(
           successCount == _totalCount ? '全部提交成功' : '部分失败',
           style: TextStyle(
-            color: successCount == _totalCount 
-                ? Theme.of(context).colorScheme.primary 
+            color: successCount == _totalCount
+                ? Theme.of(context).colorScheme.primary
                 : Theme.of(context).colorScheme.error,
           ),
         ),
@@ -563,7 +541,7 @@ class _QuizPageState extends State<QuizPage> {
   Widget _buildQuizItem(dynamic quiz, int index) {
     final quizType = quiz['type'];
     final isMust = quiz['ismust'] == 1;
-    
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Padding(
@@ -571,7 +549,6 @@ class _QuizPageState extends State<QuizPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 题目标题
             Row(
               children: [
                 Text(
@@ -605,7 +582,7 @@ class _QuizPageState extends State<QuizPage> {
                           extensions: [
                             ImageExtension(
                               builder: (context) {
-                                final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
+                                final imageUrl = CXImageApi.toNewImageUrl(contextAttributes['src'] ?? '');
                                 return Image.network(
                                   imageUrl,
                                   headers: HeadersManager.chaoxingHeaders,
@@ -620,10 +597,21 @@ class _QuizPageState extends State<QuizPage> {
                     ],
                   ),
                 ),
+                // [新增] 搜索答案按钮
+                IconButton(
+                  icon: const Icon(Icons.search, size: 20),
+                  onPressed: () => _searchAnswer(quiz),
+                  tooltip: '搜索答案',
+                  style: IconButton.styleFrom(
+                    foregroundColor: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+                // [/新增]
               ],
             ),
-            
-            // 题目选项或输入框
+            // [新增] 答案检索入口（可选位置，在题干下方、选项上方）
+            // 实际通过上方 IconButton 触发，此处不再重复
+            // [/新增]
             _buildQuizContent(quiz, index),
           ],
         ),
@@ -633,22 +621,22 @@ class _QuizPageState extends State<QuizPage> {
 
   Widget _buildQuizContent(dynamic quiz, int index) {
     final quizType = quiz['type'];
-    
+
     switch (quizType) {
-      case 0: // 单选题
-      case 3: // 判断题
-      case 16: // 判断题
+      case 0:
+      case 3:
+      case 16:
         return _buildSingleChoiceOptions(quiz, index);
-      
-      case 1: // 多选题
+
+      case 1:
         return _buildMultipleChoiceOptions(quiz, index);
-      
-      case 2: // 填空题
+
+      case 2:
         return _buildBlankAnswerInputs(quiz, index);
-      
-      case 4: // 简答题
+
+      case 4:
         return _buildShortAnswerInput(quiz, index);
-      
+
       default:
         return const Text('暂不支持此题型');
     }
@@ -679,7 +667,7 @@ class _QuizPageState extends State<QuizPage> {
               extensions: [
                 ImageExtension(
                   builder: (context) {
-                    final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
+                    final imageUrl = CXImageApi.toNewImageUrl(contextAttributes['src'] ?? '');
                     return Image.network(
                       imageUrl,
                       headers: HeadersManager.chaoxingHeaders,
@@ -702,9 +690,9 @@ class _QuizPageState extends State<QuizPage> {
                 optionLabel,
                 style: TextStyle(
                   color: isSelected
-                      ? Colors.white 
+                      ? Colors.white
                       : isAnswer
-                          ? Theme.of(context).colorScheme.primary 
+                          ? Theme.of(context).colorScheme.primary
                           : Colors.grey[700],
                   fontWeight: FontWeight.bold,
                   fontSize: 14,
@@ -726,21 +714,21 @@ class _QuizPageState extends State<QuizPage> {
     if (answers == null || answers.isEmpty) {
       return const Text('无选项');
     }
-    
+
     return Column(
       children: answers.map((option) {
         final optionLabel = _getOptionLabel(option, quiz['type']);
         final isAnswer = option['isanswer'] == true;
         final selectedOptions = (quiz['personAnswer']['myoption'] as String?)?.split('') ?? [];
         final isSelected = selectedOptions.contains(option['name']);
-        
+
         return CheckboxListTile(
           title: Html(
             data: option['content'] ?? '',
             extensions: [
               ImageExtension(
                 builder: (context) {
-                  final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
+                  final imageUrl = CXImageApi.toNewImageUrl(contextAttributes['src'] ?? '');
                   return Image.network(
                     imageUrl,
                     headers: HeadersManager.chaoxingHeaders,
@@ -780,7 +768,6 @@ class _QuizPageState extends State<QuizPage> {
               } else {
                 selectedOptions.remove(option['name']);
               }
-              // 按字母顺序排序后拼接
               selectedOptions.sort();
               quiz['personAnswer']['myoption'] = selectedOptions.join('');
             });
@@ -791,7 +778,6 @@ class _QuizPageState extends State<QuizPage> {
     );
   }
 
-  /// 从HTML中提取纯文本
   String _extractTextFromHtml(String html) {
     try {
       String text = html.replaceAll(RegExp(r'<[^>]*>'), ' ');
@@ -802,7 +788,6 @@ class _QuizPageState extends State<QuizPage> {
     }
   }
 
-  /// 从HTML中提取图片URL列表
   List<String> _extractImageUrls(String html) {
     final urls = <String>[];
     try {
@@ -822,7 +807,6 @@ class _QuizPageState extends State<QuizPage> {
     return urls;
   }
 
-  /// 放大图片对话框
   void _showImageDialog(String url, String heroTag) {
     showDialog(
       context: context,
@@ -849,7 +833,6 @@ class _QuizPageState extends State<QuizPage> {
     );
   }
 
-  /// 为简答题选择并上传图片
   Future<void> _pickImages(dynamic quiz, int quizIndex) async {
     try {
       final ImagePicker picker = ImagePicker();
@@ -861,7 +844,6 @@ class _QuizPageState extends State<QuizPage> {
           try {
             final file = File(image.path);
             final api = CXImageApi();
-            // FIXME 所有的图片都是当前账号上传的（学习通目前没有对于图片的权鉴）
             final objectId = await api.uploadImage(file);
             if (objectId != null) {
               return {'image': image, 'objectId': objectId};
@@ -877,10 +859,8 @@ class _QuizPageState extends State<QuizPage> {
           }
         }).toList();
 
-        // 等待所有上传完成
         final results = await Future.wait(uploadFutures);
 
-        // 更新状态
         if (mounted) {
           setState(() {
             for (final result in results) {
@@ -889,7 +869,7 @@ class _QuizPageState extends State<QuizPage> {
                 final objectId = result['objectId'] as String;
 
                 quiz['personAnswer']['recs'].add({
-                  'name': xfile.name, // 这里应该是上传的名字 但是没有校验
+                  'name': xfile.name,
                   'objectid': objectId,
                   'suffix': xfile.path.split('.').last,
                   'type': '1',
@@ -910,7 +890,6 @@ class _QuizPageState extends State<QuizPage> {
     }
   }
 
-  /// 删除简答题的图片
   void _removeShortAnswerImage(dynamic quiz, int index) {
     setState(() {
       quiz['personAnswer']['recs'].removeAt(index);
@@ -923,26 +902,23 @@ class _QuizPageState extends State<QuizPage> {
     if (blankAnswers == null || blankAnswers.isEmpty) {
       return const Text('无填空');
     }
-      
+
     return Column(
       children: blankAnswers.asMap().entries.map((entry) {
         final index = entry.key;
         final blank = entry.value;
-        final correctAnswer = correctAnswers != null && index < correctAnswers.length 
+        final correctAnswer = correctAnswers != null && index < correctAnswers.length
             ? correctAnswers[index]['content'] ?? ''
             : '';
-        
-        // 提取纯文本并处理分号分隔
+
         final hintText = correctAnswer.isNotEmpty ?
         _extractTextFromHtml(correctAnswer).split(';').first.trim() : '请输入答案';
-        // 提取图片
         final imageUrls = correctAnswer.isNotEmpty ? _extractImageUrls(correctAnswer) : <String>[];
-        
-        // 为每个输入框创建唯一的 key
+
         final controllerKey = 'blank_${quizIndex}_$index';
-        final controller = _controllers.putIfAbsent(controllerKey, 
+        final controller = _controllers.putIfAbsent(controllerKey,
           () => TextEditingController(text: blank['content'] ?? ''));
-          
+
         return Padding(
           padding: const EdgeInsets.only(bottom: 12),
           child: Column(
@@ -1012,25 +988,20 @@ class _QuizPageState extends State<QuizPage> {
   }
 
   Widget _buildShortAnswerInput(dynamic quiz, int quizIndex) {
-    // 获取简答题的正确答案
     final correctAnswers = quiz['answer'] as List?;
     final correctAnswer = correctAnswers != null && correctAnswers.isNotEmpty
         ? correctAnswers[0]['answer'] ?? ''
         : '';
-      
-    // 为简答题创建唯一的 key
+
     final controllerKey = 'short_$quizIndex';
-    // 获取或创建 controller
     final controller = _controllers.putIfAbsent(controllerKey,
       () => TextEditingController(text: quiz['personAnswer']['content'] ?? ''));
-    
-    // 分离HTML中的文本和图片
+
     final hintText = correctAnswer.isNotEmpty ? _extractTextFromHtml(correctAnswer) : '请输入答案';
     final imageUrls = correctAnswer.isNotEmpty ? _extractImageUrls(correctAnswer) : <String>[];
-    
-    // 获取已上传的图片列表
+
     final uploadedImages = quiz['personAnswer']['recs'] as List? ?? [];
-      
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1197,14 +1168,12 @@ class _QuizPageState extends State<QuizPage> {
       ),
       body: Column(
         children: [
-          // 倒计时显示区域
           if (_activeData != null)
             CountdownDisplay(
               timeNotifier: _remainingTimeNotifier,
               isManualEnd: _isManualEnd,
             ),
-          
-          // 主要内容
+
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
@@ -1240,7 +1209,6 @@ class _QuizPageState extends State<QuizPage> {
                   ? const Center(child: Text('暂无题目'))
                   : Column(
                       children: [
-                        // 题目列表
                         Expanded(
                           child: ListView.builder(
                             itemCount: _quizList.length,
@@ -1249,8 +1217,7 @@ class _QuizPageState extends State<QuizPage> {
                             },
                           ),
                         ),
-                        
-                        // 账号选择器
+
                         AccountsSelector(
                           onSelectionChanged: (selected) {
                             setState(() {
@@ -1259,10 +1226,9 @@ class _QuizPageState extends State<QuizPage> {
                           },
                           initiallyExpanded: false,
                         ),
-                        
+
                         const SizedBox(height: 16),
-                        
-                        // 提交按钮
+
                         Container(
                           padding: const EdgeInsets.all(16),
                           child: ElevatedButton(
