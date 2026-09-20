@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:course_helper/api/answer_search.dart';
 import 'package:course_helper/models/answer_result.dart';
 import 'package:course_helper/utils/network_error.dart';
 
@@ -269,6 +270,248 @@ void main() {
     test('isNetworkError 便捷方法', () {
       expect(isNetworkError(const SocketException('x')), true);
       expect(isNetworkError(ArgumentError('x')), false);
+    });
+  });
+
+  // ===== v3 新增：地址补全 / 请求体 / 错误解析 / 答案回填 =====
+
+  group('API 地址补全 normalizeApiUrl', () {
+    test('百炼新域名 base_url 应自动补 /chat/completions', () {
+      const raw =
+          'https://ws-9vvakflm7lid50hq.cn-beijing.maas.aliyuncs.com/compatible-mode/v1';
+      expect(
+        AnswerSearchApi.normalizeApiUrl(raw),
+        '$raw/chat/completions',
+      );
+    });
+
+    test('旧的 dashscope 域名同样补全', () {
+      const raw = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+      expect(AnswerSearchApi.normalizeApiUrl(raw), '$raw/chat/completions');
+    });
+
+    test('只写到 /compatible-mode 时应补 /v1/chat/completions', () {
+      expect(
+        AnswerSearchApi.normalizeApiUrl('https://a.com/compatible-mode'),
+        'https://a.com/compatible-mode/v1/chat/completions',
+      );
+    });
+
+    test('/v1 结尾应补 /chat/completions', () {
+      expect(
+        AnswerSearchApi.normalizeApiUrl('https://api.deepseek.com/v1'),
+        'https://api.deepseek.com/v1/chat/completions',
+      );
+    });
+
+    test('已经是完整接口地址时保持不变', () {
+      const full = 'https://api.openai.com/v1/chat/completions';
+      expect(AnswerSearchApi.normalizeApiUrl(full), full);
+    });
+
+    test('结尾多余的斜杠应被去掉', () {
+      expect(
+        AnswerSearchApi.normalizeApiUrl('https://a.com/v1///'),
+        'https://a.com/v1/chat/completions',
+      );
+    });
+
+    test('带引号的地址应能处理', () {
+      expect(
+        AnswerSearchApi.normalizeApiUrl('"https://a.com/v1"'),
+        'https://a.com/v1/chat/completions',
+      );
+    });
+
+    test('空地址返回空字符串', () {
+      expect(AnswerSearchApi.normalizeApiUrl('   '), '');
+    });
+  });
+
+  group('请求体构造', () {
+    AIAnswerProvider provider({
+      String model = 'qwen3.8-flash',
+      bool disableThinking = true,
+    }) =>
+        AIAnswerProvider(
+          apiUrl: 'https://a.com/v1',
+          apiKey: 'sk-test',
+          model: model,
+          disableThinking: disableThinking,
+        );
+
+    test('思考型模型应注入 enable_thinking=false', () {
+      final body = provider().buildRequestBody('题干', const []);
+      expect(body['enable_thinking'], false);
+      expect(body['stream'], false);
+      expect(body['max_tokens'], isA<int>());
+    });
+
+    test('非思考型模型不应带 enable_thinking', () {
+      final body = provider(model: 'gpt-4o-mini').buildRequestBody('题干', const []);
+      expect(body.containsKey('enable_thinking'), false);
+    });
+
+    test('关掉「关闭思考模式」开关后不注入参数', () {
+      final body = provider(disableThinking: false).buildRequestBody('题干', const []);
+      expect(body.containsKey('enable_thinking'), false);
+    });
+
+    test('qvq 开头的模型也算思考型', () {
+      expect(provider(model: 'qvq-max').injectThinkingFlag, true);
+    });
+
+    test('带图片时应构造多模态 content 数组', () {
+      final body = provider().buildRequestBody('题干', const ['data:image/png;base64,AAA']);
+      final messages = body['messages'] as List;
+      final userContent = messages.last['content'];
+      expect(userContent, isA<List>());
+      expect((userContent as List).first['type'], 'text');
+      expect(userContent.last['type'], 'image_url');
+    });
+
+    test('effectiveUrl 应自动补全', () {
+      final p = AIAnswerProvider(
+        apiUrl: 'https://a.com/compatible-mode/v1',
+        apiKey: 'k',
+        model: 'm',
+      );
+      expect(p.effectiveUrl, 'https://a.com/compatible-mode/v1/chat/completions');
+    });
+  });
+
+  group('错误响应解析', () {
+    test('应解析 OpenAI 兼容的错误体', () {
+      final info = AnswerSearchApi.parseErrorBody({
+        'error': {
+          'message': 'Invalid API-key provided.',
+          'type': 'invalid_request_error',
+          'code': 'invalid_api_key',
+        },
+      });
+      expect(info.code, 'invalid_api_key');
+      expect(info.message, 'Invalid API-key provided.');
+      expect(info.text, contains('invalid_api_key'));
+    });
+
+    test('应解析顶层 code/message', () {
+      final info = AnswerSearchApi.parseErrorBody({
+        'code': 'Throttling',
+        'message': 'Requests throttled',
+      });
+      expect(info.code, 'Throttling');
+      expect(info.message, 'Requests throttled');
+    });
+
+    test('空响应体应返回空结果', () {
+      expect(AnswerSearchApi.parseErrorBody(null).isEmpty, true);
+    });
+
+    test('404 的错误文案应提示补 /chat/completions', () {
+      final text = AnswerSearchApi.formatHttpError(404, null);
+      expect(text, contains('404'));
+      expect(text, contains('/chat/completions'));
+    });
+
+    test('401 的错误文案应提到地域不匹配', () {
+      final text = AnswerSearchApi.formatHttpError(
+        401,
+        const ServerErrorInfo(code: 'invalid_api_key', message: 'bad key'),
+      );
+      expect(text, contains('401'));
+      expect(text, contains('invalid_api_key'));
+    });
+  });
+
+  group('回复清洗 stripCodeFence', () {
+    test('应剥离 ```json 围栏', () {
+      const raw = '```json\n{"answer":"A"}\n```';
+      expect(AnswerSearchApi.stripCodeFence(raw), '{"answer":"A"}');
+    });
+
+    test('应剥离无语言标记的围栏', () {
+      const raw = '```\n{"answer":"A"}\n```';
+      expect(AnswerSearchApi.stripCodeFence(raw), '{"answer":"A"}');
+    });
+
+    test('没有围栏时原样返回', () {
+      const raw = '{"answer":"A"}';
+      expect(AnswerSearchApi.stripCodeFence(raw), raw);
+    });
+  });
+
+  group('答案回填 matchOptionKeys', () {
+    final options = [
+      StandardizedOption(key: 'A', value: '甲'),
+      StandardizedOption(key: 'B', value: '乙'),
+      StandardizedOption(key: 'C', value: '丙'),
+    ];
+
+    AnswerSearchResult result({
+      String answer = '',
+      List<String> keys = const [],
+    }) =>
+        AnswerSearchResult(
+          answer: answer,
+          source: 'test',
+          confidence: 0.8,
+          sourceType: AnswerSourceType.aiProvider,
+          answerKeys: keys,
+        );
+
+    test('answerKeys 应直接匹配', () {
+      expect(result(answer: 'AC', keys: ['A', 'C']).matchOptionKeys(options),
+          ['A', 'C']);
+    });
+
+    test('没有 answerKeys 时应从 answer 文本里抠字母', () {
+      expect(result(answer: 'AC').matchOptionKeys(options), ['A', 'C']);
+      expect(result(answer: 'A、C').matchOptionKeys(options), ['A', 'C']);
+      expect(result(answer: '选A和C').matchOptionKeys(options), ['A', 'C']);
+    });
+
+    test('单选题只回一个 key', () {
+      expect(result(answer: 'B').matchOptionKeys(options), ['B']);
+    });
+
+    test('答案与选项对不上时返回空', () {
+      final onlyBC = [
+        StandardizedOption(key: 'B', value: '乙'),
+        StandardizedOption(key: 'C', value: '丙'),
+      ];
+      expect(result(answer: 'A').matchOptionKeys(onlyBC), isEmpty);
+    });
+
+    test('返回顺序应跟随选项原始顺序', () {
+      expect(result(answer: 'CA').matchOptionKeys(options), ['A', 'C']);
+    });
+
+    test('判断题「对」应映射到值为「对」的选项', () {
+      final judgement = [
+        StandardizedOption(key: 'A', value: '对'),
+        StandardizedOption(key: 'B', value: '错'),
+      ];
+      expect(result(answer: '对').matchOptionKeys(judgement), ['A']);
+      expect(result(answer: '正确').matchOptionKeys(judgement), ['A']);
+      expect(result(answer: '错').matchOptionKeys(judgement), ['B']);
+      expect(result(answer: '错误').matchOptionKeys(judgement), ['B']);
+    });
+
+    test('「不正确」不应被当成「正确」', () {
+      final judgement = [
+        StandardizedOption(key: 'A', value: '对'),
+        StandardizedOption(key: 'B', value: '错'),
+      ];
+      expect(result(answer: '不正确').matchOptionKeys(judgement), ['B']);
+    });
+
+    test('lettersOf 应去重并大写', () {
+      expect(AnswerSearchResult.lettersOf('a, a, C'), ['A', 'C']);
+      expect(AnswerSearchResult.lettersOf('没有字母'), isEmpty);
+    });
+
+    test('选项为空时返回空', () {
+      expect(result(answer: 'A').matchOptionKeys(const []), isEmpty);
     });
   });
 }

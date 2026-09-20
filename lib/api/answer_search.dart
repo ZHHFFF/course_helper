@@ -5,12 +5,16 @@
 /// 1. 题型识别：自动区分单选 / 多选 / 判断 / 填空 / 简答，并提示 AI 按题型作答
 /// 2. 课件识图：雨课堂题目只写在 PPT 上时，自动把当前页图片发给多模态模型识别
 /// 3. 连通测试：设置页可一键测试 API 是否可用
+/// 4. 地址容错：只填 base_url（如 .../compatible-mode/v1）也会自动补上 /chat/completions
+/// 5. 可诊断：失败原因、实际请求地址、HTTP 状态码、耗时都会记录下来供界面展示
+library;
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models/answer_result.dart';
 import '../models/presentation.dart';
+import '../utils/app_logger.dart';
 import '../utils/network_error.dart';
 import '../utils/storage.dart';
 
@@ -50,21 +54,106 @@ class BuiltinAnswerProvider implements AnswerSearchProvider {
         confidence: 1.0,
         explanation: '此答案来自服务器直接返回的正确答案标记(isanswer=true)，可信度最高',
         sourceType: AnswerSourceType.builtin,
+        answerKeys: AnswerSearchResult.lettersOf(answer),
       ),
     ];
   }
+}
+
+/// 单次 AI 请求的诊断信息（供界面展示，便于排查）
+class AIRequestInfo {
+  /// 实际请求的地址（已自动补全）
+  final String url;
+  final String model;
+  final int? statusCode;
+  final int? latencyMs;
+  final String? error;
+
+  const AIRequestInfo({
+    required this.url,
+    required this.model,
+    this.statusCode,
+    this.latencyMs,
+    this.error,
+  });
+
+  String get latencyText =>
+      latencyMs == null ? '' : '${(latencyMs! / 1000).toStringAsFixed(2)} 秒';
+
+  /// 多行摘要，直接丢进界面
+  String get summary {
+    final buffer = StringBuffer();
+    buffer.writeln('请求地址：$url');
+    buffer.writeln('模型：$model');
+    if (statusCode != null) buffer.writeln('HTTP 状态码：$statusCode');
+    if (latencyMs != null) buffer.writeln('耗时：$latencyText');
+    if (error != null && error!.trim().isNotEmpty) {
+      buffer.writeln('错误：${error!.trim()}');
+    }
+    return buffer.toString().trim();
+  }
+}
+
+/// 服务端返回的错误体（OpenAI 兼容格式）
+class ServerErrorInfo {
+  final String? code;
+  final String? message;
+
+  const ServerErrorInfo({this.code, this.message});
+
+  bool get isEmpty =>
+      (code == null || code!.trim().isEmpty) &&
+      (message == null || message!.trim().isEmpty);
+
+  /// "invalid_api_key: Invalid API-key provided." 形式
+  String get text {
+    final c = code?.trim() ?? '';
+    final m = message?.trim() ?? '';
+    if (c.isEmpty) return m;
+    if (m.isEmpty) return c;
+    return '$c: $m';
+  }
+}
+
+/// AI 服务商预设
+class AIProviderPreset {
+  final String name;
+  final String apiUrl;
+
+  /// 建议的模型名（用户可改）
+  final String model;
+
+  /// 提示文案
+  final String hint;
+
+  const AIProviderPreset({
+    required this.name,
+    required this.apiUrl,
+    required this.model,
+    this.hint = '',
+  });
 }
 
 /// AI 检索源
 /// 调用 OpenAI 兼容的 Chat Completions API 进行答案检索
 /// 支持多模态：题目只有图片时，会把图片以 base64 形式一起发过去
 class AIAnswerProvider implements AnswerSearchProvider {
+  /// 用户填写的地址（可能是 base_url，也可能是完整 endpoint）
   final String apiUrl;
   final String apiKey;
   final String model;
 
+  /// 是否关闭思考模式（仅对混合思考模型生效，如 qwen3.8-flash）
+  final bool disableThinking;
+
+  /// 接收超时（秒）
+  final int timeoutSeconds;
+
   /// 最近一次检索失败的原因（供界面提示）
   String? lastError;
+
+  /// 最近一次请求的诊断信息
+  AIRequestInfo? lastRequestInfo;
 
   /// 单张图片大小上限，超过则不发（避免请求体过大）
   static const int _maxImageBytes = 5 * 1024 * 1024;
@@ -72,20 +161,62 @@ class AIAnswerProvider implements AnswerSearchProvider {
   /// 最多附带几张图片
   static const int _maxImages = 3;
 
+  /// 回答长度上限
+  static const int _maxTokens = 2048;
+
+  /// 默认接收超时（秒）——思考型模型官方建议 ≥180s
+  static const int defaultTimeoutSeconds = 180;
+
   AIAnswerProvider({
     required this.apiUrl,
     required this.apiKey,
     required this.model,
+    this.disableThinking = true,
+    this.timeoutSeconds = defaultTimeoutSeconds,
   });
 
   @override
   String get name => 'AI检索';
 
+  /// 实际请求的地址（自动补全 /chat/completions）
+  String get effectiveUrl => AnswerSearchApi.normalizeApiUrl(apiUrl);
+
+  /// 是否为「混合思考」模型（这些模型默认开思考，且接受 enable_thinking 参数）
+  bool get isThinkingModel {
+    final m = model.trim().toLowerCase();
+    return m.startsWith('qwen3') || m.startsWith('qvq');
+  }
+
+  /// 是否需要在请求体里注入 enable_thinking
+  bool get injectThinkingFlag => disableThinking && isThinkingModel;
+
+  /// 组装请求体（单独抽出来方便测试）
+  Map<String, dynamic> buildRequestBody(
+    String prompt,
+    List<String> imageDataUrls,
+  ) {
+    final body = <String, dynamic>{
+      'model': model,
+      'messages': [
+        {'role': 'system', 'content': _systemPrompt},
+        {'role': 'user', 'content': _buildUserContent(prompt, imageDataUrls)},
+      ],
+      'temperature': 0.3,
+      'max_tokens': _maxTokens,
+      'stream': false,
+    };
+    if (injectThinkingFlag) {
+      body['enable_thinking'] = false;
+    }
+    return body;
+  }
+
   @override
   Future<List<AnswerSearchResult>> search(StandardizedQuestion question) async {
     lastError = null;
+    lastRequestInfo = null;
 
-    if (apiUrl.isEmpty || apiKey.isEmpty) {
+    if (apiUrl.trim().isEmpty || apiKey.trim().isEmpty) {
       lastError = '未配置 API 地址或 API Key';
       return [];
     }
@@ -95,62 +226,131 @@ class AIAnswerProvider implements AnswerSearchProvider {
       return [];
     }
 
+    final url = effectiveUrl;
+    final stopwatch = Stopwatch()..start();
+
     try {
       final prompt = _buildPrompt(question);
       final imageParts = await _loadImageDataUrls(question);
 
+      AppLogger.i(
+        '答案检索',
+        '开始检索：题型=${question.typeLabel} 题干长度=${question.effectiveText.length} '
+        '选项数=${question.options.length} 图片数=${imageParts.length}',
+      );
+      AppLogger.i(
+        '答案检索',
+        '请求地址=$url 模型=$model 关闭思考=$injectThinkingFlag 超时=${timeoutSeconds}s',
+      );
+
       final dio = Dio(BaseOptions(
-        connectTimeout: const Duration(seconds: 15),
-        receiveTimeout: const Duration(seconds: 60),
+        connectTimeout: const Duration(seconds: 20),
+        receiveTimeout: Duration(seconds: timeoutSeconds),
+        // 4xx 也交给自己处理，方便读出服务端的具体报错
+        validateStatus: (code) => code != null && code < 500,
       ));
+      dio.interceptors.add(const LoggingInterceptor(tag: 'AI请求'));
 
       final response = await dio.post(
-        apiUrl,
+        url,
         options: Options(
           headers: {
             'Authorization': 'Bearer $apiKey',
             'Content-Type': 'application/json',
           },
         ),
-        data: jsonEncode({
-          'model': model,
-          'messages': [
-            {
-              'role': 'system',
-              'content': '你是一个答题助手。请根据题目和选项作答。'
-                  '要求先给出答案，再给出分析过程。'
-                  '以JSON格式回复：{"answer": "答案", "confidence": 0.0到1.0的数值, "explanation": "分析过程"}。'
-                  '对于选择题，answer为选项字母(如A或AB)，多选题必须给出全部正确选项；'
-                  '对于判断题为"对"或"错"；'
-                  '对于填空/简答题，直接给出答案文本。'
-                  'explanation中先说明为什么选这个答案，再补充相关知识或解析。'
-                  '如果题目以图片形式给出，请先仔细识别图片中的题干和选项，再作答。'
-                  '如果不确定答案，confidence设为0.3以下。'
-                  '只返回JSON，不要返回其他内容。',
-            },
-            {
-              'role': 'user',
-              'content': _buildUserContent(prompt, imageParts),
-            },
-          ],
-          'temperature': 0.3,
-        }),
+        data: jsonEncode(buildRequestBody(prompt, imageParts)),
       );
+      stopwatch.stop();
 
-      final content = response.data['choices']?[0]?['message']?['content']
-          as String?;
-      if (content == null) {
-        lastError = 'AI 返回内容为空';
+      final code = response.statusCode ?? 0;
+      if (code != 200) {
+        final server = AnswerSearchApi.parseErrorBody(response.data);
+        lastError = AnswerSearchApi.formatHttpError(code, server);
+        lastRequestInfo = AIRequestInfo(
+          url: url,
+          model: model,
+          statusCode: code,
+          latencyMs: stopwatch.elapsedMilliseconds,
+          error: lastError,
+        );
+        AppLogger.e('答案检索', 'HTTP $code → $lastError');
+        debugPrint('AI 检索失败：$lastError');
         return [];
       }
 
+      lastRequestInfo = AIRequestInfo(
+        url: url,
+        model: model,
+        statusCode: code,
+        latencyMs: stopwatch.elapsedMilliseconds,
+      );
+
+      final message = _readMessage(response.data);
+      final rawContent = message['content'];
+      var content = rawContent is String ? rawContent.trim() : '';
+
+      // 思考型模型可能把内容放在 reasoning_content 里
+      if (content.isEmpty) {
+        final rawReasoning = message['reasoning_content'];
+        content = rawReasoning is String ? rawReasoning.trim() : '';
+      }
+
+      if (content.isEmpty) {
+        lastError = 'AI 返回内容为空（HTTP 200，但 message.content 为空）';
+        lastRequestInfo = AIRequestInfo(
+          url: url,
+          model: model,
+          statusCode: code,
+          latencyMs: stopwatch.elapsedMilliseconds,
+          error: lastError,
+        );
+        AppLogger.e('答案检索', lastError!);
+        return [];
+      }
+
+      AppLogger.i('答案检索',
+          'HTTP 200，用时 ${stopwatch.elapsedMilliseconds}ms，返回 ${content.length} 字符');
+
       return _parseAIResponse(content);
     } catch (e) {
+      stopwatch.stop();
       final info = describeError(e);
-      lastError = info.message;
+
+      String? serverText;
+      int? statusCode;
+      if (e is DioException) {
+        statusCode = e.response?.statusCode;
+        final server = AnswerSearchApi.parseErrorBody(e.response?.data);
+        if (!server.isEmpty) serverText = server.text;
+      }
+
+      lastError = serverText == null ? info.message : '${info.message}｜$serverText';
+      lastRequestInfo = AIRequestInfo(
+        url: url,
+        model: model,
+        statusCode: statusCode,
+        latencyMs: stopwatch.elapsedMilliseconds,
+        error: lastError,
+      );
+      AppLogger.e('答案检索', '请求异常：$lastError');
       debugPrint('AI 检索失败：$e');
       return [];
     }
+  }
+
+  /// 取 choices[0].message
+  Map<String, dynamic> _readMessage(dynamic data) {
+    try {
+      final choices = data['choices'];
+      if (choices is List && choices.isNotEmpty) {
+        final message = choices[0]['message'];
+        if (message is Map) return Map<String, dynamic>.from(message);
+      }
+    } catch (_) {
+      // 忽略，下面返回空 map
+    }
+    return <String, dynamic>{};
   }
 
   /// 组装 user 消息：纯文本，或 文本 + 图片
@@ -180,9 +380,11 @@ class AIAnswerProvider implements AnswerSearchProvider {
     if (urls.isEmpty) return [];
 
     final dio = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 10),
-      receiveTimeout: const Duration(seconds: 25),
+      connectTimeout: const Duration(seconds: 20),
+      receiveTimeout: const Duration(seconds: 60),
     ));
+    dio.interceptors
+        .add(const LoggingInterceptor(tag: 'AI图片', logResponseBody: false));
 
     final result = <String>[];
     for (final url in urls) {
@@ -201,12 +403,14 @@ class AIAnswerProvider implements AnswerSearchProvider {
         final bytes = resp.data;
         if (bytes == null || bytes.isEmpty) continue;
         if (bytes.length > _maxImageBytes) {
+          AppLogger.w('AI图片', '图片过大，跳过：$url (${bytes.length} bytes)');
           debugPrint('图片过大，跳过：$url (${bytes.length} bytes)');
           continue;
         }
         final mime = _guessMime(url, resp.headers);
         result.add('data:$mime;base64,${base64Encode(bytes)}');
       } catch (e) {
+        AppLogger.w('AI图片', '图片下载失败（$url）：$e');
         debugPrint('图片下载失败（$url）：$e');
       }
     }
@@ -236,10 +440,10 @@ class AIAnswerProvider implements AnswerSearchProvider {
         buffer.writeln('注意：本题为多选题，答案可能不止一个，请给出全部正确选项字母（如 ABD）。');
         break;
       case 'single':
-        buffer.writeln('注意：本题为单选题，只选一个选项。');
+        buffer.writeln('注意：本题为单选题，只能选一个选项。');
         break;
       case 'judgement':
-        buffer.writeln('注意：本题为判断题，答案只能是「对」或「错」。');
+        buffer.writeln('注意：本题为判断题，请在选项里选出代表「对」或「错」的那一项。');
         break;
       default:
         break;
@@ -260,6 +464,11 @@ class AIAnswerProvider implements AnswerSearchProvider {
       for (final opt in question.options) {
         buffer.writeln('${opt.key}. ${opt.value}');
       }
+      final keys = question.options
+          .map((o) => o.key.trim())
+          .where((k) => k.isNotEmpty)
+          .join('、');
+      buffer.writeln('answerKeys 只能从这些选项字母里选：$keys');
     } else if (question.hasImage) {
       buffer.writeln('选项可能同样出现在图片中，请一并识别。');
     }
@@ -267,31 +476,55 @@ class AIAnswerProvider implements AnswerSearchProvider {
     return buffer.toString();
   }
 
-  List<AnswerSearchResult> _parseAIResponse(String content) {
+  /// 系统提示词
+  static const String _systemPrompt =
+      '你是一个答题助手。请根据题目和选项作答，先给出答案，再给出分析过程。\n'
+      '以 JSON 格式回复，字段如下：\n'
+      '{"answerKeys": ["A", "C"], "answer": "AC", "confidence": 0.85, "explanation": "分析过程"}\n'
+      '字段要求：\n'
+      '1. answerKeys 是正确选项的字母数组，只能取题目给出的选项字母。\n'
+      '   · 单选题只给 1 个；多选题必须给出全部正确项；\n'
+      '   · 判断题请选代表「对」或「错」的那一项字母；\n'
+      '   · 填空题、简答题没有选项时返回空数组 []。\n'
+      '2. answer 是答案文本：选择题为选项字母（如 A 或 AC）；判断题填所选选项的原文；'
+      '填空/简答题直接给答案文本。\n'
+      '3. confidence 是 0 到 1 之间的数值，不确定时设 0.3 以下。\n'
+      '4. explanation 先说明为什么选这个答案，再补充相关知识或解析。\n'
+      '题目以图片形式给出时，先仔细识别图片中的题干和选项，再作答。\n'
+      '只返回 JSON，不要返回其他内容。';
+
+  List<AnswerSearchResult> _parseAIResponse(String rawContent) {
+    final content = AnswerSearchApi.stripCodeFence(rawContent);
+
     try {
-      // 尝试从回复中提取 JSON
       final jsonStr = content.contains('{')
           ? content.substring(
               content.indexOf('{'), content.lastIndexOf('}') + 1)
           : content;
 
       final parsed = jsonDecode(jsonStr) as Map<String, dynamic>;
-      final answer = parsed['answer'] as String? ?? '';
-      final confidence = (parsed['confidence'] as num?)?.toDouble() ?? 0.5;
-      final explanation = parsed['explanation'] as String?;
 
-      if (answer.isEmpty) {
-        lastError = 'AI 未给出答案';
+      final answer = _readAnswerText(parsed['answer']);
+      final answerKeys = _readAnswerKeys(parsed['answerKeys']);
+      final confidence = (parsed['confidence'] as num?)?.toDouble() ?? 0.5;
+      final explanation = parsed['explanation']?.toString();
+
+      // answer 为空但给了 answerKeys 时，用 key 拼一个
+      final finalAnswer = answer.isEmpty ? answerKeys.join() : answer;
+
+      if (finalAnswer.isEmpty) {
+        lastError = 'AI 未给出答案（返回的 JSON 里 answer 与 answerKeys 都为空）';
         return [];
       }
 
       return [
         AnswerSearchResult(
-          answer: answer,
+          answer: finalAnswer,
           source: 'AI ($model)',
           confidence: confidence,
           explanation: explanation,
           sourceType: AnswerSourceType.aiProvider,
+          answerKeys: answerKeys,
         ),
       ];
     } catch (e) {
@@ -307,6 +540,35 @@ class AIAnswerProvider implements AnswerSearchProvider {
       ];
     }
   }
+
+  /// answer 可能是字符串，也可能是数组
+  static String _readAnswerText(dynamic raw) {
+    if (raw == null) return '';
+    if (raw is String) return raw.trim();
+    if (raw is List) {
+      return raw
+          .map((e) => (e ?? '').toString().trim())
+          .where((e) => e.isNotEmpty)
+          .join();
+    }
+    return raw.toString().trim();
+  }
+
+  /// answerKeys 可能是数组，也可能是 "AC" 这种字符串
+  static List<String> _readAnswerKeys(dynamic raw) {
+    if (raw == null) return const [];
+    if (raw is String) return AnswerSearchResult.lettersOf(raw);
+    if (raw is List) {
+      final keys = <String>[];
+      for (final item in raw) {
+        for (final letter in AnswerSearchResult.lettersOf('${item ?? ''}')) {
+          if (!keys.contains(letter)) keys.add(letter);
+        }
+      }
+      return keys;
+    }
+    return const [];
+  }
 }
 
 /// API 连通测试结果
@@ -316,7 +578,7 @@ class AIConnectionTestResult {
   /// 一句话结论
   final String message;
 
-  /// 详细信息（模型回复片段 / 错误原文）
+  /// 详细信息（模型回复片段 / 错误原文 / 请求诊断）
   final String? detail;
 
   /// 耗时（毫秒）
@@ -343,6 +605,90 @@ class AnswerSearchApi {
   static const _apiUrlKey = 'answer_search_api_url';
   static const _apiKeyKey = 'answer_search_api_key';
   static const _modelKey = 'answer_search_model';
+  static const _disableThinkingKey = 'answer_search_disable_thinking';
+  static const _timeoutKey = 'answer_search_timeout_seconds';
+
+  /// 默认关闭思考模式（思考型模型慢约 3 倍）
+  static const bool defaultDisableThinking = true;
+
+  /// 默认接收超时
+  static const int defaultTimeoutSeconds = AIAnswerProvider.defaultTimeoutSeconds;
+
+  /// 内置的服务商预设
+  static const List<AIProviderPreset> presets = [
+    AIProviderPreset(
+      name: '阿里云百炼',
+      apiUrl:
+          'https://ws-9vvakflm7lid50hq.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+      model: 'qwen3.8-flash',
+      hint: '新域名要带 WorkspaceId；API Key 分地域，北京的 Key 只能打北京的地址。'
+          '地址只填到 /compatible-mode/v1 即可，App 会自动补上 /chat/completions。',
+    ),
+    AIProviderPreset(
+      name: '百炼（旧域名）',
+      apiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      model: 'qwen3.8-flash',
+      hint: '阿里云百炼通用域名，适用于没有专属 WorkspaceId 的账号。',
+    ),
+    AIProviderPreset(
+      name: 'DeepSeek',
+      apiUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-chat',
+      hint: 'DeepSeek 官方接口，模型名 deepseek-chat / deepseek-reasoner。',
+    ),
+    AIProviderPreset(
+      name: 'OpenAI',
+      apiUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      hint: '需要能访问 OpenAI 的网络环境；识图用 gpt-4o。',
+    ),
+    AIProviderPreset(
+      name: '自定义',
+      apiUrl: '',
+      model: '',
+      hint: '填任意 OpenAI 兼容接口，地址写到 /v1 或完整 /chat/completions 都可以。',
+    ),
+  ];
+
+  /// 把用户填的地址补全成真正的接口地址
+  ///
+  /// - `https://xxx/compatible-mode/v1`        → 补 `/chat/completions`
+  /// - `https://xxx/compatible-mode`           → 补 `/v1/chat/completions`
+  /// - `https://xxx/v1`                        → 补 `/chat/completions`
+  /// - 已以 `/chat/completions` 结尾           → 原样返回
+  /// - 其他形态                                → 原样返回，由「测试连接」报错提示
+  static String normalizeApiUrl(String raw) {
+    var url = raw.trim();
+    if (url.isEmpty) return '';
+
+    // 复制粘贴时常见的引号
+    if (url.length >= 2) {
+      final first = url.substring(0, 1);
+      final last = url.substring(url.length - 1);
+      if ((first == '"' && last == '"') || (first == "'" && last == "'")) {
+        url = url.substring(1, url.length - 1).trim();
+      }
+    }
+
+    while (url.endsWith('/')) {
+      url = url.substring(0, url.length - 1);
+    }
+    if (url.isEmpty) return '';
+
+    final lower = url.toLowerCase();
+    if (lower.endsWith('/chat/completions') ||
+        lower.endsWith('/completions') ||
+        lower.endsWith('/responses')) {
+      return url;
+    }
+    if (lower.endsWith('/compatible-mode')) {
+      return '$url/v1/chat/completions';
+    }
+    if (lower.endsWith('/compatible-mode/v1') || lower.endsWith('/v1')) {
+      return '$url/chat/completions';
+    }
+    return url;
+  }
 
   static Future<void> initialize() async {
     if (_initialized) return;
@@ -361,12 +707,18 @@ class AnswerSearchApi {
     final apiUrl = prefs.getString(_apiUrlKey) ?? '';
     final apiKey = prefs.getString(_apiKeyKey) ?? '';
     final model = prefs.getString(_modelKey) ?? 'gpt-3.5-turbo';
+    final disableThinking =
+        prefs.getBool(_disableThinkingKey) ?? defaultDisableThinking;
+    final timeoutSeconds =
+        prefs.getInt(_timeoutKey) ?? defaultTimeoutSeconds;
 
     if (apiUrl.isNotEmpty && apiKey.isNotEmpty) {
       _aiProvider = AIAnswerProvider(
         apiUrl: apiUrl,
         apiKey: apiKey,
         model: model,
+        disableThinking: disableThinking,
+        timeoutSeconds: timeoutSeconds <= 0 ? defaultTimeoutSeconds : timeoutSeconds,
       );
     } else {
       _aiProvider = null;
@@ -413,18 +765,29 @@ class AnswerSearchApi {
   /// 最近一次 AI 检索失败原因（没有失败则为 null）
   static String? get lastAIError => _aiProvider?.lastError;
 
+  /// 最近一次 AI 请求的诊断信息（没有则为 null）
+  static AIRequestInfo? get lastRequestInfo => _aiProvider?.lastRequestInfo;
+
   /// 保存 AI 配置
   static Future<void> saveAIConfig({
     required bool enabled,
     required String apiUrl,
     required String apiKey,
     required String model,
+    bool? disableThinking,
+    int? timeoutSeconds,
   }) async {
     final prefs = StorageManager.prefs;
     await prefs.setBool(_enabledKey, enabled);
     await prefs.setString(_apiUrlKey, apiUrl);
     await prefs.setString(_apiKeyKey, apiKey);
     await prefs.setString(_modelKey, model);
+    if (disableThinking != null) {
+      await prefs.setBool(_disableThinkingKey, disableThinking);
+    }
+    if (timeoutSeconds != null) {
+      await prefs.setInt(_timeoutKey, timeoutSeconds);
+    }
     _loadAIConfig();
   }
 
@@ -436,6 +799,9 @@ class AnswerSearchApi {
       'apiUrl': prefs.getString(_apiUrlKey) ?? '',
       'apiKey': prefs.getString(_apiKeyKey) ?? '',
       'model': prefs.getString(_modelKey) ?? 'gpt-3.5-turbo',
+      'disableThinking':
+          prefs.getBool(_disableThinkingKey) ?? defaultDisableThinking,
+      'timeoutSeconds': prefs.getInt(_timeoutKey) ?? defaultTimeoutSeconds,
     };
   }
 
@@ -444,12 +810,15 @@ class AnswerSearchApi {
     required String apiUrl,
     required String apiKey,
     required String model,
+    bool disableThinking = defaultDisableThinking,
+    int timeoutSeconds = defaultTimeoutSeconds,
   }) async {
-    final url = apiUrl.trim();
+    final rawUrl = apiUrl.trim();
     final key = apiKey.trim();
     final modelName = model.trim().isEmpty ? 'gpt-3.5-turbo' : model.trim();
+    final url = normalizeApiUrl(rawUrl);
 
-    if (url.isEmpty) {
+    if (rawUrl.isEmpty) {
       return const AIConnectionTestResult(
         success: false,
         message: 'API 地址为空，请先填写',
@@ -469,11 +838,26 @@ class AnswerSearchApi {
     }
 
     final dio = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 15),
-      receiveTimeout: const Duration(seconds: 30),
+      connectTimeout: const Duration(seconds: 20),
+      receiveTimeout: Duration(seconds: timeoutSeconds),
       // 4xx 也交给自己处理，方便读出具体报错
       validateStatus: (code) => code != null && code < 500,
     ));
+
+    final body = <String, dynamic>{
+      'model': modelName,
+      'messages': [
+        {'role': 'user', 'content': '你好，请回复"ok"两个字。'},
+      ],
+      'max_tokens': 16,
+      'stream': false,
+    };
+    // 与正式检索保持一致：思考型模型关掉思考，避免测试等到超时
+    final lowerModel = modelName.toLowerCase();
+    if (disableThinking &&
+        (lowerModel.startsWith('qwen3') || lowerModel.startsWith('qvq'))) {
+      body['enable_thinking'] = false;
+    }
 
     final stopwatch = Stopwatch()..start();
     try {
@@ -485,85 +869,154 @@ class AnswerSearchApi {
             'Content-Type': 'application/json',
           },
         ),
-        data: jsonEncode({
-          'model': modelName,
-          'messages': [
-            {'role': 'user', 'content': '你好，请回复"ok"两个字。'},
-          ],
-          'max_tokens': 16,
-        }),
+        data: jsonEncode(body),
       );
       stopwatch.stop();
 
       final code = response.statusCode ?? 0;
       final latency = stopwatch.elapsedMilliseconds;
+      final urlLine = '请求地址：$url\n模型：$modelName';
 
       if (code == 200) {
         String? reply;
         try {
-          reply = response.data['choices']?[0]?['message']?['content']
-              as String?;
+          final choices = response.data['choices'];
+          if (choices is List && choices.isNotEmpty) {
+            final message = choices[0]['message'];
+            final rawContent = message is Map ? message['content'] : null;
+            if (rawContent is String && rawContent.trim().isNotEmpty) {
+              reply = rawContent.trim();
+            } else {
+              final rawReasoning =
+                  message is Map ? message['reasoning_content'] : null;
+              if (rawReasoning is String && rawReasoning.trim().isNotEmpty) {
+                reply = rawReasoning.trim();
+              }
+            }
+          }
         } catch (_) {
           reply = null;
         }
         return AIConnectionTestResult(
           success: true,
           message: '连接成功，模型可用',
-          detail: '模型：$modelName'
-              '\n模型回复：${(reply ?? '').trim().isEmpty ? '(空)' : reply!.trim()}',
+          detail: '$urlLine\n模型回复：'
+              '${(reply ?? '').trim().isEmpty ? '(空)' : reply!.trim()}',
           latencyMs: latency,
         );
       }
 
+      final server = parseErrorBody(response.data);
       return AIConnectionTestResult(
         success: false,
-        message: _httpErrorText(code),
-        detail: _extractServerMessage(response.data),
+        message: formatHttpError(code, server),
+        detail: '$urlLine\n服务端原始返回：\n'
+            '${server.isEmpty ? (response.data?.toString() ?? '(空)') : server.text}',
         latencyMs: latency,
       );
     } catch (e) {
       stopwatch.stop();
       final info = describeError(e);
+
+      String? serverText;
+      if (e is DioException) {
+        final server = parseErrorBody(e.response?.data);
+        if (!server.isEmpty) serverText = server.text;
+      }
+
       return AIConnectionTestResult(
         success: false,
         message: '连接失败：${info.message}',
-        detail: info.error.toString(),
+        detail: '请求地址：$url\n模型：$modelName\n'
+            '${serverText == null ? info.error.toString() : '服务端原始返回：\n$serverText'}',
         latencyMs: stopwatch.elapsedMilliseconds,
       );
     }
   }
 
-  static String _httpErrorText(int code) {
+  /// HTTP 状态码 → 人话（带上服务端错误码与信息）
+  static String formatHttpError(int code, ServerErrorInfo? server) {
+    String base;
     switch (code) {
       case 400:
-        return '请求被拒绝（400）：模型名称可能不对';
+        base = '请求被拒绝（400）：模型名称或请求参数不对';
+        break;
       case 401:
-        return '认证失败（401）：API Key 无效';
+        base = '认证失败（401）：API Key 无效，或 Key 与接口地域不匹配';
+        break;
       case 403:
-        return '认证失败（403）：API Key 无权限';
+        base = '认证失败（403）：API Key 无权限';
+        break;
       case 404:
-        return '接口不存在（404）：请检查 API 地址';
+        base = '接口不存在（404）：地址可能少了 /chat/completions';
+        break;
       case 429:
-        return '请求过于频繁（429）：额度不足或触发限流';
+        base = '请求过于频繁（429）：额度不足或触发限流';
+        break;
       default:
-        return '请求失败（HTTP $code）';
+        if (code >= 500) {
+          base = '服务端错误（HTTP $code）';
+        } else {
+          base = '请求失败（HTTP $code）';
+        }
     }
+    if (server == null || server.isEmpty) return base;
+    return '$base｜$code → ${server.text}';
   }
 
-  static String? _extractServerMessage(dynamic data) {
-    try {
-      if (data is Map) {
-        final err = data['error'];
-        if (err is Map && err['message'] != null) {
-          return err['message'].toString();
-        }
-        if (err != null) return err.toString();
-        if (data['message'] != null) return data['message'].toString();
+  /// 从错误响应体里取服务端错误码与错误信息
+  ///
+  /// 兼容 `{"error":{"code":"...","message":"..."}}` 与 `{"code":..,"message":..}`
+  static ServerErrorInfo parseErrorBody(dynamic data) {
+    if (data == null) return const ServerErrorInfo();
+
+    if (data is Map) {
+      final err = data['error'];
+      if (err is Map) {
+        return ServerErrorInfo(
+          code: _asText(err['code']),
+          message: _asText(err['message']),
+        );
       }
-      return data?.toString();
-    } catch (_) {
-      return null;
+      if (err is String && err.trim().isNotEmpty) {
+        return ServerErrorInfo(message: err);
+      }
+      final String? code = _asText(data['code']);
+      final String? message = _asText(data['message']);
+      if ((code != null && code.isNotEmpty) ||
+          (message != null && message.isNotEmpty)) {
+        return ServerErrorInfo(code: code, message: message);
+      }
+      return const ServerErrorInfo();
     }
+
+    final text = data.toString().trim();
+    if (text.isEmpty) return const ServerErrorInfo();
+    return ServerErrorInfo(
+        message: text.length > 500 ? text.substring(0, 500) : text);
+  }
+
+  /// 安全转字符串：null 仍是 null，其余走 toString
+  static String? _asText(dynamic value) => value?.toString();
+
+  /// 去掉 ```json ... ``` 这类 Markdown 代码围栏
+  static String stripCodeFence(String raw) {
+    var text = raw.trim();
+    if (!text.startsWith('```')) return text;
+
+    // 去掉开头的 ``` 或 ```json
+    final firstNewline = text.indexOf('\n');
+    if (firstNewline == -1) {
+      return text.replaceAll('`', '').trim();
+    }
+    text = text.substring(firstNewline + 1);
+
+    // 去掉结尾的 ```
+    final endFence = text.lastIndexOf('```');
+    if (endFence != -1) {
+      text = text.substring(0, endFence);
+    }
+    return text.trim();
   }
 
   /// 从雨课堂 Problem 构建标准化题目

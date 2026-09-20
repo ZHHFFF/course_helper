@@ -1,3 +1,4 @@
+import'dart:ui' show PlatformDispatcher;
 import'package:flutter/material.dart';
 import'package:flutter_localizations/flutter_localizations.dart';
 import'package:dynamic_color/dynamic_color.dart';
@@ -14,6 +15,9 @@ import'./session/cookie.dart';
 import'./session/account.dart';
 import'./platform.dart';
 import './utils/storage.dart';
+// [新增] 运行日志
+import './utils/app_logger.dart';
+// [/新增]
 import 'push/easemob.dart';
 
 // 赞助对话框显示状态键
@@ -24,6 +28,12 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // [新增] 日志系统：越早初始化越好，后面的初始化过程也会被记下来
+  await AppLogger.init();
+  _installGlobalErrorHandlers();
+  AppLogger.i('App', '应用启动');
+  // [/新增]
 
   await StorageManager.initialize();
 
@@ -37,8 +47,32 @@ void main() async {
 
   await EasemobIM().initialize();
 
+  AppLogger.i('App', '初始化完成，进入主界面');
+
   runApp(const MyApp());
 }
+
+/// [新增] 把未捕获异常也写进运行日志，方便导出排查
+void _installGlobalErrorHandlers() {
+  final previous = FlutterError.onError;
+  FlutterError.onError = (FlutterErrorDetails details) {
+    AppLogger.e(
+      'Flutter',
+      '未捕获异常：${details.exceptionAsString()}\n${details.stack ?? ''}',
+    );
+    if (previous != null) {
+      previous(details);
+    } else {
+      FlutterError.presentError(details);
+    }
+  };
+
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    AppLogger.e('Platform', '未捕获异常：$error\n$stack');
+    return true;
+  };
+}
+// [/新增]
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});

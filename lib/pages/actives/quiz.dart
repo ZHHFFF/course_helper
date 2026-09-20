@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -112,6 +113,7 @@ class _QuizPageState extends State<QuizPage> {
   }
 
   // [新增] 搜索答案 - 提取题干和选项，调用检索模块
+  // 检索结果可一键回填到当前作答（只回填，不自动提交）
   Future<void> _searchAnswer(dynamic quiz) async {
     final question = StandardizedQuestion.fromChaoxing(
       Map<String, dynamic>.from(quiz),
@@ -120,9 +122,35 @@ class _QuizPageState extends State<QuizPage> {
       resolveImageUrl: (url) => CXImageApi.toNewImageUrl(url),
     );
     if (!mounted) return;
-    showDialog(
+
+    final picked = await showDialog<AnswerSearchResult>(
       context: context,
       builder: (context) => AnswerSearchDialog(question: question),
+    );
+    if (picked == null || !mounted) return;
+
+    final keys = picked.matchOptionKeys(question.options);
+    String message;
+
+    if (keys.isNotEmpty) {
+      setState(() {
+        final personAnswer = quiz['personAnswer'];
+        if (personAnswer is Map) {
+          personAnswer['myoption'] = keys.join();
+        }
+      });
+      message = '已填入 ${keys.join('、')}，请核对后提交';
+    } else if (!question.isChoice && picked.answer.trim().isNotEmpty) {
+      // 填空/简答的作答结构较复杂，这里只复制到剪贴板，由你自行粘贴
+      await Clipboard.setData(ClipboardData(text: picked.answer.trim()));
+      message = '非选择题暂不支持自动填入，答案已复制到剪贴板';
+    } else {
+      message = '未能匹配到选项，请手动选择';
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
     );
   }
   // [/新增]

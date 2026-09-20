@@ -1,5 +1,6 @@
 /// 答案检索模块数据模型
 /// 定义标准化的题目、选项和检索结果
+library;
 
 /// 标准化题目 - 从学习通或雨课堂题目数据中提取
 class StandardizedQuestion {
@@ -273,13 +274,129 @@ class AnswerSearchResult {
   /// 来源类型
   final AnswerSourceType sourceType;
 
+  /// AI 明确给出的选项 key 列表（如 ["A", "C"]）
+  /// 非选择题（填空/简答）为空
+  final List<String> answerKeys;
+
   AnswerSearchResult({
     required this.answer,
     required this.source,
     required this.confidence,
     this.explanation,
     required this.sourceType,
+    this.answerKeys = const [],
   });
+
+  /// 把答案映射到题目实际存在的选项 key 上，用于一键回填选项
+  ///
+  /// 匹配顺序：
+  /// 1. 判断题（选项值是「对/错/正确/错误/√/×」等）优先映射
+  /// 2. 使用 [answerKeys]
+  /// 3. 从 [answer] 文本里抠出英文字母（"AC" / "A,C" / "选A和C" 都能识别）
+  ///
+  /// 返回值只包含题目真实存在的 key，并按选项原始顺序排列。
+  /// 匹配不到时返回空列表。
+  List<String> matchOptionKeys(List<StandardizedOption> options) {
+    if (options.isEmpty) return const [];
+
+    // 1. 判断题：选项值本身就是「对 / 错」时，key 可能不是字母
+    if (answerKeys.isEmpty) {
+      final judgementKey = judgementOptionKey(options, answer);
+      if (judgementKey != null) return [judgementKey];
+    }
+
+    final upperKeys = <String>[];
+    for (final opt in options) {
+      final key = opt.key.trim().toUpperCase();
+      if (key.isNotEmpty && !upperKeys.contains(key)) upperKeys.add(key);
+    }
+    if (upperKeys.isEmpty) return const [];
+
+    final matched = <String>{};
+
+    void collect(String raw) {
+      for (final letter in lettersOf(raw)) {
+        if (upperKeys.contains(letter)) matched.add(letter);
+      }
+    }
+
+    for (final key in answerKeys) {
+      collect(key);
+    }
+    if (matched.isEmpty) {
+      collect(answer);
+    }
+    if (matched.isEmpty) return const [];
+
+    return options
+        .where((o) => matched.contains(o.key.trim().toUpperCase()))
+        .map((o) => o.key)
+        .toList();
+  }
+
+  /// 从文本里抠出所有英文字母并大写去重
+  ///
+  /// "AC" / "A,C" / "选A和C" 都会得到 [A, C]
+  static List<String> lettersOf(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) return const [];
+
+    final result = <String>[];
+    for (final match in RegExp('[A-Za-z]').allMatches(text)) {
+      final letter = match.group(0)!.toUpperCase();
+      if (!result.contains(letter)) result.add(letter);
+    }
+    return result;
+  }
+
+  /// 判断题答案 → 选项 key
+  ///
+  /// 「对 / 正确 / 是 / T / √」映射到值为「对」的那个选项，
+  /// 「错 / 错误 / 否 / F / ×」映射到值为「错」的那个选项。
+  static String? judgementOptionKey(
+    List<StandardizedOption> options,
+    String answer,
+  ) {
+    final text = answer.trim();
+    if (text.isEmpty) return null;
+
+    final lower = text.toLowerCase();
+    bool? wantTrue;
+
+    // 先判否定，避免「不正确」被当成「正确」
+    if (lower.contains('不正确') ||
+        lower.contains('错误') ||
+        lower.contains('错') ||
+        lower.contains('否') ||
+        lower.contains('false') ||
+        text.contains('×') ||
+        text.contains('✗') ||
+        lower == 'f' ||
+        lower == 'n') {
+      wantTrue = false;
+    } else if (lower.contains('正确') ||
+        lower.contains('对') ||
+        lower.contains('是') ||
+        lower.contains('true') ||
+        text.contains('√') ||
+        text.contains('✓') ||
+        lower == 't' ||
+        lower == 'y') {
+      wantTrue = true;
+    }
+
+    if (wantTrue == null) return null;
+
+    const trueWords = ['对', '正确', '是', '√', '✓', 'true', 'yes', 't', 'y'];
+    const falseWords = ['错', '错误', '否', '×', '✗', 'false', 'no', 'f', 'n'];
+
+    for (final opt in options) {
+      final value = opt.value.trim().toLowerCase();
+      if (wantTrue && trueWords.contains(value)) return opt.key;
+      if (!wantTrue && falseWords.contains(value)) return opt.key;
+    }
+    return null;
+  }
 }
 
 /// 答案来源类型

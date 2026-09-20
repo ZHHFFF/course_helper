@@ -10,6 +10,7 @@ import '../platform.dart';
 import '../push/easemob.dart';
 import 'widget/avatar.dart';
 import 'widget/answer_search_settings.dart';
+import 'widget/log_viewer.dart';
 import 'login.dart';
 
 class AccountsPage extends StatefulWidget {
@@ -447,6 +448,13 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                     builder: (_) => const AnswerSearchSettingsPage(),
                   ),
                 );
+              } else if (result == 'runtime_logs') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const LogViewerPage(),
+                  ),
+                );
               }
             },
             itemBuilder: (BuildContext context) => [
@@ -497,6 +505,15 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                   Icon(Icons.search, size: 20),
                   SizedBox(width: 8),
                   Text('答案检索设置'),
+                ]),
+              ),
+              // 运行日志菜单项
+              const PopupMenuItem<String>(
+                value: 'runtime_logs',
+                child: Row(children: [
+                  Icon(Icons.receipt_long, size: 20),
+                  SizedBox(width: 8),
+                  Text('运行日志'),
                 ]),
               ),
               // 关于菜单项

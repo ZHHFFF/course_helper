@@ -46,24 +46,17 @@ jobs:
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Run unit tests
-        run: flutter test test/answer_search_test.dart
+        run: flutter test
 
-      - name: Build release APK (universal)
-        run: flutter build apk --release
+      - name: Build release APK (arm64-v8a only)
+        run: flutter build apk --release --split-per-abi --target-platform android-arm64
 
-      - name: Keep universal APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk /tmp/course-helper-universal.apk
+      - name: Show APK size
+        run: ls -lh build/app/outputs/flutter-apk/
 
-      # 额外产出一份按 CPU 架构拆分的小体积包（体积约减少 60%）
-      - name: Build release APK (split per ABI)
-        continue-on-error: true
-        run: flutter build apk --release --split-per-abi
-
-      - name: Upload APKs
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: course-helper-release-apk
-          path: |
-            /tmp/course-helper-universal.apk
-            build/app/outputs/flutter-apk/app-*-release.apk
+          name: course-helper-arm64-apk
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
           if-no-files-found: error

@@ -1,6 +1,11 @@
 /// 答案检索结果展示弹窗
 /// 在题目页面中点击"搜索答案"后弹出，展示检索结果
+///
+/// 选择某条结果后可通过「填入答案」按钮回传给调用页（`Navigator.pop(context, result)`），
+/// 由调用页决定怎么写入作答状态；关闭（× / 关闭按钮）返回 null，不修改任何作答。
+library;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../api/answer_search.dart';
 import '../../models/answer_result.dart';
@@ -25,6 +30,9 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
   /// AI 检索失败的原因（用于给出更具体的提示）
   String? _aiErrorHint;
 
+  /// 最近一次请求的诊断信息
+  AIRequestInfo? _requestInfo;
+
   @override
   void initState() {
     super.initState();
@@ -36,6 +44,7 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
       _isSearching = true;
       _errorMessage = null;
       _aiErrorHint = null;
+      _requestInfo = null;
       _results.clear();
     });
 
@@ -54,6 +63,7 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
         setState(() {
           _results = results;
           _aiErrorHint = AnswerSearchApi.lastAIError;
+          _requestInfo = AnswerSearchApi.lastRequestInfo;
           _isSearching = false;
         });
       }
@@ -65,6 +75,34 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
         });
       }
     }
+  }
+
+  /// 把结果里的答案映射到当前题目的选项 key
+  List<String> _matchedKeys(AnswerSearchResult result) =>
+      result.matchOptionKeys(widget.question.options);
+
+  /// 「填入」按钮能否点
+  bool _canApply(AnswerSearchResult result) {
+    if (widget.question.isChoice) return _matchedKeys(result).isNotEmpty;
+    return result.answer.trim().isNotEmpty;
+  }
+
+  /// 「填入」按钮文案
+  String _applyLabel(AnswerSearchResult result) {
+    if (widget.question.isChoice) {
+      final keys = _matchedKeys(result);
+      if (keys.isEmpty) return '无法匹配选项';
+      return '填入 ${keys.join('、')}';
+    }
+    return '填入答案文本';
+  }
+
+  Future<void> _copyAnswer(AnswerSearchResult result) async {
+    await Clipboard.setData(ClipboardData(text: result.answer));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('答案已复制')),
+    );
   }
 
   Color _getConfidenceColor(double confidence) {
@@ -115,6 +153,11 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                   CircularProgressIndicator(),
                   SizedBox(height: 16),
                   Text('正在检索答案...'),
+                  SizedBox(height: 8),
+                  Text(
+                    '思考型模型可能需要十几秒到几分钟',
+                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
                 ],
               )
             : _errorMessage != null
@@ -239,6 +282,7 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
   Widget _buildEmptyResult() {
     final theme = Theme.of(context);
     final hint = _aiErrorHint;
+    final info = _requestInfo;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -268,14 +312,30 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
+        // 请求诊断：出问题时能一眼看出地址 / 模型 / HTTP 码
+        if (info != null) ...[
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: SelectableText(
+              info.summary,
+              style: const TextStyle(fontSize: 10),
+            ),
+          ),
+        ],
       ],
     );
   }
 
   Widget _buildResultCard(AnswerSearchResult result) {
     final isBuiltin = result.sourceType == AnswerSourceType.builtin;
-    final isLowConfidence =
-        result.confidence < 0.8 && !isBuiltin;
+    final isLowConfidence = result.confidence < 0.8 && !isBuiltin;
+    final canApply = _canApply(result);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -348,6 +408,66 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                       ),
                     ),
                   ],
+                ),
+              ),
+            ],
+            // 题型与答案不匹配时的提醒
+            if (widget.question.isMultipleChoice &&
+                _matchedKeys(result).length == 1) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Icon(Icons.info_outline, size: 14, color: Colors.amber.shade800),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '本题是多选题，AI 只给出了 1 个选项，请自行核对',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.amber.shade800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _copyAnswer(result),
+                    icon: const Icon(Icons.copy, size: 16),
+                    label: const Text('复制答案'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed:
+                        canApply ? () => Navigator.of(context).pop(result) : null,
+                    icon: const Icon(Icons.check_circle_outline, size: 16),
+                    label: Text(
+                      _applyLabel(result),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (widget.question.isChoice && !canApply) ...[
+              const SizedBox(height: 6),
+              Text(
+                'AI 给的答案与当前选项对不上，请手动选择或复制答案',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
             ],

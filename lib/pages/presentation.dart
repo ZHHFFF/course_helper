@@ -15,6 +15,7 @@ import '../session/account.dart';
 import '../platform.dart';
 // [新增] 答案检索模块导入
 import '../api/answer_search.dart';
+import '../models/answer_result.dart';
 import '../utils/network_error.dart';
 import 'widget/answer_search_dialog.dart';
 // [/新增]
@@ -112,6 +113,7 @@ class _PresentationPageState extends State<PresentationPage> {
   }
 
   // [新增] 搜索答案 - 从当前题目提取题干和选项，调用检索模块
+  // 检索结果可一键回填到当前作答（只回填，不自动提交）
   Future<void> _searchAnswer() async {
     if (_currentProblem == null) return;
 
@@ -121,11 +123,46 @@ class _PresentationPageState extends State<PresentationPage> {
       imageUrl: _currentSlideCover(),
     );
     if (!mounted) return;
-    showDialog(
+
+    final picked = await showDialog<AnswerSearchResult>(
       context: context,
       builder: (context) => AnswerSearchDialog(question: question),
     );
+    if (picked == null || !mounted) return;
+
+    _applyPickedAnswer(picked, question);
   }
+
+  /// 把选中的检索结果写回作答状态
+  void _applyPickedAnswer(
+      AnswerSearchResult picked, StandardizedQuestion question) {
+    final rawOptions = _currentProblem?.options ?? const [];
+    final options = rawOptions
+        .map((o) => StandardizedOption(key: o.key, value: o.value))
+        .toList();
+
+    final keys = picked.matchOptionKeys(options);
+
+    String message;
+    if (keys.isNotEmpty) {
+      setState(() {
+        _answer = keys;
+      });
+      message = '已填入 ${keys.join('、')}，请核对后提交';
+    } else if (!question.isChoice && picked.answer.trim().isNotEmpty) {
+      setState(() {
+        _textAnswer = picked.answer.trim();
+      });
+      message = '已填入答案文本，请核对后提交';
+    } else {
+      message = '未能匹配到选项，请手动选择';
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
+  }
+  // [/新增]
 
   /// 当前 PPT 页里的所有文字（题干为空时兜底用）
   String _currentSlideText() {
@@ -1439,6 +1476,7 @@ class _PresentationPageState extends State<PresentationPage> {
     switch (_currentProblem!.problemType) {
       case 1:
       case 3:
+      case 6:
         return _buildChoiceOptions();
       case 2:
         return _buildMultipleChoiceOptions();
