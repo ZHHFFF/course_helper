@@ -315,6 +315,10 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   }
 
   void _showAboutDialog() async {
+    // 先把 context 相关的东西取出来：下面要 await，
+    // 之后再碰 context 会被 analyzer 判成 use_build_context_synchronously
+    final linkColor = Theme.of(context).colorScheme.primary;
+
     final packageInfo = await PackageInfo.fromPlatform();
     final appIcon = Image.asset(
       'images/logo.png',
@@ -344,7 +348,20 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
               },
               child: Text(
                 'makisekurse',
-                style: TextStyle(color: Theme.of(context).colorScheme.primary),
+                style: TextStyle(color: linkColor),
+              ),
+            ),
+            const Text(' & '),
+            GestureDetector(
+              onTap: () async {
+                final Uri url = Uri.parse('https://github.com/ZHHFFF');
+                if (await canLaunchUrl(url)) {
+                  await launchUrl(url, mode: LaunchMode.inAppBrowserView);
+                }
+              },
+              child: Text(
+                'ZHHFFF',
+                style: TextStyle(color: linkColor),
               ),
             ),
           ],
