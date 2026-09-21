@@ -337,13 +337,13 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
             const Text('开发者：'),
             GestureDetector(
               onTap: () async {
-                final Uri url = Uri.parse('https://github.com/AneryCoft');
+                final Uri url = Uri.parse('https://github.com/makisekurse');
                 if (await canLaunchUrl(url)) {
                   await launchUrl(url, mode: LaunchMode.inAppBrowserView);
                 }
               },
               child: Text(
-                'AneryCoft',
+                'makisekurse',
                 style: TextStyle(color: Theme.of(context).colorScheme.primary),
               ),
             ),

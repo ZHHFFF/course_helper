@@ -5,7 +5,6 @@ import'package:dynamic_color/dynamic_color.dart';
 import'package:package_info_plus/package_info_plus.dart';
 import'package:url_launcher/url_launcher.dart';
 import'package:dio/dio.dart';
-import'package:photo_manager/photo_manager.dart';
 
 import'./pages/accounts.dart';
 import'./pages/courses/list.dart';
@@ -20,8 +19,6 @@ import './utils/app_logger.dart';
 // [/新增]
 import 'push/easemob.dart';
 
-// 赞助对话框显示状态键
-const _hasSponsoredKey = 'has_sponsored';
 
 // 全局Navigator Key,用于在无context时显示dialog
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -148,7 +145,14 @@ class _MainPageState extends State<MainPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       (coursesPageKey.currentState as dynamic)?.onVisibilityChanged(true);
       _checkUpdate();
-      _showSponsorDialog();
+      // 赞赏弹窗已按要求关闭并删除（整个 _showSponsorDialog 都删了）。
+      //
+      // 为什么删：它 barrierDismissible:false —— 点外面关不掉，必须点
+      // 「我已赞助」或「去赞助」；而每次重装 App 数据都会重置，
+      // 于是每装一次新包就被强制弹一次。而且赞赏码是原作者的收款码。
+      //
+      // 要恢复的话从 git history 里把 _showSponsorDialog /
+      // _saveImageAndSponsor / _hasSponsoredKey 拿回来即可。
     });
   }
 
@@ -158,7 +162,7 @@ class _MainPageState extends State<MainPage> {
       final currentVersion = packageInfo.version;
 
       final dio = Dio();
-      final response = await dio.get('https://api.github.com/repos/AneryCoft/course_helper/releases/latest');
+      final response = await dio.get('https://api.github.com/repos/makisekurse/course_helper/releases/latest');
       final data = response.data;
       final latestVersion = data['tag_name']?.toString().replaceAll('v', '') ?? '';
 
@@ -166,7 +170,7 @@ class _MainPageState extends State<MainPage> {
         _showUpdateDialog(
           latestVersion: latestVersion,
           releaseNotes: data['body'] ?? '暂无更新说明',
-          downloadUrl: data['html_url'] ?? 'https://github.com/AneryCoft/course_helper/releases/latest',
+          downloadUrl: data['html_url'] ?? 'https://github.com/makisekurse/course_helper/releases/latest',
         );
       }
     } catch (e) {
@@ -237,74 +241,6 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
-  void _showSponsorDialog() {
-    final hasSponsored = StorageManager.prefs.getBool(_hasSponsoredKey) ?? false;
-    if (hasSponsored) return;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('支持开发者'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Image.asset(
-                'images/mm_reward_qrcode.png',
-                width: 250,
-                height: 250
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                '一款开源软件的开发纯属为爱发电\n如果可以，请您赞助支持，哪怕只是1元，谢谢！',
-                style: TextStyle(fontSize: 16)
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              StorageManager.prefs.setBool(_hasSponsoredKey, true);
-              Navigator.pop(context);
-            },
-            child: const Text('我已赞助')
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消')
-          ),
-          FilledButton(
-            onPressed: () => _saveImageAndSponsor(context),
-            child: const Text('去赞助')
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _saveImageAndSponsor(BuildContext context) async {
-    try {
-      final imageData = await DefaultAssetBundle.of(context).load('images/mm_reward_qrcode.png');
-      final bytes = imageData.buffer.asUint8List();
-
-      await PhotoManager.editor.saveImage(bytes, filename: 'mm_reward_qrcode.png');
-
-      if (context.mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('赞赏码已保存到相册，感谢您的支持！')),
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败: $e')),
-        );
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
