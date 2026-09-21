@@ -1353,16 +1353,28 @@ class _PresentationPageState extends State<PresentationPage>
     for (final item in todo) {
       unawaited(
         AnswerQueue.submit(AnswerJob(
-          lessonId: widget.lessonId,
-          hash: item.hash,
-          question: item.question,
-        )).then((result) {
-          if (!mounted) return;
-          setState(() {
-            if (result != null) _suggested[result.hash] = result.answer;
-            _searching.remove(item.hash);
-          });
-        }).catchError((Object e) {
+            lessonId: widget.lessonId,
+            hash: item.hash,
+            question: item.question,
+          )).then((result) {
+            if (!mounted) return;
+            setState(() {
+              if (result != null) _suggested[result.hash] = result.answer;
+              _searching.remove(item.hash);
+            });
+
+            // ⚠️ 这里必须自己再触发一次自动预选。
+            //
+            // AnswerQueue.submit() 在**缓存命中**时是直接 return 的，
+            // 只有走 _process() 的那条路才会往 results 流里广播。
+            // 所以缓存命中的题目不会触发 _onAnswerReady，
+            // 用户如果当时正停在那道题上，就永远不会被自动填上。
+            // （_autoSelectIfCurrent 内部有「已填过就不动」的判据，
+            //   所以和广播那条路重复调用是安全的。）
+            if (result != null) {
+              unawaited(_autoSelectIfCurrent(result.hash));
+            }
+          }).catchError((Object e) {
           AppLogger.w('Presentation', '自动检索失败（${item.hash}）：$e');
           if (mounted) {
             setState(() => _searching.remove(item.hash));
