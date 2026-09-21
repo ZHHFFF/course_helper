@@ -268,33 +268,71 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   /// 静默填充（不弹 SnackBar，避免自动答题时刷屏）
-  void _fillAnswerSilently(
+  ///
+  /// 注意三种题型读的字段不一样，必须和 `_buildAnswerOptions()` 的分支对齐：
+  /// - problemType 1/2/3/6（单选/多选/投票/判断）→ `_answer`（选项 key 列表）
+  /// - problemType 4（填空）→ 题干里有 `[填空N]` 标记时读 `_answer`
+  ///   （每空一项），没有标记时 UI 退化成单个输入框、读 `_textAnswer`
+  /// - problemType 5（简答）→ `_textAnswer`
+  ///
+  /// 之前一律按「选择题 / 非选择题」二分，填空题会被写成 `_textAnswer`，
+  /// 而 UI 读的是 `_answer` → 填了等于没填。
+  ///
+  /// 返回是否真的填进去了（调用方可以据此决定要不要提示用户）。
+  bool _fillAnswerSilently(
     StandardizedQuestion question,
-    AnswerSearchResult picked,
-  ) {
+    AnswerSearchResult picked, {
+    String logTag = '自动答题',
+  }) {
     final problem = _currentProblem;
-    if (problem == null || !mounted) return;
+    if (problem == null || !mounted) return false;
 
+    final raw = picked.answer.trim();
+
+    // ---- 填空题 ----
+    if (problem.problemType == 4) {
+      final blankCount = RegExp(r'\[填空\d*\]').allMatches(problem.body).length;
+      if (blankCount > 0) {
+        final parts = raw
+            .split(RegExp(r'[\n,，;；、]+'))
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+        if (parts.isEmpty) return false;
+        final list = List<String>.filled(blankCount, '');
+        for (var i = 0; i < blankCount && i < parts.length; i++) {
+          list[i] = parts[i];
+        }
+        setState(() => _answer = list);
+        AppLogger.i(logTag, '已自动预选（填空 $blankCount 空）：${list.join(" | ")}');
+        return true;
+      }
+      // 没有 [填空N] 标记 → UI 是单个输入框
+      if (raw.isEmpty) return false;
+      setState(() => _textAnswer = raw);
+      AppLogger.i(logTag, '已自动预选（填空）：$raw');
+      return true;
+    }
+
+    // ---- 选择题（单选/多选/判断/投票）----
     final options = (problem.options ?? const [])
         .map((o) => StandardizedOption(key: o.key, value: o.value))
         .toList();
     final keys = picked.matchOptionKeys(options);
+    if (keys.isNotEmpty) {
+      setState(() => _answer = keys);
+      AppLogger.i(logTag, '已自动预选：${keys.join("、")}（${picked.source}）');
+      return true;
+    }
 
-    setState(() {
-      if (keys.isNotEmpty) {
-        _answer = keys;
-      } else if (!question.isChoice && picked.answer.trim().isNotEmpty) {
-        _textAnswer = picked.answer.trim();
-      } else {
-        return; // 没匹配上，什么都不做
-      }
-    });
+    // ---- 简答题 ----
+    if (raw.isNotEmpty) {
+      setState(() => _textAnswer = raw);
+      AppLogger.i(logTag, '已自动预选（简答）：$raw');
+      return true;
+    }
 
-    AppLogger.i(
-      '自动答题',
-      '已自动预选：${keys.isNotEmpty ? keys.join("、") : picked.answer}'
-          '（${picked.source}）',
-    );
+    return false;
   }
 
   // ==================== [新增] 自动提交 ====================
@@ -395,8 +433,10 @@ class _PresentationPageState extends State<PresentationPage>
   /// 当前页的答案是否已经填好
   bool _isAnswerFilled() {
     if (_currentProblem == null) return false;
+    // 填空的 `_answer` 是「每空一项」，可能是个长度不为 0 但全是空串的列表
+    // （用户点过输入框又没输）—— 所以要按**内容**判断，不能只看长度。
     final keys = _answer;
-    if (keys != null && keys.isNotEmpty) return true;
+    if (keys != null && keys.any((k) => k.trim().isNotEmpty)) return true;
     final text = _textAnswer;
     return text != null && text.trim().isNotEmpty;
   }
@@ -475,30 +515,15 @@ class _PresentationPageState extends State<PresentationPage>
   /// 把选中的检索结果写回作答状态
   void _applyPickedAnswer(
       AnswerSearchResult picked, StandardizedQuestion question) {
-    final rawOptions = _currentProblem?.options ?? const [];
-    final options = rawOptions
-        .map((o) => StandardizedOption(key: o.key, value: o.value))
-        .toList();
-
-    final keys = picked.matchOptionKeys(options);
-
-    String message;
-    if (keys.isNotEmpty) {
-      setState(() {
-        _answer = keys;
-      });
-      message = '已填入 ${keys.join('、')}，请核对后提交';
-    } else if (!question.isChoice && picked.answer.trim().isNotEmpty) {
-      setState(() {
-        _textAnswer = picked.answer.trim();
-      });
-      message = '已填入答案文本，请核对后提交';
-    } else {
-      message = '未能匹配到选项，请手动选择';
-    }
+    // 复用统一填充逻辑（按题型决定写 _answer 还是 _textAnswer）。
+    // 原来这里也是「选择题 / 非选择题」二分，填空题会填到 UI 不读的字段上。
+    final ok = _fillAnswerSilently(question, picked, logTag: '填入答案');
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      SnackBar(
+        content: Text(ok ? '已填入，请核对后提交' : '未能匹配到选项，请手动选择'),
+        duration: const Duration(seconds: 2),
+      ),
     );
   }
   // [/新增]
