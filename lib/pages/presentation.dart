@@ -1480,7 +1480,7 @@ class _PresentationPageState extends State<PresentationPage>
     }
 
     final todo = scan.autoSearchable
-        .where((item) => !(_suggested[item.hash]?.isFresh() ?? false))
+        .where((item) => !(_suggested[item.hash]?.shouldSkipRefetch() ?? false))
         .toList();
 
     setState(() {

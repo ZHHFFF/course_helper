@@ -216,7 +216,7 @@ void main() {
       expect(result.answer.error, contains('boom'));
       expect(result.usable, isFalse);
       // failed 在重试间隔内仍然「新鲜」，避免翻页刷屏重试
-      expect(result.answer.isFresh(), isTrue);
+      expect(result.answer.shouldSkipRefetch(), isTrue);
     });
 
     test('检索成功但没结果 → 缓存为 empty（不是 failed）', () async {

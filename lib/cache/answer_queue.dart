@@ -145,7 +145,7 @@ class AnswerQueue {
     // 路径 1：缓存命中 —— 不请求，但**同样要广播**
     if (!job.forceRefresh) {
       final hit = await AnswerCache.read(job.lessonId, job.hash);
-      if (hit != null && hit.isFresh()) {
+      if (hit != null && hit.shouldSkipRefetch()) {
         final result = AnswerJobResult(
           hash: job.hash,
           answer: hit,

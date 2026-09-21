@@ -49,7 +49,7 @@ void main() {
       final answer = _ok('h1');
       expect(answer.usable, isTrue);
       expect(answer.best!.answer, 'A');
-      expect(answer.isFresh(), isTrue);
+      expect(answer.shouldSkipRefetch(), isTrue);
     });
 
     test('ok 但没有条目 → 不算 usable', () {
@@ -69,7 +69,7 @@ void main() {
         error: '超时',
         updatedAt: DateTime.now(),
       );
-      expect(answer.isFresh(), isTrue);
+      expect(answer.shouldSkipRefetch(), isTrue);
       expect(answer.usable, isFalse);
     });
 
@@ -81,7 +81,7 @@ void main() {
           AnswerCache.retryAfter + const Duration(minutes: 1),
         ),
       );
-      expect(answer.isFresh(), isFalse);
+      expect(answer.shouldSkipRefetch(), isFalse);
     });
 
     test('ok 永远新鲜（跟着课程目录一起被 7 天策略清掉）', () {
@@ -91,7 +91,7 @@ void main() {
         results: [_result()],
         updatedAt: DateTime.now().subtract(const Duration(days: 30)),
       );
-      expect(answer.isFresh(), isTrue);
+      expect(answer.shouldSkipRefetch(), isTrue);
     });
   });
 

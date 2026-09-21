@@ -71,8 +71,16 @@ class CachedAnswer {
     required this.updatedAt,
   });
 
-  /// 是否还能用（过了重试间隔的失败结果会被视为不可用，从而触发重试）
-  bool isFresh({DateTime? now}) {
+  /// 这次要不要**跳过重新请求**？
+  ///
+  /// 注意名字 —— 原来叫 `isFresh`，很容易被读成「答案是否有效」，
+  /// 但它的真实语义是「**要不要跳过重新请求**」：
+  /// - `ok` → 跳过（已经有答案了）
+  /// - `empty` / `failed` → [AnswerCache.retryAfter] 内跳过
+  ///   （别猛敲 API），过了就允许重试
+  ///
+  /// 判断「有没有可用的答案」请用 [usable]，别用这个。
+  bool shouldSkipRefetch({DateTime? now}) {
     if (status == CachedAnswerStatus.ok) return true;
     final age = (now ?? DateTime.now()).difference(updatedAt);
     return age < AnswerCache.retryAfter;
