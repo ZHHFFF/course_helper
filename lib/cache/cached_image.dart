@@ -17,17 +17,16 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
-import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:path/path.dart' as p;
 
 import '../utils/app_logger.dart';
+import '../utils/image_cache_key.dart';
 import 'course_cache.dart';
 
 /// 幻灯片图片的磁盘存储
@@ -98,7 +97,17 @@ class SlideImageStore {
 
   /// 下载并落盘
   static Future<File> download(String lessonId, String url) {
-    final key = '${CourseCache.safeName(lessonId)}|$url';
+    // ⚠️ key 必须和落盘文件名用**同一个身份**。
+    //
+    // 落盘名走 _digest()，而它只看 URL 的路径部分（丢掉签名 query）——
+    // 因为 token 每次进课堂都重签，带 query 做 key 会导致缓存永远命中不了。
+    //
+    // 所以这里也必须是 _digest(url) 而不是完整的 url：
+    // 同一张源图被多页以不同 query 引用时（比如 imageView2 的 w/1280 和 w/640），
+    // 完整 URL 不同、落盘文件却是同一个。用完整 URL 当 key 就漏了这种情况，
+    // 两个请求会同时写同一个目标文件、互相 delete + rename ——
+    // 正是下面这段注释要防的事。
+    final key = '${CourseCache.safeName(lessonId)}|${_digest(url)}';
     final pending = _inFlight[key];
     if (pending != null) return pending;
 
@@ -148,29 +157,13 @@ class SlideImageStore {
     return target;
   }
 
-  /// 缓存键只取 URL 的**路径部分**，丢掉 query。
+  /// 缓存键统一由 `utils/image_cache_key.dart` 推导。
   ///
-  /// 雨课堂的图片地址长这样：
-  /// ```
-  /// https://changjiang-private-qn.yuketang.cn/slide/762156/cover312_xxx.jpg
-  ///   ?imageView2/2/w/1280/format/webp&e=1789970808&token=IAM-gs****hmqa:7BqtPFRp...
-  /// ```
-  /// `e` 是签名过期时间、`token` 是**每次进课堂重新签发**的。
-  /// 直接拿整条 URL 做哈希 → 第二次进同一个课堂算出来的 key 完全不同
-  /// → 缓存永远命中不了（实测第二次进入「已缓存 0」）。
-  ///
-  /// 路径里的文件名（`cover312_20260921074817.jpg`）是稳定的，用它做 key。
-  static String _cacheKeyOf(String url) {
-    var u = url.trim();
-    final q = u.indexOf('?');
-    if (q >= 0) u = u.substring(0, q);
-    final h = u.indexOf('#');
-    if (h >= 0) u = u.substring(0, h);
-    return u;
-  }
-
-  static String _digest(String url) =>
-      sha1.convert(utf8.encode(_cacheKeyOf(url))).toString();
+  /// 落盘文件名、并发去重键、队列去重键**三者必须是同一个身份**。
+  /// 这套规则已经踩过两次坑（缓存键带签名 query 导致永不命中；
+  /// 去重键与落盘键不一致导致两个 worker 抢写同一文件），
+  /// 所以抽成纯函数 + 单测钉住，见那个文件顶部的说明。
+  static String _digest(String url) => imageCacheDigest(url);
 }
 
 /// 走磁盘缓存的 `ImageProvider`
@@ -312,14 +305,24 @@ class SlideImagePrefetcher {
   /// 用新的列表替换待预取队列（旧队列立即作废）
   static void start(String lessonId, Iterable<String> urls) {
     _lessonId = lessonId;
+
+    // 按**落盘身份**（_digest，只看 URL 路径）去重，而不是按完整 URL。
+    //
+    // 同一张源图可能被多页以不同 query 引用（不同尺寸参数 / 不同签名），
+    // 完整 URL 不同但落盘文件名相同。按完整 URL 去重会把它们排两遍 →
+    // 两个 worker 抢写同一个目标文件。这里保留**第一次出现**的那个
+    // （文件名唯一，最终只可能留一份，取首次出现才是确定的）。
+    final seen = <String>{};
+    final unique = <String>[];
+    for (final raw in urls) {
+      final u = raw.trim();
+      if (u.isEmpty) continue;
+      if (seen.add(imageCacheDigest(u))) unique.add(u);
+    }
+
     _queue
       ..clear()
-      ..addAll(
-        urls
-            .map((u) => u.trim())
-            .where((u) => u.isNotEmpty)
-            .toSet(), // 去重：同一张图可能被多页引用
-      );
+      ..addAll(unique);
     _total = _queue.length;
     _downloaded = 0;
     _skipped = 0;
