@@ -416,6 +416,23 @@ class _PresentationPageState extends State<PresentationPage>
         return;
       }
 
+      // 先确认这题确实被扫描器收录了。
+      //
+      // 没收录 = AI 根本没搜过它（题干为空、或题目整个画成图片被标记成
+      // 需要识图）。这种情况下等下去也没用，直接放弃，别白等 25 秒。
+      final scanned = _scan.byHash[hash];
+      if (scanned == null) {
+        AppLogger.w(
+          '自动答题',
+          '指纹 ${_short(hash)} 不在扫描结果里（题干为空或题目是图片），放弃自动提交',
+        );
+        return;
+      }
+      if (scanned.needsVision) {
+        AppLogger.w('自动答题', '这题需要识图，AI 文本检索拿不到答案，放弃自动提交');
+        return;
+      }
+
       // ---- 第 2 步：等答案就绪 ----
       //
       // AI 检索一道题要 3~6 秒。老师发题那一刻答案大概率还没回来，
@@ -447,11 +464,6 @@ class _PresentationPageState extends State<PresentationPage>
 
       // ---- 第 3 步：填答案 ----
       if (!_isAnswerFilled()) {
-        final scanned = _scan.byHash[hash];
-        if (scanned == null) {
-          AppLogger.w('自动答题', '拿不到题目对象（hash=$hash），放弃自动提交');
-          return;
-        }
         _fillAnswerSilently(scanned.question, cached.results.first);
         await Future<void>.delayed(const Duration(milliseconds: 150));
       }
