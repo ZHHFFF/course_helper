@@ -2,11 +2,14 @@ name: Build Release APK
 
 on:
   push:
-    branches: [ master, main ]
+    # 加上开发分支，这样往分支推代码会自动出包，不用每次手动点 workflow_dispatch
+    branches: [ master, main, makisekurisu ]
   workflow_dispatch:
 
 env:
   JAVA_VERSION: "17"
+  # 版本号：用 CI 的运行序号，保证只增不减 —— 新包才能直接覆盖安装旧包
+  BUILD_NUMBER: ${{ github.run_number }}
 
 jobs:
   build:
@@ -28,15 +31,32 @@ jobs:
           channel: stable
           cache: "true"
 
-      - name: Generate test keystore
+      # 签名：优先用仓库 Secret 里的**固定**测试密钥。
+      #
+      # 原来这里是 `keytool -genkeypair`，**每次构建都生成一把新密钥**，
+      # 导致每个包的签名都不一样 → 装到上一个包上必然报「签名冲突」。
+      # 现在用固定密钥，一次配好，以后所有测试包签名一致、可直接覆盖安装。
+      #
+      # 没配 Secret 时退回现场生成：包能出，但签名会变，装新包前要先卸载旧版。
+      - name: Prepare signing key
+        env:
+          KS_B64: ${{ secrets.TEST_KEYSTORE_BASE64 }}
         run: |
-          keytool -genkeypair -v \
-            -keystore android/anerycoft.jks \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -alias anerycoft \
-            -storepass android -keypass android \
-            -dname "CN=test, OU=test, O=test, L=test, ST=test, C=CN"
+          if [ -n "$KS_B64" ]; then
+            printf '%s' "$KS_B64" | base64 -d > android/anerycoft.jks
+            echo "✅ 使用固定的测试签名密钥（签名一致，可直接覆盖安装）"
+          else
+            echo "::warning::未配置 TEST_KEYSTORE_BASE64 —— 本次生成临时密钥，签名会变，装新包前必须先卸载旧版"
+            keytool -genkeypair -v \
+              -keystore android/anerycoft.jks \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias anerycoft \
+              -storepass android -keypass android \
+              -dname "CN=Course Helper Test, OU=Test, O=Test, L=Test, ST=Test, C=CN"
+          fi
           printf 'storePassword=android\nkeyPassword=android\nkeyAlias=anerycoft\nstoreFile=../anerycoft.jks\n' > android/key.properties
+          echo "本次签名证书指纹："
+          keytool -list -v -keystore android/anerycoft.jks -storepass android 2>/dev/null | grep "SHA256:" | head -1
 
       - name: Get dependencies
         run: flutter pub get
@@ -48,15 +68,39 @@ jobs:
       - name: Run unit tests
         run: flutter test
 
+      # versionCode 用 run_number（只增不减）；versionName 带上第几次构建，
+      # 这样在手机「应用信息」里也能看出装的是哪一版。
       - name: Build release APK (arm64-v8a only)
-        run: flutter build apk --release --split-per-abi --target-platform android-arm64
+        run: |
+          flutter build apk --release --split-per-abi \
+            --target-platform android-arm64 \
+            --build-number="${{ env.BUILD_NUMBER }}" \
+            --build-name="1.2.3-test${{ env.BUILD_NUMBER }}"
 
-      - name: Show APK size
-        run: ls -lh build/app/outputs/flutter-apk/
+      # 文件名带上版本和 commit，一眼能看出是哪个包
+      - name: Rename APK
+        id: apk
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          NAME="course-helper-1.2.3-test${{ env.BUILD_NUMBER }}-${SHORT_SHA}-arm64.apk"
+          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+             "build/app/outputs/flutter-apk/${NAME}"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### 构建产物"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 文件 | \`${NAME}\` |"
+            echo "| versionCode | ${{ env.BUILD_NUMBER }} |"
+            echo "| versionName | 1.2.3-test${{ env.BUILD_NUMBER }} |"
+            echo "| commit | \`${{ github.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          ls -lh "build/app/outputs/flutter-apk/${NAME}"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: course-helper-arm64-apk
-          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          name: ${{ steps.apk.outputs.name }}
+          path: build/app/outputs/flutter-apk/${{ steps.apk.outputs.name }}
           if-no-files-found: error
