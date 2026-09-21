@@ -273,6 +273,17 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
   int _selectedIndex = 0;
 
+  /// 底栏是否为「悬浮」样式（false = 贴边）。
+  ///
+  /// 用户的原始需求是「底栏加个按钮选择是否为悬浮底栏」，开关位于设置页。
+  /// 目前先用默认值 true（与之前自研悬浮底栏的观感一致），
+  /// 待设置页接入持久化后改为从本地配置读取。
+  ///
+  /// ignore: prefer_final_fields —— 设置页开关接入后会调用 setState 改写此字段，
+  /// 现阶段尚未接线，故 lint 会误报「可改为 final」。
+  // ignore: prefer_final_fields
+  bool _floatingNavBar = true;
+
   @override
   void initState() {
     super.initState();
@@ -378,11 +389,8 @@ class _MainPageState extends State<MainPage> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Scaffold(
-      // 底栏改为悬浮玻璃样式，由 Stack 叠加（不再用 Scaffold 的 bottomNavigationBar）
+      // 底栏由 Stack 叠加（弃用 Scaffold.bottomNavigationBar，因为它无法悬浮）
       body: Stack(
         children: [
           Positioned.fill(
@@ -394,39 +402,67 @@ class _MainPageState extends State<MainPage> {
               ],
             ),
           ),
-          // 悬浮液态玻璃底栏（方案 A）
+          // [改动] 底栏改用 Miuix 组件（用户要求「所有规范都按 miuix」）。
+          //
+          // MiuixNavigationBar / MiuixFloatingNavigationBar 的配色全部自动取自
+          // MiuixTheme.of(context).colors，因此这里**不需要**手动传 colorScheme /
+          // isDark —— 之前自研组件要传的那两个参数已经不需要了。
+          //
+          // 悬浮 / 贴边由 _floatingNavBar 控制，开关放在设置页（见设置页的
+          // 「底栏样式」项）。这里预留 state，待开关接入后即可实时切换。
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
-            child: GlassNavBar(
-              currentIndex: _selectedIndex,
-              onTap: (index) {
-                setState(() {
-                  _selectedIndex = index;
-                });
-                (coursesPageKey.currentState as dynamic)
-                    ?.onVisibilityChanged(index == 0);
-              },
-              items: const <GlassNavItem>[
-                GlassNavItem(
-                  icon: Icons.school_outlined,
-                  activeIcon: Icons.school,
-                  label: '课程',
-                ),
-                GlassNavItem(
-                  icon: Icons.account_circle_outlined,
-                  activeIcon: Icons.account_circle,
-                  label: '账号',
-                ),
-              ],
-              mode: GlassNavMode.floatingBlur,
-              isDark: isDark,
-              colorScheme: cs,
-            ),
+            child: _buildMiuixNavBar(context),
           ),
         ],
       ),
     );
+  }
+
+  /// 按当前设置构建 Miuix 底栏（悬浮 / 贴边二选一）。
+  ///
+  /// 两个组件的构造参数并不相同：悬浮版接管自己的圆角、阴影与外边距，
+  /// 贴边版则由 `MiuixNavigationBarDefaults` 固定 `itemHeight=64`。
+  /// 二者都要求 2~5 个 `MiuixNavigationBarItem`（库内有 assert）。
+  Widget _buildMiuixNavBar(BuildContext context) {
+    final items = <Widget>[
+      MiuixNavigationBarItem(
+        selected: _selectedIndex == 0,
+        onPressed: () => _onNavTap(0),
+        icon: Icon(_selectedIndex == 0 ? Icons.school : Icons.school_outlined),
+        label: '课程',
+      ),
+      MiuixNavigationBarItem(
+        selected: _selectedIndex == 1,
+        onPressed: () => _onNavTap(1),
+        icon: Icon(
+          _selectedIndex == 1
+              ? Icons.account_circle
+              : Icons.account_circle_outlined,
+        ),
+        label: '账号',
+      ),
+    ];
+
+    if (_floatingNavBar) {
+      // 悬浮版：cornerRadius 默认 50（胶囊），阴影由 shadowElevation 控制开关
+      return MiuixFloatingNavigationBar(
+        defaultWindowInsetsPadding: false,
+        children: items,
+      );
+    }
+    // 贴边版：自带底部安全区内边距，故 defaultWindowInsetsPadding 保持默认 true
+    return MiuixNavigationBar(children: items);
+  }
+
+  /// 底栏点击统一入口（切页 + 通知课程页可见性变化）
+  void _onNavTap(int index) {
+    if (index == _selectedIndex) return;
+    setState(() {
+      _selectedIndex = index;
+    });
+    (coursesPageKey.currentState as dynamic)?.onVisibilityChanged(index == 0);
   }
 }
