@@ -803,12 +803,47 @@ adb shell dumpsys notification_manager | grep websocket_service
 > 要彻底统一签名：把 CI 那步改成「从 GitHub Secrets 取固定 keystore 并 base64 解码」，
 > 而不是现场生成。
 
-### ❌ 还没验的（留给下次）
+### ✅ 2026-09-21 真机验证：服务**真的跑起来了**（本轮完成）
 
-1. **自检页没实际点过** —— 页面上线了、包也装上了，但「启动服务」按钮没点过。
-2. **服务从未被观察到真的在跑** —— 没看到通知、没看到 `dumpsys` 里有活的服务。
-3. **切后台 / 锁屏存活**未测。
-4. **真实课堂的端到端**未测（需要一节正在上的课）。
+装 `dist\课程助手_v4.4_前台服务自检_arm64.apk`（4007 覆盖 4006，签名一致、不用卸载），
+走「账号 → ⋯ → 前台服务自检 → 启动服务」：
+
+| 时间 | 观察 |
+| --- | --- |
+| 12:37:45 | 服务启动。系统日志 `Background started FGS: Allowed [... uidState: TOP ...]` |
+| 12:42 | `isForeground=true foregroundId=1000 types=0x00000001`（dataSync） |
+| 12:49 | 唤醒锁 `ForegroundService:WakeLock` ACQ=11m46s |
+| 12:59 | 唤醒锁 ACQ=**22m4s**，App PID 仍是 **19645** |
+| 13:18 | 唤醒锁 ACQ=**40m50s**，PID 仍是 **19645** |
+
+自检页显示「前台服务：运行中 / 最近一次操作：已启动」；通知栏出现常驻通知
+**「课堂助手 / 正在保持 WebSocket 连接...」**，渠道 `websocket_service`
+—— **这个渠道此前从未被创建过**（见上面那条旁证），现在它出现了。
+
+锁屏静置 **41 分钟**（全程 `mWakefulness=Dozing`）：`isForeground=true`、
+`startRequested=true`、通知在、**PID 一次没变**、无 kill / ANR / crash 记录。
+`dumpsys power` 里唤醒锁的 ACQ 时长一路涨到 40 分钟 →
+**`allowWakeLock` 确实在生效，息屏后 CPU 没睡**。
+`batterystats` 里同时能看到 `IrqTcpKeep=3 / TCPInput=15 / TCPOutput=69`，
+说明这段时间有真实的网络收发。
+
+### ❌ 仍未验的
+
+1. **非充电状态下的锁屏存活** —— 本轮手机在充电（`Charge=true, Power=95`）。
+   不少厂商 ROM 充电时对后台更宽松，**得拔掉电源再验一次**才算数。
+2. **真实课堂的端到端**（要一节正在上的课）：进课堂自动起服务、退课堂自动停。
+3. **切后台但不锁屏**（退到桌面放着）—— 本轮只验了锁屏 Dozing 这一种。
+
+### ⚠️ 这轮顺带发现的两点（先记着，别急着改）
+
+1. **`stopIfKilled=true`** —— `dumpsys` 里能看到这个属性，对应 `START_NOT_STICKY`：
+   服务被系统杀掉后**不会自动重启**。对"保活"这个目标来说偏保守，
+   理想是 `START_STICKY`。插件似乎固定用 `START_NOT_STICKY`，
+   要改可能得自己写个原生壳。**先记着。**
+2. **启动瞬间一条警告**：`W ForegroundServiceTypeLoggerModule: Foreground service
+   start for UID: 10196 does not have any types`。但紧接着 `dumpsys` 里
+   `types=0x00000001`（dataSync）是对的 —— 只是 `startForeground()` 调用那一瞬
+   没带 type、由 Manifest 声明兜底的正常现象，不影响运行。
 
 ## 未改动的（刻意留着）
 
@@ -817,6 +852,8 @@ adb shell dumpsys notification_manager | grep websocket_service
   插件源码 `ForegroundTask.kt:112` 对 `NOTHING` 直接 `return`，
   改成 `nothing()` 与保活无关、纯粹省电。**留到真机确认服务能跑起来之后再改**，
   一次只动一个变量。
+  → **2026-09-21：服务已确认能跑起来，这个前置条件满足了，可以动。**
+  但建议先补完「非充电状态下锁屏存活」那一项，别同时动两个变量。
 - `allowWakeLock` 保持默认 `true`（代码里显式注释了理由）。
   息屏后 CPU 靠它不睡，WebSocket 收消息才不会被拖到超时 ——
   这是本 App 的核心价值，耗电换可靠。要改的话是一次真正的取舍，得单独量。

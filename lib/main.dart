@@ -1,7 +1,7 @@
 import'dart:ui' show PlatformDispatcher;
 import'package:flutter/material.dart';
 import'package:flutter_localizations/flutter_localizations.dart';
-import'package:dynamic_color/dynamic_color.dart';
+// [移除] dynamic_color：已取消 Material You 动态取色，改为固定主题色 + 纯白/纯黑背景
 import'package:package_info_plus/package_info_plus.dart';
 import'package:url_launcher/url_launcher.dart';
 import'package:dio/dio.dart';
@@ -10,6 +10,8 @@ import'package:photo_manager/photo_manager.dart';
 import'./pages/accounts.dart';
 import'./pages/courses/list.dart';
 import'./pages/login.dart';
+// [新增] 液态玻璃底栏（方案 A：悬浮胶囊 + 真实模糊）
+import'./pages/widget/liquid_glass_nav_bar.dart';
 import'./api/api_service.dart';
 import'./session/cookie.dart';
 import'./session/account.dart';
@@ -79,41 +81,75 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DynamicColorBuilder(
-      builder: (ColorScheme? lightDynamic, ColorScheme? darkDynamic) {
-        return MaterialApp(
-          navigatorKey: navigatorKey,
-          title: '课程助手',
-          locale: const Locale('zh', 'CN'),
-          supportedLocales: const [
-            Locale('zh', 'CN'),
-            Locale('en', 'US')
-          ],
-          localizationsDelegates: const [
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate
-          ],
-          theme: ThemeData(
-            // Material You
-            useMaterial3: true,
-            colorScheme: lightDynamic ?? ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-          ),
-          darkTheme: ThemeData(
-            useMaterial3: true,
-            colorScheme: darkDynamic ?? ColorScheme.fromSeed(
-              seedColor: Colors.deepPurple,
-              brightness: Brightness.dark,
-            ),
-          ),
-          themeMode: ThemeMode.system,
-          home: const MyHomePage(),
-          routes: {
-            '/accounts': (context) => const AccountsPage(),
-            '/login': (context) => const LoginPage(),
-          },
-        );
-      }
+    return MaterialApp(
+      navigatorKey: navigatorKey,
+      title: '课程助手',
+      locale: const Locale('zh', 'CN'),
+      supportedLocales: const [
+        Locale('zh', 'CN'),
+        Locale('en', 'US')
+      ],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate
+      ],
+      // [改动] 取消 Material You 动态取色（不再跟随壁纸），改为固定主题色 + 纯白/纯黑背景
+      // 原来的 DynamicColorBuilder 已移除，因此 dynamic_color 依赖不再需要
+      theme: _buildLightTheme(),
+      darkTheme: _buildDarkTheme(),
+      themeMode: ThemeMode.system,
+      home: const MyHomePage(),
+      routes: {
+        '/accounts': (context) => const AccountsPage(),
+        '/login': (context) => const LoginPage(),
+      },
+    );
+  }
+
+  /// 浅色主题：纯白背景 + 紫色主色（seed deepPurple）
+  static ThemeData _buildLightTheme() {
+    final base = ColorScheme.fromSeed(
+      seedColor: Colors.deepPurple,
+      brightness: Brightness.light,
+    );
+    return ThemeData(
+      useMaterial3: true,
+      colorScheme: base.copyWith(
+        surface: Colors.white,
+        surfaceContainerLowest: Colors.white,
+        surfaceContainerLow: Colors.white,
+        surfaceContainer: const Color(0xFFF7F7F9),
+        surfaceContainerHigh: const Color(0xFFF2F2F5),
+        surfaceContainerHighest: const Color(0xFFECECF0),
+        onSurface: const Color(0xFF1A1A1F),
+        onSurfaceVariant: const Color(0xFF6A6A78),
+        outlineVariant: const Color(0xFFE4E4EA),
+      ),
+      scaffoldBackgroundColor: Colors.white,
+    );
+  }
+
+  /// 深色主题：纯黑背景（真黑，非灰黑）
+  static ThemeData _buildDarkTheme() {
+    final base = ColorScheme.fromSeed(
+      seedColor: Colors.deepPurple,
+      brightness: Brightness.dark,
+    );
+    return ThemeData(
+      useMaterial3: true,
+      colorScheme: base.copyWith(
+        surface: Colors.black,
+        surfaceContainerLowest: Colors.black,
+        surfaceContainerLow: const Color(0xFF0A0A0C),
+        surfaceContainer: const Color(0xFF121214),
+        surfaceContainerHigh: const Color(0xFF1A1A1D),
+        surfaceContainerHighest: const Color(0xFF232327),
+        onSurface: const Color(0xFFF2F2F5),
+        onSurfaceVariant: const Color(0xFF9A9AA8),
+        outlineVariant: const Color(0xFF2A2A30),
+      ),
+      scaffoldBackgroundColor: Colors.black,
     );
   }
 }
@@ -308,32 +344,54 @@ class _MainPageState extends State<MainPage> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
-      body: IndexedStack(
-        index: _selectedIndex,
+      // 底栏改为悬浮玻璃样式，由 Stack 叠加（不再用 Scaffold 的 bottomNavigationBar）
+      body: Stack(
         children: [
-          CoursesPage(key: coursesPageKey),
-          const AccountsPage(),
-        ]
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        items: const <BottomNavigationBarItem>[
-          BottomNavigationBarItem(
-            icon: Icon(Icons.school),
-            label: '课程',
+          Positioned.fill(
+            child: IndexedStack(
+              index: _selectedIndex,
+              children: [
+                CoursesPage(key: coursesPageKey),
+                const AccountsPage(),
+              ],
+            ),
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.account_circle),
-            label: '账号',
+          // 悬浮液态玻璃底栏（方案 A）
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: GlassNavBar(
+              currentIndex: _selectedIndex,
+              onTap: (index) {
+                setState(() {
+                  _selectedIndex = index;
+                });
+                (coursesPageKey.currentState as dynamic)
+                    ?.onVisibilityChanged(index == 0);
+              },
+              items: const <GlassNavItem>[
+                GlassNavItem(
+                  icon: Icons.school_outlined,
+                  activeIcon: Icons.school,
+                  label: '课程',
+                ),
+                GlassNavItem(
+                  icon: Icons.account_circle_outlined,
+                  activeIcon: Icons.account_circle,
+                  label: '账号',
+                ),
+              ],
+              mode: GlassNavMode.floatingBlur,
+              isDark: isDark,
+              colorScheme: cs,
+            ),
           ),
         ],
-        currentIndex: _selectedIndex,
-        onTap: (index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-          (coursesPageKey.currentState as dynamic)?.onVisibilityChanged(index == 0);
-        },
       ),
     );
   }
