@@ -827,7 +827,7 @@ class _PresentationPageState extends State<PresentationPage>
       }
     } catch (e, s) {
       AppLogger.e('ForegroundService', '前台服务启动异常：$e');
-      debugPrint('前台服务启动异常：$e\n$s');
+      AppLogger.e('前台服务', '启动异常：$e\n$s');
       return;
     }
 
@@ -930,7 +930,7 @@ class _PresentationPageState extends State<PresentationPage>
         },
       );
     } catch (e) {
-      debugPrint('WebSocket 连接失败：$e');
+      AppLogger.e('WebSocket', '连接失败：$e');
     }
   }
 
@@ -969,7 +969,7 @@ class _PresentationPageState extends State<PresentationPage>
       final data = jsonDecode(message);
       final op = data['op'];
 
-      debugPrint('WebSocket S2C：$message');
+      AppLogger.d('WebSocket', 'S2C：$message');
 
       final messageText = data['message'];
 
@@ -1160,7 +1160,7 @@ class _PresentationPageState extends State<PresentationPage>
           break;
       }
     } catch (e) {
-      debugPrint('解析消息失败：$e');
+      AppLogger.e('WebSocket', '解析消息失败：$e');
     }
   }
 
@@ -1239,7 +1239,7 @@ class _PresentationPageState extends State<PresentationPage>
         presentation = Presentation.fromJson(pptData);
       }
     } catch (e) {
-      debugPrint('加载 PPT 失败：$e');
+      AppLogger.e('Presentation', '加载 PPT 失败：$e');
       AppLogger.w('Presentation', '加载 PPT 失败：$e');
     }
 
