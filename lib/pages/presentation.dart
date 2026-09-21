@@ -882,11 +882,21 @@ class _PresentationPageState extends State<PresentationPage>
                 }
               });
               _startCountdown(limit);
+            } else if (problemId != null) {
+              // 不限时的题：没有倒计时，但一样要记进「已解锁」
+              setState(() {
+                if (!_unlockedProblemIds.contains(problemId)) {
+                  _unlockedProblemIds.add(problemId);
+                }
+              });
+            }
 
-              // [新增] 老师发布了题目 → 按设置尝试自动提交
-              if (problemId != null) {
-                unawaited(_maybeAutoSubmit(problemId.toString()));
-              }
+            // [新增] 老师发布了题目 → 按设置尝试自动提交
+            //
+            // 注意这行**必须在 limit 判断之外**：不限时的题（limit 为 null/0）
+            // 也要能自动提交，否则那类题永远不会触发。
+            if (problemId != null) {
+              unawaited(_maybeAutoSubmit(problemId.toString()));
             }
           }
           break;
