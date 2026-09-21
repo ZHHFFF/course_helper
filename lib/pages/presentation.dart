@@ -417,7 +417,7 @@ class _PresentationPageState extends State<PresentationPage>
 
     _autoSubmitted.add(problemId);
     try {
-      await _submitAnswer();
+      await _submitAnswer(auto: true);
       AppLogger.i('自动答题', '已自动提交题目 $problemId');
     } catch (e) {
       AppLogger.e('自动答题', '自动提交失败：$e');
@@ -2062,7 +2062,7 @@ class _PresentationPageState extends State<PresentationPage>
     }
   }
 
-  Future<void> _submitAnswer() async {
+  Future<void> _submitAnswer({bool auto = false}) async {
     final problemId = _currentProblem?.problemId ?? _timelineProblemId;
     if (problemId == null) return;
 
@@ -2080,10 +2080,13 @@ class _PresentationPageState extends State<PresentationPage>
 
     final isTimeout = _countdownSeconds != null && _countdownSeconds! <= 0;
 
-    await _submitForAllAccounts(problemId, problemType, _uploadedImageUrls, isTimeout, problemDt);
+    await _submitForAllAccounts(problemId, problemType, _uploadedImageUrls,
+        isTimeout, problemDt, auto: auto);
   }
 
-  Future<void> _submitForAllAccounts(String problemId, int problemType, List<String>? imageUrls, bool isTimeout, int? problemDt) async {
+  Future<void> _submitForAllAccounts(String problemId, int problemType,
+      List<String>? imageUrls, bool isTimeout, int? problemDt,
+      {bool auto = false}) async {
     final allAccounts = AccountManager.allAccounts;
 
     if (allAccounts.isEmpty) {
@@ -2141,12 +2144,13 @@ class _PresentationPageState extends State<PresentationPage>
       }
     }
 
-    _showSubmitResult(
-      successCount,
-      allAccounts.length,
-      failedAccounts,
-      networkFailCount: networkFailCount,
-    );
+      _showSubmitResult(
+        successCount,
+        allAccounts.length,
+        failedAccounts,
+        networkFailCount: networkFailCount,
+        auto: auto,
+      );
 
     setState(() {
       _countdownSeconds = 0;
@@ -2155,13 +2159,14 @@ class _PresentationPageState extends State<PresentationPage>
     });
   }
 
-  void _showSubmitResult(
-    int successCount,
-    int totalCount,
-    List<String> failedAccounts, {
-    int networkFailCount = 0,
-  }) {
-    if (!mounted) return;
+    void _showSubmitResult(
+      int successCount,
+      int totalCount,
+      List<String> failedAccounts, {
+      int networkFailCount = 0,
+      bool auto = false,
+    }) {
+      if (!mounted) return;
 
     final bool allNetworkFailed = successCount == 0 &&
         networkFailCount > 0 &&
@@ -2184,12 +2189,24 @@ class _PresentationPageState extends State<PresentationPage>
       message += '\n\n提示：网络异常表示请求没有到达服务器，'
           '通常是断网、超时或接口无法访问。请检查手机网络后重新提交。';
     }
-    if (failedAccounts.isNotEmpty) {
-      message += '\n\n失败账号:\n${failedAccounts.join('\n')}';
-    }
+      if (failedAccounts.isNotEmpty) {
+        message += '\n\n失败账号:\n${failedAccounts.join('\n')}';
+      }
 
-    showDialog(
-      context: context,
+      // 自动提交不弹模态框：课堂上弹窗会挡住界面、还得手动关，
+      // 连发几道题就会叠一堆。改成 SnackBar，瞄一眼就知道结果。
+      if (auto) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$title（$successCount/$totalCount）'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+
+      showDialog(
+        context: context,
       builder: (context) => AlertDialog(
         title: Text(
           title,
