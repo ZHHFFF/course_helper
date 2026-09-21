@@ -131,9 +131,6 @@ class _PresentationPageState extends State<PresentationPage>
 
   // ============ [新增] 自动答题 ============
 
-  /// 已经自动预选过的指纹（避免覆盖用户的手动修改）
-  final Set<String> _autoSelected = {};
-
   /// 已经自动提交过的指纹（防重复提交）
   final Set<String> _autoSubmitted = {};
 
@@ -252,8 +249,13 @@ class _PresentationPageState extends State<PresentationPage>
     if (!AutoAnswerSetting.autoSelect.value) return;
     if (!mounted) return;
     if (_currentHash != hash) return; // 不是当前页的题，不抢填
-    if (_autoSelected.contains(hash)) return;
-    // 用户已经自己填过了 → 不覆盖
+
+    // 判据是「作答区有没有内容」，不是「有没有自动填过」。
+    //
+    // 因为切题时 `_resetAnswerIfProblemChanged()` 会清空 `_answer`：
+    // 如果用「填过就不再填」的标记，A→B→A 切回来时 A 会被误判成
+    // 已经处理过而不重新填，作答区就空着了。
+    // 而「有内容就不动」同时兼顾了「不覆盖用户手动修改」。
     if (_isAnswerFilled()) return;
 
     final cached = _suggested[hash];
@@ -262,7 +264,6 @@ class _PresentationPageState extends State<PresentationPage>
     final scanned = _scan.byHash[hash];
     if (scanned == null) return;
 
-    _autoSelected.add(hash);
     _fillAnswerSilently(scanned.question, cached.results.first);
   }
 
