@@ -20,7 +20,7 @@ version: 1.2.6+2009
 
 environment:
   flutter: ^3.41.8
-  sdk: ^3.11.5
+  sdk: ^3.12.2
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -56,7 +56,12 @@ dependencies:
   flutter_baidu_mapapi_base: ^4.0.2
   flutter_baidu_mapapi_search: ^4.0.2
   flutter_bmflocation: ^3.8.5
-  dynamic_color: 1.8.1
+  dynamic_color: ^1.9.0
+  # Miuix：小米 HyperOS 设计语言（Compose Multiplatform）的 Flutter 移植版。
+  # 45+ 组件，自带超椭圆圆角、Folme 弹簧动效、液态玻璃与 Monet 动态取色。
+  # 用于替代自研液态玻璃底栏（MiuixGlassNavigationBar 默认高 54，
+  # 内置跨目的地拖动 + 可中断弹簧回弹，见 glass/miuix_glass_motion.dart）。
+  flutter_miuix: ^1.2.0
   image_picker: ^1.2.1
   url_launcher: ^6.2.5
   pinput: ^6.0.2
