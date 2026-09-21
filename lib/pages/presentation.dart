@@ -28,6 +28,7 @@ import '../cache/question_hash.dart';
 import '../cache/slide_scanner.dart';
 import '../setting/auto_answer_setting.dart';
 // [/新增]
+import '../utils/answer_filling.dart';
 import '../utils/app_logger.dart';
 import '../utils/network_error.dart';
 import '../utils/ppt_exporter.dart';
@@ -319,50 +320,43 @@ class _PresentationPageState extends State<PresentationPage>
 
     final raw = picked.answer.trim();
 
-    // ---- 填空题 ----
-    if (problem.problemType == 4) {
-      final blankCount = RegExp(r'\[填空\d*\]').allMatches(problem.body).length;
-      if (blankCount > 0) {
-        final parts = raw
-            .split(RegExp(r'[\n,，;；、]+'))
-            .map((s) => s.trim())
-            .where((s) => s.isNotEmpty)
-            .toList();
-        if (parts.isEmpty) return false;
-        final list = List<String>.filled(blankCount, '');
-        for (var i = 0; i < blankCount && i < parts.length; i++) {
-          list[i] = parts[i];
-        }
+    // 该写哪个字段由题型决定 —— 这段判断逻辑抽到了 AnswerFilling，
+    // 那边有单测覆盖（写错字段的表现是「填了等于没填」，UI 上看不出来）
+    switch (AnswerFilling.fieldFor(problem.problemType, problem.body)) {
+      // ---- 填空题（多个空）：每空一项写进 _answer ----
+      case AnswerField.fillBlanks:
+        final count = AnswerFilling.blankCount(problem.body);
+        final list = AnswerFilling.splitBlanks(raw, count);
+        if (list.isEmpty) return false;
         setState(() => _answer = list);
-        AppLogger.i(logTag, '已自动预选（填空 $blankCount 空）：${list.join(" | ")}');
+        AppLogger.i(logTag, '已自动预选（填空 $count 空）：${list.join(" | ")}');
         return true;
-      }
-      // 没有 [填空N] 标记 → UI 是单个输入框
-      if (raw.isEmpty) return false;
-      setState(() => _textAnswer = raw);
-      AppLogger.i(logTag, '已自动预选（填空）：$raw');
-      return true;
-    }
 
-    // ---- 选择题（单选/多选/判断/投票）----
-    final options = (problem.options ?? const [])
-        .map((o) => StandardizedOption(key: o.key, value: o.value))
-        .toList();
-    final keys = picked.matchOptionKeys(options);
-    if (keys.isNotEmpty) {
-      setState(() => _answer = keys);
-      AppLogger.i(logTag, '已自动预选：${keys.join("、")}（${picked.source}）');
-      return true;
-    }
+      // ---- 填空题（没标记，UI 是单个输入框）----
+      case AnswerField.fillSingle:
+        if (raw.isEmpty) return false;
+        setState(() => _textAnswer = raw);
+        AppLogger.i(logTag, '已自动预选（填空）：$raw');
+        return true;
 
-    // ---- 简答题 ----
-    if (raw.isNotEmpty) {
-      setState(() => _textAnswer = raw);
-      AppLogger.i(logTag, '已自动预选（简答）：$raw');
-      return true;
-    }
+      // ---- 简答题 ----
+      case AnswerField.shortAnswer:
+        if (raw.isEmpty) return false;
+        setState(() => _textAnswer = raw);
+        AppLogger.i(logTag, '已自动预选（简答）：$raw');
+        return true;
 
-    return false;
+      // ---- 选择题（单选/多选/判断/投票）----
+      case AnswerField.choice:
+        final options = (problem.options ?? const [])
+            .map((o) => StandardizedOption(key: o.key, value: o.value))
+            .toList();
+        final keys = picked.matchOptionKeys(options);
+        if (keys.isEmpty) return false;
+        setState(() => _answer = keys);
+        AppLogger.i(logTag, '已自动预选：${keys.join("、")}（${picked.source}）');
+        return true;
+    }
   }
 
   // ==================== [新增] 自动提交 ====================
