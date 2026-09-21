@@ -1454,17 +1454,12 @@ class _PresentationPageState extends State<PresentationPage>
               _searching.remove(item.hash);
             });
 
-            // ⚠️ 这里必须自己再触发一次自动预选。
+            // 自动预选不在这里触发 —— AnswerQueue 现在**不管走缓存还是
+            // 真去请求都会广播**（契约统一在 submit() 的出口），
+            // 所以 _onAnswerReady 一定会被调到，那边负责预选。
             //
-            // AnswerQueue.submit() 在**缓存命中**时是直接 return 的，
-            // 只有走 _process() 的那条路才会往 results 流里广播。
-            // 所以缓存命中的题目不会触发 _onAnswerReady，
-            // 用户如果当时正停在那道题上，就永远不会被自动填上。
-            // （_autoSelectIfCurrent 内部有「已填过就不动」的判据，
-            //   所以和广播那条路重复调用是安全的。）
-            if (result != null) {
-              unawaited(_autoSelectIfCurrent(result.hash));
-            }
+            // 这里仍然写一次 _suggested：广播是流，万一界面刚好在
+            // dispose 边缘错过了，这里能兜住，而且写两次是幂等的。
           }).catchError((Object e) {
           AppLogger.w('Presentation', '自动检索失败（${item.hash}）：$e');
           if (mounted) {
