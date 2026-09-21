@@ -572,9 +572,14 @@ class _PresentationPageState extends State<PresentationPage>
       //    服务端明确拒绝（比如题已关闭）不重试 —— 重试没意义，还可能重复提交。
       // 2. 只在**没带图片**时重试。图片提交完就被清掉了，
       //    带图重试会变成空答案，反而更糟。
+      //
+      // ⚠️ 另外要认清一件事：这里的「网络失败」其实**分不出**
+      //   「请求根本没到服务器」和「到了但回包丢了」—— 超时就是这种模糊态。
+      //   所以重试本质是 at-least-once，理论上可能重复提交。
+      //   同一道题交两次、服务端按最后一次算，影响可控，可以接受。
       final hadImages = _uploadedImageUrls.isNotEmpty;
-      var netFails =
-          await _submitAnswer(auto: true, problemIdOverride: problemId);
+      var netFails = await _submitAnswer(
+          auto: true, problemIdOverride: problemId, silent: true);
 
       var attempt = 0;
       while (netFails > 0 && attempt < 2 && !hadImages && mounted) {
@@ -585,11 +590,28 @@ class _PresentationPageState extends State<PresentationPage>
         );
         await Future<void>.delayed(Duration(milliseconds: 600 * attempt));
         if (!mounted) break;
-        netFails =
-            await _submitAnswer(auto: true, problemIdOverride: problemId);
+        netFails = await _submitAnswer(
+            auto: true, problemIdOverride: problemId, silent: true);
       }
 
-      AppLogger.i('自动答题', '已自动提交题目 $problemId');
+      // 日志必须说实话 —— 现在它是我唯一的验证手段。
+      //
+      // 原来这里无条件打「已自动提交」，于是：
+      //   - 重试 2 次后仍网络失败 → 照样打成功
+      //   - 这题带图（按设计不重试）而第一次就失败 → 也照样打成功
+      // 结果日志一片祥和、答案其实丢了，照日志根本查不出问题。
+      if (netFails > 0) {
+        AppLogger.e(
+          '自动答题',
+          '题目 $problemId 提交失败：仍有 $netFails 个账号网络异常，'
+              '${hadImages ? "这题带图，按设计不重试（重试会变成空答案）" : "已重试 $attempt 次"}'
+              ' —— 答案没交上去，需要手动补交',
+        );
+        _toast('自动提交失败：$netFails 个账号网络异常，请手动补交');
+      } else {
+        AppLogger.i('自动答题', '已自动提交题目 $problemId（请求已到达服务器）');
+        _toast('已自动提交');
+      }
     } catch (e, st) {
       // unawaited() 会把异常吞掉，日志里什么都看不到 —— 必须自己兜住
       AppLogger.e('自动答题', '自动提交题目 $problemId 时出错：$e\n$st');
@@ -2367,6 +2389,7 @@ class _PresentationPageState extends State<PresentationPage>
   Future<int> _submitAnswer({
     bool auto = false,
     String? problemIdOverride,
+    bool silent = false,
   }) async {
     final problemId =
         problemIdOverride ?? _currentProblem?.problemId ?? _timelineProblemId;
@@ -2376,7 +2399,7 @@ class _PresentationPageState extends State<PresentationPage>
     final problemDt = _currentProblem?.dt;
 
     if (_answer == null && _textAnswer == null && _uploadedImageUrls.isEmpty) {
-      if (mounted) {
+      if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('请先选择或填写答案')),
         );
@@ -2387,17 +2410,18 @@ class _PresentationPageState extends State<PresentationPage>
     final isTimeout = _countdownSeconds != null && _countdownSeconds! <= 0;
 
     return await _submitForAllAccounts(problemId, problemType,
-        _uploadedImageUrls, isTimeout, problemDt, auto: auto);
+        _uploadedImageUrls, isTimeout, problemDt,
+        auto: auto, silent: silent);
   }
 
   /// 返回**网络失败**的账号数（0 = 没有网络问题）
   Future<int> _submitForAllAccounts(String problemId, int problemType,
       List<String>? imageUrls, bool isTimeout, int? problemDt,
-      {bool auto = false}) async {
+      {bool auto = false, bool silent = false}) async {
     final allAccounts = AccountManager.allAccounts;
 
     if (allAccounts.isEmpty) {
-      if (mounted) {
+      if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('没有可用的账号')),
         );
@@ -2451,13 +2475,17 @@ class _PresentationPageState extends State<PresentationPage>
       }
     }
 
-      _showSubmitResult(
-        successCount,
-        allAccounts.length,
-        failedAccounts,
-        networkFailCount: networkFailCount,
-        auto: auto,
-      );
+      // silent：自动提交的重试过程中不弹结果，等重试全部走完再统一报一次，
+      // 否则「网络异常」和「全部提交成功」会先后叠两条 SnackBar，自相矛盾。
+      if (!silent) {
+        _showSubmitResult(
+          successCount,
+          allAccounts.length,
+          failedAccounts,
+          networkFailCount: networkFailCount,
+          auto: auto,
+        );
+      }
 
     setState(() {
       _countdownSeconds = 0;
