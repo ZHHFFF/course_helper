@@ -491,6 +491,12 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   /// 等某道题的答案就绪（AI 检索要几秒）
+  ///
+  /// 拿到**终态**就立刻返回，不傻等到超时：
+  /// - `ok` + 有结果 → 可用，返回
+  /// - `failed`（超时/鉴权/模型报错）、`empty`（模型说没答案）
+  ///   → 这两种再等也不会变（`_enqueueScan` 每题只提交一次，不会自动重试），
+  ///     提前返回，省下最多 25 秒 —— 这 25 秒在限时题里很宝贵。
   Future<CachedAnswer?> _waitForAnswer(
     String hash, {
     Duration timeout = const Duration(seconds: 25),
@@ -498,7 +504,14 @@ class _PresentationPageState extends State<PresentationPage>
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       final c = _suggested[hash];
-      if (c != null && c.usable) return c;
+      if (c != null) {
+        if (c.usable) return c;
+        if (c.status == CachedAnswerStatus.failed ||
+            c.status == CachedAnswerStatus.empty) {
+          AppLogger.i('自动答题', '答案是终态（${c.status}），不再等待');
+          return c;
+        }
+      }
       if (!mounted) return null;
       await Future<void>.delayed(const Duration(milliseconds: 400));
     }
