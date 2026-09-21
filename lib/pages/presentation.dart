@@ -519,10 +519,38 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   /// 题目在 PPT 里的页号（0-based），找不到返回 -1
+  ///
+  /// 两条路：
+  /// 1. 直接比 PPT 里题目的 `problemId`
+  /// 2. **兜底**：从时间轴找。时间轴事件的 `problemId` 和发题消息的 `prob`
+  ///    是同一个字段（都读 JSON 里的 `prob`），而且事件里带 `si`（1-based
+  ///    页码，和 `_toSlide` / `showpresentation` 同源）——
+  ///    万一 `prob` 和 PPT 里的 `problemId` 不是同一个值，靠这条也能定位。
   int _indexOfProblem(String problemId) {
     for (var i = 0; i < _slideModels.length; i++) {
       if (_slideModels[i].problem?.problemId == problemId) return i;
     }
+
+    for (final e in _timeline) {
+      if (e.problemId != problemId) continue;
+      // 不同一份 PPT 的页码不能混用
+      if (e.presentationId != null &&
+          _currentPresentationId != null &&
+          e.presentationId != _currentPresentationId) {
+        continue;
+      }
+      final si = e.slideIndex;
+      if (si == null || si <= 0) continue;
+      final idx = si - 1;
+      if (idx >= 0 && idx < _slideModels.length) {
+        AppLogger.i(
+          '自动答题',
+          'PPT 里没匹配到 problemId=$problemId，改用时间轴的 si 定位到第 ${idx + 1} 页',
+        );
+        return idx;
+      }
+    }
+
     return -1;
   }
 
@@ -1042,6 +1070,12 @@ class _PresentationPageState extends State<PresentationPage>
             final problemId = problemData['prob'];
             final limit = problemData['limit'];
             final dt = problemData['dt'];
+
+            // 诊断：把发题消息的原样打出来。
+            // 关键是确认 `prob` 和 PPT 里的 `problemId` 是不是同一个值 ——
+            // 不是的话「提交」按钮和自动提交都找不到题目。
+            AppLogger.i('自动答题', '收到 unlockproblem 原始数据：$problemData');
+
             if (limit != null && limit > 0) {
               setState(() {
                 _countdownSeconds = limit;
