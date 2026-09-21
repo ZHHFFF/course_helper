@@ -138,6 +138,20 @@ class _PresentationPageState extends State<PresentationPage>
   /// 待自动提交的题目队列（串行处理，避免连发两题时丢掉后一道）
   final List<String> _autoSubmitQueue = [];
 
+  // ============ 已发布题目的「单一事实来源」 ============
+  //
+  // 背景：发题消息（unlockproblem）给的是 `prob`，而 PPT 里题目的字段叫
+  // `problemId` —— **两套 ID 命名空间**。原来的代码拿一边的值去
+  // `contains` 另一边的集合（比如「提交」按钮的条件），
+  // 万一两个值不一样，按钮就永远不出现、自动提交也找不到题目。
+  //
+  // 修法：在**边界处归一化一次** —— 收到发题消息就把 `prob` 解析成
+  // 「PPT 里的页号」，记在这里。之后所有判断都读这个映射，
+  // 不再到处做 ID 字符串比对。
+
+  /// 已发布的题目：PPT 页号（0-based） → 服务器给的 prob
+  final Map<int, String> _publishedSlideOf = {};
+
   /// 老师发题后，最多等多久让 AI 把答案搜出来
   ///
   /// AI 一道题要 3~6 秒，老师发题那一刻答案通常还没回来。
@@ -378,8 +392,22 @@ class _PresentationPageState extends State<PresentationPage>
         '收到发题 $problemId｜开关：自动提交=${AutoAnswerSetting.autoSubmit.value} '
             '预选=${AutoAnswerSetting.autoSelect.value}｜PPT ${_slideModels.length} 页',
       );
+
+      // 不管自动提交开没开，都要先把 prob 解析成 PPT 页号并记下来 ——
+      // 「提交」按钮的显示依赖这个映射（见 _publishedSlideOf 的说明）。
+      // 这是「边界处归一化一次」，比让各处去 contains 比对可靠。
+      final index = await _waitForProblemSlide(problemId);
+      if (!mounted) return;
+      if (index >= 0) {
+        setState(() => _publishedSlideOf[index] = problemId);
+        AppLogger.i('自动答题', '已记录发布位置：第 ${index + 1} 页 ← $problemId');
+      } else {
+        AppLogger.w('自动答题',
+            '解析不出 $problemId 对应哪一页，「提交」按钮可能不会出现');
+      }
+
       if (!AutoAnswerSetting.autoSubmit.value) {
-        AppLogger.i('自动答题', '「自动提交」开关是关的，跳过');
+        AppLogger.i('自动答题', '「自动提交」开关是关的，只记录发布位置');
         return;
       }
       if (_autoSubmitted.contains(problemId)) {
@@ -628,6 +656,29 @@ class _PresentationPageState extends State<PresentationPage>
           '  时间轴里的题目=[${timeline.isEmpty ? "无" : timeline.join("，")}]',
     );
     return -1;
+  }
+
+  /// 当前页的题是不是老师已经发布的 —— 决定「提交」按钮出不出现
+  ///
+  /// 判断依据（任一成立）：
+  /// 1. **当前页在「已发布页」映射里** —— 最可靠，不依赖 ID 字符串比对
+  ///    （发题消息给的是 prob，PPT 里是 problemId，两套命名空间）
+  /// 2. 当前页题目的 problemId 直接在已发布集合里（prob == problemId 时成立）
+  /// 3. 时间轴上点开的那道题已发布（用户从时间轴进来的场景）
+  bool _isCurrentProblemPublished() {
+    if (_publishedSlideOf.containsKey(_currentSlideIndex)) return true;
+
+    final id = _currentProblem?.problemId;
+    if (id != null && id.isNotEmpty && _unlockedProblemIds.contains(id)) {
+      return true;
+    }
+
+    final t = _timelineProblemId;
+    if (t != null && t.isNotEmpty && _unlockedProblemIds.contains(t)) {
+      return true;
+    }
+
+    return false;
   }
 
   /// 当前页的答案是否已经填好
@@ -1963,7 +2014,8 @@ class _PresentationPageState extends State<PresentationPage>
                                               ),
                                             ),
                                           const Spacer(),
-                                          if (_currentProblem != null && _unlockedProblemIds.contains(_currentProblem!.problemId) && _countdownSeconds != null)
+                                          // 倒计时红标：题目已发布 + 有倒计时才显示
+                                          if (_isCurrentProblemPublished() && _countdownSeconds != null)
                                             Container(
                                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                               decoration: BoxDecoration(
@@ -2028,8 +2080,9 @@ class _PresentationPageState extends State<PresentationPage>
                                         ),
                                       ),
                                       // [/新增]
-                                      if ((_currentProblem != null && _unlockedProblemIds.contains(_currentProblem!.problemId)) ||
-                                          (_timelineProblemId != null && _unlockedProblemIds.contains(_timelineProblemId!))) ...[
+                                      // 单一事实来源判断，不再在这里裸写 ID 比对
+                                      // （发题消息用 prob，PPT 用 problemId，两套命名空间）
+                                      if (_isCurrentProblemPublished()) ...[
                                         const SizedBox(height: 16),
                                         Row(
                                           mainAxisAlignment: MainAxisAlignment.end,
