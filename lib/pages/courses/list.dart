@@ -11,6 +11,8 @@ import '../../models/course.dart';
 import '../../models/active.dart';
 import '../widget/scan.dart';
 import '../widget/avatar.dart';
+// [新增] 悬浮玻璃底栏的底部留白高度
+import '../widget/liquid_glass_nav_bar.dart';
 import '../actives/sign_in/sign_in.dart';
 import '../actives/topic_discuss.dart';
 import '../actives/quiz.dart';
@@ -523,6 +525,8 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
               )
             : ListView.builder(
                 itemCount: _courses.length,
+                // [新增] 底部留白：底栏是悬浮玻璃样式，会盖住滚动内容
+                padding: EdgeInsets.only(bottom: glassNavBarClearance(context)),
                 itemBuilder: (context, index) {
                   var course = _courses[index];
                   return Card(

@@ -13,6 +13,8 @@ import 'widget/answer_search_settings.dart';
 import 'widget/log_viewer.dart';
 import 'widget/cache_manager.dart';
 import 'widget/keep_alive_checker.dart';
+// [新增] 悬浮玻璃底栏的底部留白高度
+import 'widget/liquid_glass_nav_bar.dart';
 import 'login.dart';
 
 class AccountsPage extends StatefulWidget {
@@ -589,6 +591,8 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       )
           : ListView.builder(
         itemCount: _accounts.length,
+        // [新增] 底部留白：底栏是悬浮玻璃样式，会盖住滚动内容
+        padding: EdgeInsets.only(bottom: glassNavBarClearance(context)),
         itemBuilder: (context, index) {
           final user = _accounts[index];
           final isSelected = _selectedAccounts.contains(user.uid);

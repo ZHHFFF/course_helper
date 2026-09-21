@@ -128,6 +128,10 @@ class MyApp extends StatelessWidget {
   }
 
   /// 深色主题：纯黑背景（真黑，非灰黑）
+  ///
+  /// 注意容器层级：背景是纯黑 `#000000`，各级 surfaceContainer 必须**逐级提亮**
+  /// 才能让卡片看出边界。若把 surfaceContainerLow 也设成接近纯黑，
+  /// 卡片会和背景糊在一起、层级关系完全丢失。
   static ThemeData _buildDarkTheme() {
     final base = ColorScheme.fromSeed(
       seedColor: Colors.deepPurple,
@@ -136,17 +140,27 @@ class MyApp extends StatelessWidget {
     return ThemeData(
       useMaterial3: true,
       colorScheme: base.copyWith(
+        // 真黑背景
         surface: Colors.black,
         surfaceContainerLowest: Colors.black,
-        surfaceContainerLow: const Color(0xFF0A0A0C),
-        surfaceContainer: const Color(0xFF121214),
-        surfaceContainerHigh: const Color(0xFF1A1A1D),
-        surfaceContainerHighest: const Color(0xFF232327),
+        // 卡片层级：从 #101014 起，逐级提亮，保证在纯黑上可分辨
+        surfaceContainerLow: const Color(0xFF101014),
+        surfaceContainer: const Color(0xFF16161B),
+        surfaceContainerHigh: const Color(0xFF1E1E24),
+        surfaceContainerHighest: const Color(0xFF27272E),
         onSurface: const Color(0xFFF2F2F5),
         onSurfaceVariant: const Color(0xFF9A9AA8),
-        outlineVariant: const Color(0xFF2A2A30),
+        outlineVariant: const Color(0xFF33333C),
       ),
       scaffoldBackgroundColor: Colors.black,
+      // Card 默认用 surfaceContainerLow，显式再指定一次避免主题推导差异
+      cardTheme: CardThemeData(
+        color: const Color(0xFF101014),
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
     );
   }
 }

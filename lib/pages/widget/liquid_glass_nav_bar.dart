@@ -32,7 +32,18 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
-/// 底栏方案枚举
+/// 底栏占用的底部高度（供页面给滚动内容留白，避免最后一项被悬浮底栏遮住）。
+///
+/// 用法：`ListView(padding: EdgeInsets.only(bottom: glassNavBarClearance(context)))`
+///
+/// 组成：悬浮底栏 66px + 底部抬起 14px + 系统安全区。
+/// 非悬浮模式（edgeBlur / miniPill）高度不同，这里按最大情形给值，
+/// 宁可多留一点空白，也不要内容被盖。
+double glassNavBarClearance(BuildContext context) {
+  return 66 + 14 + MediaQuery.of(context).padding.bottom + 24;
+}
+
+/// 底栏方案枚举（预览页与主流程共用）
 enum GlassBarStyle {
   /// A：悬浮胶囊 · 真实模糊
   floatingBlur,
