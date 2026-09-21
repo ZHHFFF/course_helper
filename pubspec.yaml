@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.2.5+2008
+version: 1.2.6+2009
 
 environment:
   flutter: ^3.41.8
@@ -110,6 +110,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # 液态玻璃的折射/色差 shader（FragmentProgram 加载）
+  shaders:
+    - shaders/liquid_glass.frag
 
   assets:
     - images/placeholder.png

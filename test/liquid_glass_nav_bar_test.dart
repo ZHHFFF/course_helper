@@ -16,9 +16,19 @@ import 'package:course_helper/pages/widget/liquid_glass_nav_bar.dart';
 
 void main() {
   group('底栏占位高度常量', () {
-    test('glassNavBarOccupiedHeight 由「底部抬起 14 + 底栏高 66」组成', () {
-      expect(glassNavBarOccupiedHeight, 14 + 66);
-      expect(glassNavBarOccupiedHeight, 80);
+    test('glassNavBarOccupiedHeight = 抬起 8 + 内容高 52', () {
+      expect(glassNavBarLift, 8);
+      expect(glassNavBarContentHeight, 52);
+      expect(
+        glassNavBarOccupiedHeight,
+        glassNavBarLift + glassNavBarContentHeight,
+      );
+      expect(glassNavBarOccupiedHeight, 60);
+    });
+
+    test('整体高度比 Material 默认标签栏（80）更紧凑', () {
+      // Liquid Glass 的观感要求"薄薄一层"，这里锁住它不能变厚
+      expect(glassNavBarOccupiedHeight, lessThan(80));
     });
   });
 
@@ -40,7 +50,7 @@ void main() {
       );
 
       expect(clearance, glassNavBarOccupiedHeight + 48 + 24);
-      expect(clearance, 80 + 48 + 24);
+      expect(clearance, 60 + 48 + 24);
     });
 
     testWidgets('无安全区时等于 占位高度 + 24', (tester) async {
