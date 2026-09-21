@@ -526,6 +526,25 @@ class _PresentationPageState extends State<PresentationPage>
       }
       if (!mounted) return;
 
+      // ---- 第 2.5 步：确认还停在题目所在的页 ----
+      //
+      // 等答案的这几秒里，老师完全可能翻页（slide / slidenav 会把用户带走）。
+      // 这时候往下走，答案会被填到**当前页别的题**上，提交也就交错了题。
+      // 所以提交前必须复核一次，不在了就切回去。
+      if (_currentSlideIndex != index) {
+        AppLogger.w(
+          '自动答题',
+          '等答案期间页面被翻到第 ${_currentSlideIndex + 1} 页，切回第 ${index + 1} 页',
+        );
+        _toSlide(index + 1, animate: false);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        if (!mounted) return;
+        if (_currentHash != hash) {
+          AppLogger.w('自动答题', '切回来之后指纹对不上了，放弃自动提交');
+          return;
+        }
+      }
+
       // ---- 第 3 步：填答案 ----
       if (!_isAnswerFilled()) {
         _fillAnswerSilently(scanned.question, cached.results.first);
