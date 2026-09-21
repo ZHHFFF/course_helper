@@ -423,12 +423,24 @@ class _PresentationPageState extends State<PresentationPage>
       // 现在改成最多等 [answerWait] 秒。
       var cached = _suggested[hash];
       if (cached == null || !cached.usable) {
-        AppLogger.i('自动答题', '答案还没搜好，最多等 ${answerWait.inSeconds}s');
-        cached = await _waitForAnswer(hash, timeout: answerWait);
+        // 等答案的时间**不能超过本题的剩余作答时间** ——
+        // 否则等到答案了，题也早就关闭、交不上去了。
+        // 留 2 秒余量给「填写 + 提交」这两步。
+        final remain = _countdownSeconds;
+        final budget = (remain != null && remain > 0)
+            ? Duration(
+                seconds: (remain - 2).clamp(1, answerWait.inSeconds))
+            : answerWait;
+        AppLogger.i(
+          '自动答题',
+          '答案还没搜好，最多等 ${budget.inSeconds}s'
+              '（本题剩余 ${remain == null || remain <= 0 ? "不限时" : "${remain}s"}）',
+        );
+        cached = await _waitForAnswer(hash, timeout: budget);
       }
       if (cached == null || !cached.usable || cached.results.isEmpty) {
         AppLogger.w('自动答题',
-            '等了 ${answerWait.inSeconds}s 仍没拿到可用答案（status=${cached?.status}），放弃自动提交');
+            '等到超时仍没拿到可用答案（status=${cached?.status}），放弃自动提交');
         return;
       }
       if (!mounted) return;
@@ -504,6 +516,20 @@ class _PresentationPageState extends State<PresentationPage>
       if (!mounted) return -1;
       if (i < tries - 1) await Future<void>.delayed(interval);
     }
+
+    // 找不到就把两边都打出来：是「ID 对不上」还是「题目真不在这份 PPT 里」，
+    // 一眼能分出来。（发题消息里字段叫 prob，PPT 里叫 problemId，
+    // 万一不是同一个值，这条日志能直接证明）
+    final available = <String>[];
+    for (var i = 0; i < _slideModels.length; i++) {
+      final id = _slideModels[i].problem?.problemId;
+      if (id != null && id.isNotEmpty) available.add('${i + 1}页:$id');
+    }
+    AppLogger.w(
+      '自动答题',
+      '找不到题目 $problemId｜PPT 共 ${_slideModels.length} 页，'
+          '其中带题目的页=[${available.isEmpty ? "无" : available.join("，")}]',
+    );
     return -1;
   }
 
