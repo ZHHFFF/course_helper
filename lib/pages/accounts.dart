@@ -604,6 +604,10 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
           );
         },
       ),
+      // [修复] 底栏是悬浮叠加的，会盖住默认位置的浮动按钮。
+      // SpeedDial 用的是 Scaffold.floatingActionButton，默认贴屏幕底部右下角，
+      // 必须用 floatingActionButtonLocation 把它抬到底栏之上。
+      floatingActionButtonLocation: glassNavFabLocation(context),
       floatingActionButton: SpeedDial(
         icon: Icons.add,
         activeIcon: Icons.close,

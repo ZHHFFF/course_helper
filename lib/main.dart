@@ -96,6 +96,15 @@ class MyApp extends StatelessWidget {
       theme: _buildLightTheme(),
       darkTheme: _buildDarkTheme(),
       themeMode: ThemeMode.system,
+      // [新增] 给所有页面的 SnackBar / 底部提示注入底栏高度的内边距。
+      //
+      // 背景：底栏是悬浮的，不占 Scaffold 的 bottomNavigationBar 槽位，
+      // 所以各页面自己的 Scaffold 并不知道底下还压着一层底栏。
+      // SnackBar 默认贴 Scaffold 底部 → 会被玻璃底栏盖住。
+      // 这里统一给 MediaQuery 加上底部 padding，框架会据此把 SnackBar 抬高。
+      builder: (context, child) {
+        return _GlassNavInsets(child: child);
+      },
       home: const MyHomePage(),
       routes: {
         '/accounts': (context) => const AccountsPage(),
@@ -161,6 +170,38 @@ class MyApp extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
         ),
       ),
+    );
+  }
+}
+
+/// 给全局注入「底栏占位」的底部内边距。
+///
+/// 为什么需要：玻璃底栏是 `Stack` + `Positioned` 悬浮叠加的，**不占**
+/// `Scaffold.bottomNavigationBar` 槽位，因此各页面自己的 `Scaffold` 完全不知道
+/// 底下还压着一层底栏。后果是 SnackBar 等贴着 Scaffold 底部的元素会被底栏盖住
+/// （本项目有 170+ 处 SnackBar，逐个改不现实）。
+///
+/// 做法：在 `MaterialApp.builder` 里调大 `MediaQuery` 的底部 padding，
+/// 框架会据此把 SnackBar、BottomSheet 等抬高到底栏之上。
+/// 只影响 `padding.bottom`，不改变 `size`，避免影响正常布局计算。
+class _GlassNavInsets extends StatelessWidget {
+  const _GlassNavInsets({required this.child});
+
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    return MediaQuery(
+      data: mq.copyWith(
+        padding: mq.padding.copyWith(
+          bottom: mq.padding.bottom + glassNavBarOccupiedHeight,
+        ),
+        viewPadding: mq.viewPadding.copyWith(
+          bottom: mq.viewPadding.bottom + glassNavBarOccupiedHeight,
+        ),
+      ),
+      child: child ?? const SizedBox.shrink(),
     );
   }
 }

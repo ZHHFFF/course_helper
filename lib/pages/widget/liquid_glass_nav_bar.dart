@@ -32,6 +32,13 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+/// 悬浮底栏**自身**占用的高度（不含系统安全区）。
+///
+/// 组成：底部抬起 14 + 底栏高 66。
+/// 用于给全局 `MediaQuery.padding.bottom` 加值，让 SnackBar / BottomSheet
+/// 等贴底元素自动抬到底栏之上（见 main.dart 的 `_GlassNavInsets`）。
+const double glassNavBarOccupiedHeight = 14 + 66;
+
 /// 底栏占用的底部高度（供页面给滚动内容留白，避免最后一项被悬浮底栏遮住）。
 ///
 /// 用法：`ListView(padding: EdgeInsets.only(bottom: glassNavBarClearance(context)))`
@@ -40,7 +47,50 @@ import 'package:flutter/scheduler.dart';
 /// 非悬浮模式（edgeBlur / miniPill）高度不同，这里按最大情形给值，
 /// 宁可多留一点空白，也不要内容被盖。
 double glassNavBarClearance(BuildContext context) {
-  return 66 + 14 + MediaQuery.of(context).padding.bottom + 24;
+  return glassNavBarOccupiedHeight +
+      MediaQuery.of(context).padding.bottom +
+      24;
+}
+
+/// 浮动按钮（FAB）的抬高位置：把按钮摆在悬浮底栏**之上**。
+///
+/// 背景：底栏用 `Stack` + `Positioned` 叠加在页面之上，
+/// 而 `Scaffold.floatingActionButton` 默认贴屏幕底部右下角，
+/// **会被底栏整个盖住**（表现为"添加按钮点不到"）。
+///
+/// 用法：
+/// ```dart
+/// Scaffold(
+///   floatingActionButtonLocation: glassNavFabLocation(context),
+///   floatingActionButton: FloatingActionButton(...),
+/// )
+/// ```
+FloatingActionButtonLocation glassNavFabLocation(BuildContext context) {
+  // 底栏整体占位 = 底部抬起 + 底栏高 + 安全区
+  final barOccupied =
+      glassNavBarOccupiedHeight + MediaQuery.of(context).padding.bottom;
+  return _GlassNavFabLocation(barOccupied);
+}
+
+class _GlassNavFabLocation extends StandardFabLocation
+    with FabEndOffsetX, FabFloatOffsetY {
+  const _GlassNavFabLocation(this.barOccupied);
+
+  /// 底栏占掉的底部高度
+  final double barOccupied;
+
+  @override
+  double getOffsetY(
+    ScaffoldPrelayoutGeometry scaffoldGeometry,
+    double adjustment,
+  ) {
+    // 悬浮底栏之上，再留 16px 呼吸间距
+    return scaffoldGeometry.scaffoldSize.height -
+        barOccupied -
+        16 -
+        scaffoldGeometry.floatingActionButtonSize.height +
+        adjustment;
+  }
 }
 
 /// 底栏方案枚举（预览页与主流程共用）
