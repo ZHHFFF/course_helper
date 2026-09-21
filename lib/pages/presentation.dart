@@ -140,6 +140,23 @@ class _PresentationPageState extends State<PresentationPage>
   /// 正在自动提交中
   bool _autoSubmitting = false;
 
+  /// 当前作答区（[_answer] / [_textAnswer]）属于哪道题
+  ///
+  /// `_answer` 是单个字段、不分题目存，切题时必须清空，
+  /// 否则 A 题选完翻到 B 题，B 题会显示 A 的答案 ——
+  /// 自动提交就会把 A 的答案交到 B 上。
+  String? _answerOwnerProblemId;
+
+  /// 切题时清空作答区（同一道题不重复清，免得把用户刚填的擦掉）
+  void _resetAnswerIfProblemChanged() {
+    final id = _currentProblem?.problemId;
+    if (id == _answerOwnerProblemId) return;
+    _answerOwnerProblemId = id;
+    _answer = null;
+    _textAnswer = null;
+    _uploadedImageUrls.clear();
+  }
+
   StreamSubscription<AnswerJobResult>? _answerSub;
   // [/新增]
 
@@ -236,6 +253,8 @@ class _PresentationPageState extends State<PresentationPage>
     if (!mounted) return;
     if (_currentHash != hash) return; // 不是当前页的题，不抢填
     if (_autoSelected.contains(hash)) return;
+    // 用户已经自己填过了 → 不覆盖
+    if (_isAnswerFilled()) return;
 
     final cached = _suggested[hash];
     if (cached == null || !cached.usable || cached.results.isEmpty) return;
@@ -288,7 +307,7 @@ class _PresentationPageState extends State<PresentationPage>
     if (_autoSubmitting) return;
     if (_autoSubmitted.contains(problemId)) return;
 
-    final index = _indexOfProblem(problemId);
+    final index = await _waitForProblemSlide(problemId);
     if (index < 0) {
       AppLogger.w('自动答题', '发布的题目 $problemId 在这份 PPT 里找不到对应页');
       return;
@@ -350,6 +369,24 @@ class _PresentationPageState extends State<PresentationPage>
   int _indexOfProblem(String problemId) {
     for (var i = 0; i < _slideModels.length; i++) {
       if (_slideModels[i].problem?.problemId == problemId) return i;
+    }
+    return -1;
+  }
+
+  /// 等 PPT 加载完再找题目所在页
+  ///
+  /// 老师有可能在 PPT 还没到的时候就发题（尤其是刚上课那一下），
+  /// 这时候直接返回 -1 会白白错过一次自动提交。
+  Future<int> _waitForProblemSlide(
+    String problemId, {
+    int tries = 6,
+    Duration interval = const Duration(milliseconds: 500),
+  }) async {
+    for (var i = 0; i < tries; i++) {
+      final index = _indexOfProblem(problemId);
+      if (index >= 0) return index;
+      if (!mounted) return -1;
+      if (i < tries - 1) await Future<void>.delayed(interval);
     }
     return -1;
   }
@@ -747,10 +784,11 @@ class _PresentationPageState extends State<PresentationPage>
       // _currentLessonSlideIndex = 老师当前所在页（「回到当前页」按钮靠它判断）
       _currentLessonSlideIndex = targetIndex;
       _currentSlideIndex = targetIndex;
-      if (targetIndex < _slides.length) {
-        _currentProblem = _slides[targetIndex]['problem'];
-      }
-      _refreshCurrentHash();
+        if (targetIndex < _slides.length) {
+          _currentProblem = _slides[targetIndex]['problem'];
+        }
+        _resetAnswerIfProblemChanged();
+        _refreshCurrentHash();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1322,6 +1360,7 @@ class _PresentationPageState extends State<PresentationPage>
             setState(() {
               _currentSlideIndex = index;
               _currentProblem = _slides[index]['problem'];
+              _resetAnswerIfProblemChanged();
               // 注意：这里**不**动 _currentLessonSlideIndex ——
               // 用户手动翻页就表示脱离了老师那页，按钮才会出现
               _refreshCurrentHash();
@@ -1507,6 +1546,7 @@ class _PresentationPageState extends State<PresentationPage>
                               setState(() {
                                 _currentSlideIndex = index;
                                 _currentProblem = _slides[index]['problem'];
+                                _resetAnswerIfProblemChanged();
                                 // 同全屏视图：手动翻页不改变老师所在页
                                 _refreshCurrentHash();
                               });
