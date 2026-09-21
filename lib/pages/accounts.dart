@@ -10,6 +10,8 @@ import '../platform.dart';
 import '../push/easemob.dart';
 import 'widget/avatar.dart';
 import 'widget/answer_search_settings.dart';
+// [新增] 外观设置页（底栏悬浮 / 贴边切换）
+import 'settings/appearance.dart';
 import 'widget/log_viewer.dart';
 import 'widget/cache_manager.dart';
 import 'widget/keep_alive_checker.dart';
@@ -469,6 +471,13 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                     builder: (_) => const AnswerSearchSettingsPage(),
                   ),
                 );
+              } else if (result == 'appearance_settings') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AppearanceSettingsPage(),
+                  ),
+                );
               } else if (result == 'runtime_logs') {
                 Navigator.push(
                   context,
@@ -540,6 +549,15 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                   Icon(Icons.search, size: 20),
                   SizedBox(width: 8),
                   Text('答案检索设置'),
+                ]),
+              ),
+              // 外观设置菜单项（底栏悬浮 / 贴边切换）
+              const PopupMenuItem<String>(
+                value: 'appearance_settings',
+                child: Row(children: [
+                  Icon(Icons.palette_outlined, size: 20),
+                  SizedBox(width: 8),
+                  Text('外观设置'),
                 ]),
               ),
               // 运行日志菜单项

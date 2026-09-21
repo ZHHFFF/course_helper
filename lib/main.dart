@@ -13,7 +13,11 @@ import'./pages/accounts.dart';
 import'./pages/courses/list.dart';
 import'./pages/login.dart';
 // [新增] 液态玻璃底栏（方案 A：悬浮胶囊 + 真实模糊）
+// 注：该文件仍被 accounts.dart / courses/list.dart 的 glassNavBarClearance() 使用，
+// 待全页面迁移到 Miuix 后再整体清理。
 import'./pages/widget/liquid_glass_nav_bar.dart';
+// [新增] 底栏外观设置（悬浮 / 贴边）
+import'./setting/navbar_setting.dart';
 import'./api/api_service.dart';
 import'./session/cookie.dart';
 import'./session/account.dart';
@@ -48,6 +52,10 @@ void main() async {
   await CookieManager.initialize();
 
   await EasemobIM().initialize();
+
+  // [新增] 底栏外观设置要在首帧前读好，否则启动瞬间会先用默认值渲染一帧、
+  // 读到配置后再跳变一次（视觉上会闪一下）。这里提前加载。
+  await NavBarSetting.ensureLoaded();
 
   AppLogger.i('App', '初始化完成，进入主界面');
 
@@ -275,14 +283,10 @@ class _MainPageState extends State<MainPage> {
 
   /// 底栏是否为「悬浮」样式（false = 贴边）。
   ///
-  /// 用户的原始需求是「底栏加个按钮选择是否为悬浮底栏」，开关位于设置页。
-  /// 目前先用默认值 true（与之前自研悬浮底栏的观感一致），
-  /// 待设置页接入持久化后改为从本地配置读取。
-  ///
-  /// ignore: prefer_final_fields —— 设置页开关接入后会调用 setState 改写此字段，
-  /// 现阶段尚未接线，故 lint 会误报「可改为 final」。
-  // ignore: prefer_final_fields
-  bool _floatingNavBar = true;
+  /// 用户的原始需求是「底栏加个按钮选择是否为悬浮底栏」，开关位于设置页
+  /// （账号页右上角菜单 → 外观设置）。实际值以全局 [NavBarSetting.floating]
+  /// 为准，底栏用 `ValueListenableBuilder` 监听它，改完立刻重绘。
+  bool get _floatingNavBar => NavBarSetting.floating.value;
 
   @override
   void initState() {
@@ -408,13 +412,16 @@ class _MainPageState extends State<MainPage> {
           // MiuixTheme.of(context).colors，因此这里**不需要**手动传 colorScheme /
           // isDark —— 之前自研组件要传的那两个参数已经不需要了。
           //
-          // 悬浮 / 贴边由 _floatingNavBar 控制，开关放在设置页（见设置页的
-          // 「底栏样式」项）。这里预留 state，待开关接入后即可实时切换。
+          // 外面套 ValueListenableBuilder：设置页一改「悬浮底栏」开关，
+          // 这里立刻重建并切换形态（悬浮 ↔ 贴边），无需重启。
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
-            child: _buildMiuixNavBar(context),
+            child: ValueListenableBuilder<bool>(
+              valueListenable: NavBarSetting.floating,
+              builder: (context, _, _) => _buildMiuixNavBar(context),
+            ),
           ),
         ],
       ),
