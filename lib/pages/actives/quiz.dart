@@ -213,7 +213,7 @@ class _QuizPageState extends State<QuizPage> {
 
   /// 服务器没给 isanswer 的题，交给 AI 检索补上
   Future<void> _preSearchMissingAnswers() async {
-    if (!AutoAnswerSetting.preSearch.value) return;
+    if (!AutoAnswerSetting.autoSearch.value) return;
     if (_quizList.isEmpty) return;
 
     final missing = <int>[];

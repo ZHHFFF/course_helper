@@ -2,43 +2,43 @@ import 'package:flutter/foundation.dart';
 
 import '../utils/storage.dart';
 
-/// 学习通（超星）自动答题设置
+/// 自动答题设置
 ///
-/// 学习通和雨课堂机制不同：活动页 HTML 里直接嵌了 `quizList`，
-/// 而且 `answer[].isanswer == true` 就是服务器给的正确答案
-/// （`_autoFillAnswers()` 已经在用它填了）。
+/// 三个开关是**递进**的，可以单独开：
+/// - [autoSearch]：进课堂后自动把整份 PPT 的题都丢给 AI 检索（后台跑，不影响看课件）
+/// - [autoSelect]：答案到手就自动填进作答区（不提交，你能看到填了什么）
+/// - [autoSubmit]：老师发布题目后自动交卷
 ///
-/// 所以这里只解决两件事：
-/// 1. **补差**：服务器没给答案的题，用 AI 检索补上（只填，不交）
-/// 2. **自动提交**（可选，默认关）：全部填好后自动交卷
-///
-/// 雨课堂那边由 `lib/cache/*` 负责，不归这里管。
+/// 只开 [autoSearch] = 纯预搜，答案摆在那儿等你点；
+/// 三个全开 = 完整自动化。
 class AutoAnswerSetting {
   AutoAnswerSetting._();
 
-  static const _keyPreSearch = 'chaoxing_presearch';
-  static const _keyAutoSubmit = 'chaoxing_autosubmit';
-  static const _keyDelayMin = 'chaoxing_delay_min_ms';
-  static const _keyDelayMax = 'chaoxing_delay_max_ms';
+  static const _keyAutoSearch = 'aa_auto_search';
+  static const _keyAutoSelect = 'aa_auto_select';
+  static const _keyAutoSubmit = 'aa_auto_submit';
+  static const _keyDelayMin = 'aa_delay_min_ms';
+  static const _keyDelayMax = 'aa_delay_max_ms';
 
-  /// 题目加载后，把服务器没给答案的题用 AI 补上
+  /// 进课堂后自动检索整份 PPT 的题目
   ///
-  /// 默认开：这一步**只填不交**，和雨课堂那边的自动识题行为一致。
-  static final ValueNotifier<bool> preSearch = ValueNotifier<bool>(true);
+  /// 默认开。这一步只是「提前把答案准备好」，不碰作答区、不提交。
+  static final ValueNotifier<bool> autoSearch = ValueNotifier<bool>(true);
 
-  /// 全部填好后自动提交
+  /// 答案到手后自动填进作答区
   ///
-  /// **默认开**（产品明确要求）。
+  /// 默认开。填完你还能看到选了哪个，[autoSubmit] 关着的话可以自己核对。
+  static final ValueNotifier<bool> autoSelect = ValueNotifier<bool>(true);
+
+  /// 老师发布题目后自动提交
   ///
-  /// ⚠️ 风险提示：雨课堂那边同学的实现是「只给建议，永不自动提交」，
-  /// 两边策略不一致。秒交的脚本特征很明显，容易被风控盯上。
-  /// 提交前有 1.2~3.5 秒随机延迟做拟人化，但**不能完全消除风险**。
-  /// 想保守一点就把这个开关关掉（只预搜、手动交）。
+  /// 默认开。提交前有 [delayMinMs]~[delayMaxMs] 的随机延迟，
+  /// 避免「老师刚发就秒交」这种明显的脚本特征。
   static final ValueNotifier<bool> autoSubmit = ValueNotifier<bool>(true);
 
-  /// 拟人化延迟区间（毫秒）——只在开了自动提交时生效
-  static final ValueNotifier<int> delayMinMs = ValueNotifier<int>(1200);
-  static final ValueNotifier<int> delayMaxMs = ValueNotifier<int>(3500);
+  /// 拟人化延迟区间（毫秒）
+  static final ValueNotifier<int> delayMinMs = ValueNotifier<int>(800);
+  static final ValueNotifier<int> delayMaxMs = ValueNotifier<int>(2000);
 
   static bool _loaded = false;
 
@@ -47,24 +47,30 @@ class AutoAnswerSetting {
     if (_loaded) return;
     try {
       final p = StorageManager.prefs;
-      preSearch.value = p.getBool(_keyPreSearch) ?? true;
+      autoSearch.value = p.getBool(_keyAutoSearch) ?? true;
+      autoSelect.value = p.getBool(_keyAutoSelect) ?? true;
       autoSubmit.value = p.getBool(_keyAutoSubmit) ?? true;
-      delayMinMs.value = p.getInt(_keyDelayMin) ?? 1200;
-      delayMaxMs.value = p.getInt(_keyDelayMax) ?? 3500;
+      delayMinMs.value = p.getInt(_keyDelayMin) ?? 800;
+      delayMaxMs.value = p.getInt(_keyDelayMax) ?? 2000;
       _loaded = true;
     } catch (e) {
       debugPrint('读取自动答题设置失败：$e');
     }
   }
 
-  static Future<void> setPreSearch(bool value) async {
-    preSearch.value = value;
-    await _safe(() => StorageManager.prefs.setBool(_keyPreSearch, value));
+  static Future<void> setAutoSearch(bool v) async {
+    autoSearch.value = v;
+    await _safe(() => StorageManager.prefs.setBool(_keyAutoSearch, v));
   }
 
-  static Future<void> setAutoSubmit(bool value) async {
-    autoSubmit.value = value;
-    await _safe(() => StorageManager.prefs.setBool(_keyAutoSubmit, value));
+  static Future<void> setAutoSelect(bool v) async {
+    autoSelect.value = v;
+    await _safe(() => StorageManager.prefs.setBool(_keyAutoSelect, v));
+  }
+
+  static Future<void> setAutoSubmit(bool v) async {
+    autoSubmit.value = v;
+    await _safe(() => StorageManager.prefs.setBool(_keyAutoSubmit, v));
   }
 
   static Future<void> setDelayRange(int minMs, int maxMs) async {

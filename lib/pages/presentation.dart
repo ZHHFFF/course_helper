@@ -26,6 +26,7 @@ import '../cache/course_cache.dart';
 import '../cache/ppt_cache.dart';
 import '../cache/question_hash.dart';
 import '../cache/slide_scanner.dart';
+import '../setting/auto_answer_setting.dart';
 // [/新增]
 import '../utils/app_logger.dart';
 import '../utils/network_error.dart';
@@ -128,6 +129,17 @@ class _PresentationPageState extends State<PresentationPage>
   /// 当前页对应的题目指纹（当前页没题时为 null）
   String? _currentHash;
 
+  // ============ [新增] 自动答题 ============
+
+  /// 已经自动预选过的指纹（避免覆盖用户的手动修改）
+  final Set<String> _autoSelected = {};
+
+  /// 已经自动提交过的指纹（防重复提交）
+  final Set<String> _autoSubmitted = {};
+
+  /// 正在自动提交中
+  bool _autoSubmitting = false;
+
   StreamSubscription<AnswerJobResult>? _answerSub;
   // [/新增]
 
@@ -154,7 +166,16 @@ class _PresentationPageState extends State<PresentationPage>
     // 已经在飞的 AI 请求不打断（让它跑完顺手把答案存下来），
     // 但排队里还没开跑的全部作废
     AnswerQueue.cancelPending();
-    SlideImagePrefetcher.cancel();
+
+    // [改] 退出课堂**不再丢弃**预取队列。
+    //
+    // 原来这里是 SlideImagePrefetcher.cancel()，会把没下完的页全扔掉，
+    // 下次进来重新下 —— 这正是「第二次进入已缓存 0」的成因之一。
+    // 现在只把它挂起（省电/省流量交给 paused 控制），队列和进度都留着，
+    // 下次进同一份 PPT 时 start() 会用磁盘命中把已下好的页跳过。
+    //
+    // 注意：图片本身是靠磁盘文件判断「有没有缓存」，不依赖这个内存队列，
+    // 所以即使进程被杀，下次进来照样命中。
     PptCache.clearMemory();
     AnswerCache.clearMemory();
 
@@ -199,6 +220,147 @@ class _PresentationPageState extends State<PresentationPage>
       _suggested[result.hash] = result.answer;
       _searching.remove(result.hash);
     });
+    // [新增] 答案到手 → 如果正是当前页的题，自动填进作答区（只填不交）
+    unawaited(_autoSelectIfCurrent(result.hash));
+  }
+
+  // ==================== [新增] 自动预选 ====================
+
+  /// 答案到手后，如果这题正是当前页，自动填进作答区
+  ///
+  /// 只填不提交。提交由 [_maybeAutoSubmit] 在老师发布题目后触发。
+  /// 已经填过的指纹不会重复填，避免覆盖用户的手动修改。
+  Future<void> _autoSelectIfCurrent(String hash) async {
+    await AutoAnswerSetting.ensureLoaded();
+    if (!AutoAnswerSetting.autoSelect.value) return;
+    if (!mounted) return;
+    if (_currentHash != hash) return; // 不是当前页的题，不抢填
+    if (_autoSelected.contains(hash)) return;
+
+    final cached = _suggested[hash];
+    if (cached == null || !cached.usable || cached.results.isEmpty) return;
+
+    final scanned = _scan.byHash[hash];
+    if (scanned == null) return;
+
+    _autoSelected.add(hash);
+    _fillAnswerSilently(scanned.question, cached.results.first);
+  }
+
+  /// 静默填充（不弹 SnackBar，避免自动答题时刷屏）
+  void _fillAnswerSilently(
+    StandardizedQuestion question,
+    AnswerSearchResult picked,
+  ) {
+    final problem = _currentProblem;
+    if (problem == null || !mounted) return;
+
+    final options = (problem.options ?? const [])
+        .map((o) => StandardizedOption(key: o.key, value: o.value))
+        .toList();
+    final keys = picked.matchOptionKeys(options);
+
+    setState(() {
+      if (keys.isNotEmpty) {
+        _answer = keys;
+      } else if (!question.isChoice && picked.answer.trim().isNotEmpty) {
+        _textAnswer = picked.answer.trim();
+      } else {
+        return; // 没匹配上，什么都不做
+      }
+    });
+
+    AppLogger.i(
+      '自动答题',
+      '已自动预选：${keys.isNotEmpty ? keys.join("、") : picked.answer}'
+          '（${picked.source}）',
+    );
+  }
+
+  // ==================== [新增] 自动提交 ====================
+
+  /// 老师发布题目（unlockproblem）后，按设置决定是否自动提交
+  ///
+  /// 流程：定位题目所在页 → 切过去 → 确保答案已填 → 随机延迟 → 提交
+  Future<void> _maybeAutoSubmit(String problemId) async {
+    await AutoAnswerSetting.ensureLoaded();
+    if (!AutoAnswerSetting.autoSubmit.value) return;
+    if (_autoSubmitting) return;
+    if (_autoSubmitted.contains(problemId)) return;
+
+    final index = _indexOfProblem(problemId);
+    if (index < 0) {
+      AppLogger.w('自动答题', '发布的题目 $problemId 在这份 PPT 里找不到对应页');
+      return;
+    }
+
+    // 切到题目所在页（_toSlide 是 1-based）
+    if (index != _currentSlideIndex) {
+      _toSlide(index + 1, animate: false);
+      // 给 setState / 布局一点时间，让 _currentProblem 和 _currentHash 生效
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    if (!mounted) return;
+
+    final hash = _currentHash;
+    if (hash == null) {
+      AppLogger.w('自动答题', '第 ${index + 1} 页没识别到题目，放弃自动提交');
+      return;
+    }
+
+    // 还没填就现场补填一次（预搜没赶上时走这条路）
+    if (!_isAnswerFilled()) {
+      final cached = _suggested[hash];
+      if (cached == null || !cached.usable || cached.results.isEmpty) {
+        AppLogger.w('自动答题', '题目 $problemId 还没有可用答案，放弃自动提交');
+        return;
+      }
+      final scanned = _scan.byHash[hash];
+      if (scanned == null) return;
+      _fillAnswerSilently(scanned.question, cached.results.first);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+
+    if (!mounted) return;
+    if (!_isAnswerFilled()) {
+      AppLogger.w('自动答题', '答案没能填上，放弃自动提交');
+      return;
+    }
+
+    // 拟人化延迟：避免「老师刚发就秒交」这种明显的脚本特征
+    final delay = AutoAnswerSetting.randomDelay();
+    AppLogger.i('自动答题', '${delay.inMilliseconds}ms 后自动提交题目 $problemId');
+    await Future<void>.delayed(delay);
+    if (!mounted || _autoSubmitting) return;
+
+    _autoSubmitting = true;
+    _autoSubmitted.add(problemId);
+    try {
+      await _submitAnswer();
+      AppLogger.i('自动答题', '已自动提交题目 $problemId');
+    } catch (e) {
+      AppLogger.e('自动答题', '自动提交失败：$e');
+      _autoSubmitted.remove(problemId); // 失败了允许下次重试
+    } finally {
+      _autoSubmitting = false;
+    }
+  }
+
+  /// 题目在 PPT 里的页号（0-based），找不到返回 -1
+  int _indexOfProblem(String problemId) {
+    for (var i = 0; i < _slideModels.length; i++) {
+      if (_slideModels[i].problem?.problemId == problemId) return i;
+    }
+    return -1;
+  }
+
+  /// 当前页的答案是否已经填好
+  bool _isAnswerFilled() {
+    if (_currentProblem == null) return false;
+    final keys = _answer;
+    if (keys != null && keys.isNotEmpty) return true;
+    final text = _textAnswer;
+    return text != null && text.trim().isNotEmpty;
   }
 
   // [新增] 搜索答案 - 从当前题目提取题干和选项，调用检索模块
@@ -682,6 +844,11 @@ class _PresentationPageState extends State<PresentationPage>
                 }
               });
               _startCountdown(limit);
+
+              // [新增] 老师发布了题目 → 按设置尝试自动提交
+              if (problemId != null) {
+                unawaited(_maybeAutoSubmit(problemId.toString()));
+              }
             }
           }
           break;
@@ -1252,20 +1419,48 @@ class _PresentationPageState extends State<PresentationPage>
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
         actions: [
-          // [新增] 导出整份 PPT 为 PDF
-          IconButton(
-            tooltip: '导出整份 PPT 为 PDF',
-            onPressed: _isExporting ? null : _exportPresentationPdf,
-            icon: _isExporting
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
+          // [新增] 课件缓存进度 + 导出 PDF
+          //
+          // 缓存没完成时 PDF 按钮是禁用的（防呆），
+          // 避免用户上来就点，导出一个只有几页的残缺 PDF。
+          ValueListenableBuilder<SlidePrefetchProgress>(
+            valueListenable: SlideImagePrefetcher.progress,
+            builder: (context, p, _) {
+              if (p.isRunning) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Center(
+                    child: Text(
+                      '缓存中 ${p.label}',
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
                     ),
-                  )
-                : const Icon(Icons.picture_as_pdf_outlined),
+                  ),
+                );
+              }
+              if (p.isNotEmpty && !p.isComplete) {
+                return IconButton(
+                  tooltip: '课件缓存不完整（${p.label}），点击重试',
+                  onPressed: _retryPrefetch,
+                  icon: const Icon(Icons.refresh),
+                );
+              }
+              return IconButton(
+                tooltip: p.isComplete ? '导出整份 PPT 为 PDF' : '课件还没开始缓存',
+                onPressed: (_isExporting || !p.isComplete)
+                    ? null
+                    : _exportPresentationPdf,
+                icon: _isExporting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.picture_as_pdf_outlined),
+              );
+            },
           ),
         ],
       ),
@@ -2202,6 +2397,47 @@ class _PresentationPageState extends State<PresentationPage>
 
   // ==================== [新增] 导出整份 PPT 为 PDF ====================
 
+  /// 当前 PPT 的所有幻灯片图片地址（去重、保序）
+  List<String> _allSlideImageUrls() {
+    final urls = <String>[];
+    final seen = <String>{};
+    for (final slide in _slideModels) {
+      final url =
+          (slide.coverAlt.trim().isNotEmpty ? slide.coverAlt : slide.cover)
+              .trim();
+      if (url.isEmpty || !seen.add(url)) continue;
+      urls.add(url);
+    }
+    return urls;
+  }
+
+  /// 还有几张没缓存（只查磁盘，不触发下载）
+  Future<int> _missingSlideCount(List<String> urls) async {
+    var missing = 0;
+    for (final url in urls) {
+      final hit = await SlideImageStore.existing(widget.lessonId, url);
+      if (hit == null) missing++;
+    }
+    return missing;
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
+    );
+  }
+
+  /// 重新拉一遍没缓存完的页（AppBar 上那个刷新按钮）
+  void _retryPrefetch() {
+    if (_slideModels.isEmpty) return;
+    AppLogger.i('PPT缓存', '手动重试缓存');
+    SlideImagePrefetcher.start(
+      widget.lessonId,
+      SlideScanner.imageUrlsOf(_slideModels),
+    );
+  }
+
   /// 把当前这份 PPT 的所有页面合成一个 PDF
   ///
   /// - 图片走 [SlideImageStore]（磁盘缓存 + 并发去重），不另起一套缓存
@@ -2211,31 +2447,41 @@ class _PresentationPageState extends State<PresentationPage>
     if (_isExporting) return;
 
     if (_slideModels.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('还没有加载到 PPT')),
+      _toast('还没有加载到 PPT');
+      return;
+    }
+
+    // [防呆] 必须整份课件都缓存完才能导，否则会生成残缺 PDF。
+    // 实测 bug：第二次进课堂时缓存还没开始下，导出只拿到 1/42 页。
+    final urls = _allSlideImageUrls();
+    final missing = await _missingSlideCount(urls);
+    if (missing > 0) {
+      final p = SlideImagePrefetcher.progress.value;
+      AppLogger.w(
+        '导出PDF',
+        '拒绝导出：缓存未完成 ${p.label}（缺 $missing 张）',
       );
+      _toast('课件还在缓存中（${p.label}），等缓存完成再转 PDF');
       return;
     }
 
     setState(() => _isExporting = true);
 
     try {
-      // 1. 逐页取本地图片（缓存命中直接返回，没有才下载）
+      // 1. 逐页取本地文件（上面已确认全部命中，这里只读盘、不下载）
       final paths = <String>[];
-      final seen = <String>{};
-      for (final slide in _slideModels) {
-        final url = (slide.coverAlt.trim().isNotEmpty
-                ? slide.coverAlt
-                : slide.cover)
-            .trim();
-        if (url.isEmpty || !seen.add(url)) continue;
-        try {
-          final file = await SlideImageStore.fileFor(widget.lessonId, url);
-          paths.add(file.path);
-        } catch (e) {
-          AppLogger.w('导出PDF', '取图失败 $url：$e');
-        }
+      for (final url in urls) {
+        final file = await SlideImageStore.existing(widget.lessonId, url);
+        if (file != null) paths.add(file.path);
       }
+
+      // 2. 最终完整性校验：拿到的必须一页不少
+      if (paths.length != urls.length) {
+        AppLogger.w('导出PDF', '完整性校验失败：${paths.length}/${urls.length}');
+        _toast('课件缓存发生变化（${paths.length}/${urls.length}），请等缓存完成');
+        return;
+      }
+      AppLogger.i('导出PDF', '完整性校验通过：${paths.length}/${urls.length}');
 
       if (paths.isEmpty) {
         throw Exception('没有取到任何幻灯片图片');

@@ -9,6 +9,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../../api/answer_search.dart';
+import '../../setting/auto_answer_setting.dart';
 
 class AnswerSearchSettingsPage extends StatefulWidget {
   const AnswerSearchSettingsPage({super.key});
@@ -62,6 +63,7 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
 
   Future<void> _loadConfig() async {
     await AnswerSearchApi.initialize();
+    await AutoAnswerSetting.ensureLoaded();
     final config = AnswerSearchApi.getAIConfig();
 
     // 先写输入框（会触发地址预览的 setState），再统一刷新状态
@@ -296,10 +298,51 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
                     },
                   ),
                 ),
-                const SizedBox(height: 16),
+                  const SizedBox(height: 16),
 
-                // API 配置
-                if (_enabled) ...[
+                  // [新增] 自动答题（雨课堂）
+                  Card(
+                    child: Column(
+                      children: [
+                        SwitchListTile(
+                          title: const Text('自动检索答案'),
+                          subtitle: const Text(
+                              '进课堂后把整份 PPT 的题提前丢给 AI 检索（后台跑，不影响看课件）'),
+                          value: AutoAnswerSetting.autoSearch.value,
+                          onChanged: (v) {
+                            AutoAnswerSetting.setAutoSearch(v);
+                            setState(() {});
+                          },
+                        ),
+                        const Divider(height: 1),
+                        SwitchListTile(
+                          title: const Text('自动预选答案'),
+                          subtitle: const Text(
+                              '答案到手就填进作答区（只填不交，你能看到选了什么）'),
+                          value: AutoAnswerSetting.autoSelect.value,
+                          onChanged: (v) {
+                            AutoAnswerSetting.setAutoSelect(v);
+                            setState(() {});
+                          },
+                        ),
+                        const Divider(height: 1),
+                        SwitchListTile(
+                          title: const Text('自动提交'),
+                          subtitle: const Text(
+                              '老师发布题目后自动交卷。提交前有随机延迟，避免「秒交」特征'),
+                          value: AutoAnswerSetting.autoSubmit.value,
+                          onChanged: (v) {
+                            AutoAnswerSetting.setAutoSubmit(v);
+                            setState(() {});
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // API 配置
+                  if (_enabled) ...[
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
