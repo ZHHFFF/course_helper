@@ -564,8 +564,31 @@ class _PresentationPageState extends State<PresentationPage>
       if (!mounted) return;
 
       _autoSubmitted.add(problemId);
-      // 用服务器发题时给的 ID（prob）提交，别用 PPT 里的 problemId
-      await _submitAnswer(auto: true, problemIdOverride: problemId);
+
+      // 提交可能因为网络抖动失败 —— 那就**静默丢答案**了。
+      //
+      // 重试的两条边界：
+      // 1. 只重试「网络失败」（请求根本没到服务器）。
+      //    服务端明确拒绝（比如题已关闭）不重试 —— 重试没意义，还可能重复提交。
+      // 2. 只在**没带图片**时重试。图片提交完就被清掉了，
+      //    带图重试会变成空答案，反而更糟。
+      final hadImages = _uploadedImageUrls.isNotEmpty;
+      var netFails =
+          await _submitAnswer(auto: true, problemIdOverride: problemId);
+
+      var attempt = 0;
+      while (netFails > 0 && attempt < 2 && !hadImages && mounted) {
+        attempt++;
+        AppLogger.w(
+          '自动答题',
+          '提交 $problemId 有 $netFails 个账号网络失败，第 $attempt 次重试',
+        );
+        await Future<void>.delayed(Duration(milliseconds: 600 * attempt));
+        if (!mounted) break;
+        netFails =
+            await _submitAnswer(auto: true, problemIdOverride: problemId);
+      }
+
       AppLogger.i('自动答题', '已自动提交题目 $problemId');
     } catch (e, st) {
       // unawaited() 会把异常吞掉，日志里什么都看不到 —— 必须自己兜住
@@ -2337,13 +2360,17 @@ class _PresentationPageState extends State<PresentationPage>
   /// [problemIdOverride] 用于自动提交：直接传**服务器发题时给的 ID**（`prob`），
   /// 而不是用 `_currentProblem.problemId`。
   /// 两个字段名不同，万一值也不一样，用 PPT 里那个 ID 提交会被服务器拒。
-  Future<void> _submitAnswer({
+  /// 返回**网络失败**的账号数（0 = 没有网络问题）
+  ///
+  /// 注意只统计「请求没到服务器」这类网络异常，
+  /// 服务端明确拒绝（比如题已关闭）不算 —— 那种重试没意义还可能重复提交。
+  Future<int> _submitAnswer({
     bool auto = false,
     String? problemIdOverride,
   }) async {
     final problemId =
         problemIdOverride ?? _currentProblem?.problemId ?? _timelineProblemId;
-    if (problemId == null) return;
+    if (problemId == null) return 0;
 
     final problemType = _currentProblem?.problemType ?? 0;
     final problemDt = _currentProblem?.dt;
@@ -2354,16 +2381,17 @@ class _PresentationPageState extends State<PresentationPage>
           const SnackBar(content: Text('请先选择或填写答案')),
         );
       }
-      return;
+      return 0;
     }
 
     final isTimeout = _countdownSeconds != null && _countdownSeconds! <= 0;
 
-    await _submitForAllAccounts(problemId, problemType, _uploadedImageUrls,
-        isTimeout, problemDt, auto: auto);
+    return await _submitForAllAccounts(problemId, problemType,
+        _uploadedImageUrls, isTimeout, problemDt, auto: auto);
   }
 
-  Future<void> _submitForAllAccounts(String problemId, int problemType,
+  /// 返回**网络失败**的账号数（0 = 没有网络问题）
+  Future<int> _submitForAllAccounts(String problemId, int problemType,
       List<String>? imageUrls, bool isTimeout, int? problemDt,
       {bool auto = false}) async {
     final allAccounts = AccountManager.allAccounts;
@@ -2374,7 +2402,7 @@ class _PresentationPageState extends State<PresentationPage>
           const SnackBar(content: Text('没有可用的账号')),
         );
       }
-      return;
+      return 0;
     }
 
     int successCount = 0;
@@ -2436,6 +2464,8 @@ class _PresentationPageState extends State<PresentationPage>
       _selectedImages.clear();
       _uploadedImageUrls.clear();
     });
+
+    return networkFailCount;
   }
 
     void _showSubmitResult(
