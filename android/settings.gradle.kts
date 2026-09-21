@@ -11,9 +11,10 @@ pluginManagement {
     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
+        // 本地构建：GitHub 校园网不可达，gradlePluginPortal 换成阿里云镜像
+        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
         google()
         mavenCentral()
-        gradlePluginPortal()
     }
 }
 
