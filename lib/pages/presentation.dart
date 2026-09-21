@@ -536,20 +536,28 @@ class _PresentationPageState extends State<PresentationPage>
   /// 正常情况下直接取扫描阶段算好的，避免每次切页重算一遍 SHA-256。
   /// 扫描阶段没收录这一页时（题目是个「空壳」被跳过了）才现算一个，
   /// 这样手动检索拿到的结果仍然有地方展示。
-  void _refreshCurrentHash() {
-    final scanned = _scan.forSlide(_currentSlideIndex);
-    if (scanned != null) {
-      _currentHash = scanned.hash;
-      return;
-    }
+    void _refreshCurrentHash() {
+      final scanned = _scan.forSlide(_currentSlideIndex);
+      if (scanned != null) {
+        _currentHash = scanned.hash;
+      } else if (_currentProblem == null) {
+        _currentHash = null;
+      } else {
+        _currentHash = QuestionHash.of(_questionOfCurrentSlide());
+      }
 
-    if (_currentProblem == null) {
-      _currentHash = null;
-      return;
+      // 切到一道「答案早就搜好」的题时，`_onAnswerReady` 不会再触发
+      // （那个事件只在答案刚到手的那一刻发一次），
+      // 所以这里补一次自动预选 —— 否则预搜虽然跑完了，
+      // 老师发题后翻到那一页也不会自动填。
+      final h = _currentHash;
+      if (h != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_autoSelectIfCurrent(h));
+        });
+      }
     }
-    _currentHash = QuestionHash.of(_questionOfCurrentSlide());
-  }
-  // [/新增]
+    // [/新增]
 
   Future<void> _checkToken() async {
     final lessonToken = RCCourseApi().lessonToken;
