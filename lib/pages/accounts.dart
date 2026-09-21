@@ -17,6 +17,7 @@ import 'widget/cache_manager.dart';
 import 'widget/keep_alive_checker.dart';
 // [新增] 悬浮玻璃底栏的底部留白高度
 import 'widget/liquid_glass_nav_bar.dart';
+import '../setting/navbar_setting.dart';
 import 'login.dart';
 
 class AccountsPage extends StatefulWidget {
@@ -377,6 +378,15 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
 
   @override
   Widget build(BuildContext context) {
+    // [新增] 监听底栏形态设置：切换后 FAB 位置与列表留白都要跟着变。
+    // 底栏本身在 main.dart 里也监听同一个 notifier，两边同步刷新。
+    return ValueListenableBuilder<bool>(
+      valueListenable: NavBarSetting.floating,
+      builder: (context, _, _) => _buildScaffold(context),
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('账号'),
@@ -609,8 +619,8 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       )
           : ListView.builder(
         itemCount: _accounts.length,
-        // [新增] 底部留白：底栏是悬浮玻璃样式，会盖住滚动内容
-        padding: EdgeInsets.only(bottom: glassNavBarClearance(context)),
+        // [改动] 底部留白改跟随 Miuix 底栏形态（悬浮 / 贴边高度不同）
+        padding: EdgeInsets.only(bottom: miuixNavBarClearance(context)),
         itemBuilder: (context, index) {
           final user = _accounts[index];
           final isSelected = _selectedAccounts.contains(user.uid);
@@ -622,10 +632,14 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
           );
         },
       ),
-      // [修复] 底栏是悬浮叠加的，会盖住默认位置的浮动按钮。
+      // [改动] 底栏是叠加的，会盖住默认位置的浮动按钮。
       // SpeedDial 用的是 Scaffold.floatingActionButton，默认贴屏幕底部右下角，
       // 必须用 floatingActionButtonLocation 把它抬到底栏之上。
-      floatingActionButtonLocation: glassNavFabLocation(context),
+      // 底栏换成 Miuix 后高度规范变了，故改用 miuixNavFabLocation。
+      floatingActionButtonLocation: miuixNavFabLocation(
+        context,
+        floating: NavBarSetting.floating.value,
+      ),
       floatingActionButton: SpeedDial(
         icon: Icons.add,
         activeIcon: Icons.close,

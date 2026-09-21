@@ -525,8 +525,8 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
               )
             : ListView.builder(
                 itemCount: _courses.length,
-                // [新增] 底部留白：底栏是悬浮玻璃样式，会盖住滚动内容
-                padding: EdgeInsets.only(bottom: glassNavBarClearance(context)),
+                // [改动] 底部留白改跟随 Miuix 底栏形态（悬浮 / 贴边高度不同）
+                padding: EdgeInsets.only(bottom: miuixNavBarClearance(context)),
                 itemBuilder: (context, index) {
                   var course = _courses[index];
                   return Card(

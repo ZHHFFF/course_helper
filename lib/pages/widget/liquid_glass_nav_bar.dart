@@ -33,6 +33,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import '../../setting/navbar_setting.dart';
+
 /// 液态玻璃折射 shader 的全局缓存。
 ///
 /// `FragmentProgram.fromAsset` 是异步且较慢的（首次要编译 GLSL），
@@ -105,6 +107,60 @@ FloatingActionButtonLocation glassNavFabLocation(BuildContext context) {
   final barOccupied =
       glassNavBarOccupiedHeight + MediaQuery.of(context).padding.bottom;
   return _GlassNavFabLocation(barOccupied);
+}
+
+/// Miuix 底栏的实测占位高度（逻辑像素 dp，**已扣除底部安全区**）。
+///
+/// **实测方法**（一加 13 / Android 15 / density 3.5）：
+/// `uiautomator dump` 读底栏按钮的像素 bounds，配合
+/// `dumpsys window` 的 `navigationBars frame` 拿安全区，再统一除以 density。
+///
+/// 实测原始数据：
+/// - 安全区 `navigationBars frame=[0,2724][1264,2780]` → 56px = **16dp**
+/// - 悬浮态按钮 `[443,2248][611,2416]`，顶边 2248
+///   → 底栏顶边到屏底 `(2780-2248)/3.5 ≈ 152dp`，减 16dp 安全区 = **136dp**
+/// - 贴边态按钮 `[0,2290][1264,2514]`，顶边 2290
+///   → 底栏顶边到屏底 `(2780-2290)/3.5 = 140dp`，减 16dp 安全区 = **124dp**
+///   （内容区高 `(2514-2290)/3.5 = 64dp`，与源码 itemHeight 吻合；
+///     多出来的 60dp 是组件内的底部 padding）
+///
+/// ⚠️ 两个值都**远大于**只按源码常量算出的高度——源码里的
+/// `bottomPadding` / `itemHeight` 并不等于组件在屏上实际占的位。
+/// 所以不能照搬源码常量，必须用实测值。
+///
+/// 调用处会再叠加 `MediaQuery.padding.bottom`（即那 16dp 安全区）。
+const double _miuixFloatingBarOccupied = 136;
+const double _miuixEdgeBarOccupied = 124;
+
+/// Miuix 底栏在滚动列表底部需要预留的留白高度。
+///
+/// 悬浮 / 贴边两态的高度不同，留白必须跟着变，否则贴边态下列表末项
+/// 会被通栏底栏永久遮住。
+///
+/// 这里读全局 [NavBarSetting.floating]，与底栏渲染用的是同一个来源，
+/// 保证「底栏换了形态但页面留白没跟上」这种错位不会发生。
+double miuixNavBarClearance(BuildContext context) {
+  final safeBottom = MediaQuery.of(context).padding.bottom;
+  final floating = NavBarSetting.floating.value;
+  final barOccupied =
+      floating ? _miuixFloatingBarOccupied : _miuixEdgeBarOccupied;
+  // 另加 16dp 余量，避免最后一张卡片紧贴底栏上沿
+  return barOccupied + safeBottom + 16;
+}
+
+/// Miuix 底栏专用的 FAB 定位（悬浮 / 贴边两种形态各算一次）。
+///
+/// 与 [glassNavFabLocation] 的区别：Miuix 底栏的尺寸规范与自研底栏不同，
+/// 用旧常量算出来的 FAB 会压在底栏上（真机实测贴边态尤其明显）。
+/// 高度取 [_miuixFloatingBarOccupied] / [_miuixEdgeBarOccupied] 的实测值。
+FloatingActionButtonLocation miuixNavFabLocation(
+  BuildContext context, {
+  required bool floating,
+}) {
+  final safeBottom = MediaQuery.of(context).padding.bottom;
+  final barOccupied =
+      floating ? _miuixFloatingBarOccupied : _miuixEdgeBarOccupied;
+  return _GlassNavFabLocation(barOccupied + safeBottom + 12);
 }
 
 class _GlassNavFabLocation extends StandardFabLocation
