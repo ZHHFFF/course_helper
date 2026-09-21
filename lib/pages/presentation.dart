@@ -410,6 +410,23 @@ class _PresentationPageState extends State<PresentationPage>
       }
       if (!mounted) return;
 
+      // 把当前页题目的 problemId 也补进「已解锁」。
+      //
+      // 为什么要补：发题消息给的是 `prob`，而「提交」按钮的条件是
+      // `_unlockedProblemIds.contains(_currentProblem!.problemId)` ——
+      // 两者字段名不同，万一值也不一样，就算切到了正确的页按钮也不会出现。
+      // 我们已经确认这一页就是老师发的那道题（index 是定位出来的），
+      // 所以把它的 problemId 加进去是安全的。
+      // 这样用户等不及自动提交时，也能自己点提交。
+      final curId = _currentProblem?.problemId;
+      if (curId != null &&
+          curId.isNotEmpty &&
+          !_unlockedProblemIds.contains(curId)) {
+        AppLogger.i('自动答题',
+            '当前页 problemId=$curId 不在已解锁列表里，补进去（让提交按钮出现）');
+        setState(() => _unlockedProblemIds.add(curId));
+      }
+
       final hash = _currentHash;
       if (hash == null) {
         AppLogger.w('自动答题', '第 ${index + 1} 页没识别到题目，放弃自动提交');
