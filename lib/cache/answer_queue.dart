@@ -127,6 +127,14 @@ class AnswerQueue {
   ///
   /// 返回 null 的情况：没配置 AI、指纹为空、排队已满、或者退课堂时被取消。
   /// 调用方拿到 null 就当「这题没有建议答案」处理即可。
+  ///
+  /// **契约：只要拿到非 null 的结果，[results] 流上一定会收到对应的一条。**
+  /// 不管这结果是「缓存命中」还是「真去请求」——
+  /// 广播统一放在 [submit] 的出口（[_broadcast]），不再散落在各条分支里。
+  ///
+  /// （之前广播只在 `_process()` 里，导致缓存命中的题不广播，
+  ///   订阅者收不到通知、自动预选不触发。这是接口契约的漏洞，
+  ///   不是调用方该去绕的问题。）
   static Future<AnswerJobResult?> submit(AnswerJob job) async {
     await AnswerSearchApi.initialize();
 
@@ -134,28 +142,43 @@ class AnswerQueue {
     if (!debugForceEnabled && !AnswerSearchApi.isAIConfigured) return null;
     if (job.hash.trim().isEmpty) return null;
 
+    // 路径 1：缓存命中 —— 不请求，但**同样要广播**
     if (!job.forceRefresh) {
       final hit = await AnswerCache.read(job.lessonId, job.hash);
-      if (hit != null && hit.isFresh()) {
-        return AnswerJobResult(
+      if (hit != null && hit.shouldSkipRefetch()) {
+        final result = AnswerJobResult(
           hash: job.hash,
           answer: hit,
           fromCache: true,
         );
+        _broadcast(result);
+        return result;
       }
     }
 
-    // 同一道题正在飞 → 搭车，不重复请求
+    // 路径 2：同一道题正在飞 → 搭车。
+    // 不广播：发起者拿到结果时会广播一次，搭车的再广播就重复了。
     final existing = _inFlight[job.hash];
     if (existing != null) return existing;
 
+    // 路径 3：真正去请求 —— 由**发起者**负责广播
     final future = _process(job);
     _inFlight[job.hash] = future;
     try {
-      return await future;
+      final result = await future;
+      if (result != null) _broadcast(result);
+      return result;
     } finally {
       _inFlight.remove(job.hash);
     }
+  }
+
+  /// 唯一的广播出口
+  ///
+  /// 集中在一处，保证「不管走哪条路径，订阅者收到的次数都一样」。
+  static void _broadcast(AnswerJobResult result) {
+    completedCount.value = completedCount.value + 1;
+    if (!_results.isClosed) _results.add(result);
   }
 
   /// 丢进队列，等闸门放行
@@ -181,11 +204,9 @@ class AnswerQueue {
 
     await AnswerCache.write(job.lessonId, job.hash, value);
 
-    final result =
-        AnswerJobResult(hash: job.hash, answer: value, fromCache: false);
-    completedCount.value = completedCount.value + 1;
-    if (!_results.isClosed) _results.add(result);
-    return result;
+    // 只产出结果，**不广播** —— 广播统一由 submit() 负责，
+    // 否则「缓存命中」和「真去请求」两条路径的行为会不一致。
+    return AnswerJobResult(hash: job.hash, answer: value, fromCache: false);
   }
 
   static Future<_RawAnswer?> _schedule(AnswerJob job) {

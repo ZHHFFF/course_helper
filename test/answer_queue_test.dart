@@ -130,6 +130,36 @@ void main() {
       expect(calls, 1);
     });
 
+    test('命中缓存 → 也要广播（契约：拿到非 null 结果就一定广播一次）', () async {
+      // 这是之前的真 bug：submit() 在缓存命中时直接 return，
+      // 广播只写在 _process() 里 —— 于是缓存命中的题订阅者收不到通知，
+      // 界面上的自动预选就不触发（表现是「预填没实现」）。
+      // 现在广播统一在 submit() 的出口，两条路径行为一致。
+      var calls = 0;
+      AnswerQueue.debugForceEnabled = true;
+      AnswerQueue.debugSearchOverride = (question) async {
+        calls++;
+        return [_answer('A')];
+      };
+
+      // 第一次：真去请求，结果顺手写进缓存
+      await AnswerQueue.submit(_job('h-hit-broadcast'));
+      expect(calls, 1);
+
+      // 第二次：命中缓存 —— 不发请求，但**必须广播**
+      final broadcast = <AnswerJobResult>[];
+      final sub = AnswerQueue.results.listen(broadcast.add);
+      final second = await AnswerQueue.submit(_job('h-hit-broadcast'));
+      await Future<void>.delayed(Duration.zero);
+      await sub.cancel();
+
+      expect(second!.fromCache, isTrue);
+      expect(calls, 1, reason: '命中缓存不该再发请求');
+      expect(broadcast.length, 1, reason: '命中缓存也必须广播一次');
+      expect(broadcast.first.hash, 'h-hit-broadcast');
+      expect(broadcast.first.fromCache, isTrue);
+    });
+
     test('forceRefresh 会绕过缓存重新请求', () async {
       var calls = 0;
       AnswerQueue.debugForceEnabled = true;
@@ -186,7 +216,7 @@ void main() {
       expect(result.answer.error, contains('boom'));
       expect(result.usable, isFalse);
       // failed 在重试间隔内仍然「新鲜」，避免翻页刷屏重试
-      expect(result.answer.isFresh(), isTrue);
+      expect(result.answer.shouldSkipRefetch(), isTrue);
     });
 
     test('检索成功但没结果 → 缓存为 empty（不是 failed）', () async {

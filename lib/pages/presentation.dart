@@ -25,10 +25,13 @@ import '../cache/course_cache.dart';
 import '../cache/ppt_cache.dart';
 import '../cache/question_hash.dart';
 import '../cache/slide_scanner.dart';
+import '../setting/auto_answer_setting.dart';
 // [/新增]
+import '../utils/answer_filling.dart';
 import '../utils/app_logger.dart';
 import '../utils/keep_alive_service.dart';
 import '../utils/network_error.dart';
+import '../utils/problem_publish.dart';
 import '../utils/ppt_exporter.dart';
 import 'widget/answer_search_dialog.dart';
 import 'widget/suggested_answer_card.dart';
@@ -106,6 +109,74 @@ class _PresentationPageState extends State<PresentationPage>
   /// 当前页对应的题目指纹（当前页没题时为 null）
   String? _currentHash;
 
+  // ============ [新增] 自动答题 ============
+
+  /// 已经自动提交过的指纹（防重复提交）
+  final Set<String> _autoSubmitted = {};
+
+  /// 待自动提交的题目队列（串行处理，避免连发两题时丢掉后一道）
+  final List<String> _autoSubmitQueue = [];
+
+  // ============ 已发布题目的「单一事实来源」 ============
+  //
+  // 背景：发题消息（unlockproblem）给的是 `prob`，而 PPT 里题目的字段叫
+  // `problemId` —— **两套 ID 命名空间**。原来的代码拿一边的值去
+  // `contains` 另一边的集合（比如「提交」按钮的条件），
+  // 万一两个值不一样，按钮就永远不出现、自动提交也找不到题目。
+  //
+  // 修法：在**边界处归一化一次** —— 收到发题消息就把 `prob` 解析成
+  // 「PPT 里的页号」，记在这里。之后所有判断都读这个映射，
+  // 不再到处做 ID 字符串比对。
+
+  /// 已发布的题目：PPT 页号（0-based） → 服务器给的 prob
+  final Map<int, String> _publishedSlideOf = {};
+
+  /// 老师发题后，最多等多久让 AI 把答案搜出来
+  ///
+  /// AI 一道题要 3~6 秒，老师发题那一刻答案通常还没回来。
+  /// 超过这个时间还拿不到就放弃（总比交白卷强）。
+  static const Duration answerWait = Duration(seconds: 25);
+
+  /// 当前作答区（[_answer] / [_textAnswer]）属于哪道题
+  String? _answerOwnerProblemId;
+
+  /// 每道题各自的作答 —— 切页时按题存取，而不是一清了之
+  ///
+  /// `_answer` / `_textAnswer` 是单份字段，切题时必须换掉，
+  /// 否则 A 题选完翻到 B 题，B 题会显示 A 的答案（自动提交就会交串）。
+  /// 但**直接清空**又会把用户填好的答案弄丢 ——
+  /// 「填完翻页看一眼再翻回来，答案没了」。
+  /// 所以按 problemId 存一份，切回去能原样恢复。
+  final Map<String, List<String>> _answersByProblem = {};
+  final Map<String, String> _textAnswersByProblem = {};
+
+  /// 切题：先存下旧题的作答，再恢复新题的
+  void _syncAnswerOwner() {
+    final newId = _currentProblem?.problemId;
+    if (newId == _answerOwnerProblemId) return;
+
+    // 1. 把旧题的作答存起来
+    final oldId = _answerOwnerProblemId;
+    if (oldId != null) {
+      final a = _answer;
+      if (a != null && a.any((k) => k.trim().isNotEmpty)) {
+        _answersByProblem[oldId] = List<String>.of(a);
+      }
+      final t = _textAnswer;
+      if (t != null && t.trim().isNotEmpty) {
+        _textAnswersByProblem[oldId] = t;
+      }
+    }
+
+    // 2. 换成新题的作答（没有就清空）
+    _answerOwnerProblemId = newId;
+    _answer = newId == null ? null : _answersByProblem[newId]?.toList();
+    _textAnswer = newId == null ? null : _textAnswersByProblem[newId];
+    if (newId == null) {
+      _uploadedImageUrls.clear();
+    }
+  }
+
   StreamSubscription<AnswerJobResult>? _answerSub;
   // [/新增]
 
@@ -132,7 +203,16 @@ class _PresentationPageState extends State<PresentationPage>
     // 已经在飞的 AI 请求不打断（让它跑完顺手把答案存下来），
     // 但排队里还没开跑的全部作废
     AnswerQueue.cancelPending();
-    SlideImagePrefetcher.cancel();
+
+    // [改] 退出课堂**不再丢弃**预取队列。
+    //
+    // 原来这里是 SlideImagePrefetcher.cancel()，会把没下完的页全扔掉，
+    // 下次进来重新下 —— 这正是「第二次进入已缓存 0」的成因之一。
+    // 现在只把它挂起（省电/省流量交给 paused 控制），队列和进度都留着，
+    // 下次进同一份 PPT 时 start() 会用磁盘命中把已下好的页跳过。
+    //
+    // 注意：图片本身是靠磁盘文件判断「有没有缓存」，不依赖这个内存队列，
+    // 所以即使进程被杀，下次进来照样命中。
     PptCache.clearMemory();
     AnswerCache.clearMemory();
 
@@ -177,6 +257,471 @@ class _PresentationPageState extends State<PresentationPage>
       _suggested[result.hash] = result.answer;
       _searching.remove(result.hash);
     });
+    // [新增] 答案到手 → 如果正是当前页的题，自动填进作答区（只填不交）
+    unawaited(_autoSelectIfCurrent(result.hash));
+  }
+
+  // ==================== [新增] 自动预选 ====================
+
+  /// 答案到手后，如果这题正是当前页，自动填进作答区
+  ///
+  /// 只填不提交。提交由 [_maybeAutoSubmit] 在老师发布题目后触发。
+  /// 已经填过的指纹不会重复填，避免覆盖用户的手动修改。
+  Future<void> _autoSelectIfCurrent(String hash) async {
+    await AutoAnswerSetting.ensureLoaded();
+    if (!AutoAnswerSetting.autoSelect.value) return;
+    if (!mounted) return;
+    if (_currentHash != hash) return; // 不是当前页的题，不抢填
+
+    // 判据是「作答区有没有内容」，不是「有没有自动填过」。
+    //
+    // 因为切题时 `_syncAnswerOwner()` 会把 `_answer` 换成新题的值
+    // （旧题的存进 `_answersByProblem`，切回来能恢复）：
+    // 如果用「填过就不再填」的标记，A→B→A 切回来时 A 会被误判成
+    // 已经处理过而不重新填。而「有内容就不动」同时兼顾了
+    // 「不覆盖用户手动修改」。
+    if (_isAnswerFilled()) return;
+
+    final cached = _suggested[hash];
+    if (cached == null || !cached.usable || cached.results.isEmpty) return;
+
+    final scanned = _scan.byHash[hash];
+    if (scanned == null) return;
+
+    _fillAnswerSilently(scanned.question, cached.results.first);
+  }
+
+  /// 静默填充（不弹 SnackBar，避免自动答题时刷屏）
+  ///
+  /// 注意三种题型读的字段不一样，必须和 `_buildAnswerOptions()` 的分支对齐：
+  /// - problemType 1/2/3/6（单选/多选/投票/判断）→ `_answer`（选项 key 列表）
+  /// - problemType 4（填空）→ 题干里有 `[填空N]` 标记时读 `_answer`
+  ///   （每空一项），没有标记时 UI 退化成单个输入框、读 `_textAnswer`
+  /// - problemType 5（简答）→ `_textAnswer`
+  ///
+  /// 之前一律按「选择题 / 非选择题」二分，填空题会被写成 `_textAnswer`，
+  /// 而 UI 读的是 `_answer` → 填了等于没填。
+  ///
+  /// 返回是否真的填进去了（调用方可以据此决定要不要提示用户）。
+  bool _fillAnswerSilently(
+    StandardizedQuestion question,
+    AnswerSearchResult picked, {
+    String logTag = '自动答题',
+  }) {
+    final problem = _currentProblem;
+    if (problem == null || !mounted) return false;
+
+    final raw = picked.answer.trim();
+
+    // 该写哪个字段由题型决定 —— 这段判断逻辑抽到了 AnswerFilling，
+    // 那边有单测覆盖（写错字段的表现是「填了等于没填」，UI 上看不出来）
+    switch (AnswerFilling.fieldFor(problem.problemType, problem.body)) {
+      // ---- 填空题（多个空）：每空一项写进 _answer ----
+      case AnswerField.fillBlanks:
+        final count = AnswerFilling.blankCount(problem.body);
+        final list = AnswerFilling.splitBlanks(raw, count);
+        if (list.isEmpty) return false;
+        setState(() => _answer = list);
+        AppLogger.i(logTag, '已自动预选（填空 $count 空）：${list.join(" | ")}');
+        return true;
+
+      // ---- 填空题（没标记，UI 是单个输入框）----
+      case AnswerField.fillSingle:
+        if (raw.isEmpty) return false;
+        setState(() => _textAnswer = raw);
+        AppLogger.i(logTag, '已自动预选（填空）：$raw');
+        return true;
+
+      // ---- 简答题 ----
+      case AnswerField.shortAnswer:
+        if (raw.isEmpty) return false;
+        setState(() => _textAnswer = raw);
+        AppLogger.i(logTag, '已自动预选（简答）：$raw');
+        return true;
+
+      // ---- 选择题（单选/多选/判断/投票）----
+      case AnswerField.choice:
+        final options = (problem.options ?? const [])
+            .map((o) => StandardizedOption(key: o.key, value: o.value))
+            .toList();
+        final keys = picked.matchOptionKeys(options);
+        if (keys.isEmpty) return false;
+        setState(() => _answer = keys);
+        AppLogger.i(logTag, '已自动预选：${keys.join("、")}（${picked.source}）');
+        return true;
+    }
+  }
+
+  // ==================== [新增] 自动提交 ====================
+
+  /// 老师发布题目（unlockproblem）后，按设置决定是否自动提交
+  ///
+  /// 流程：定位题目所在页 → 切过去 → 确保答案已填 → 随机延迟 → 提交
+  /// 老师发布题目（unlockproblem）后，按设置决定是否自动提交
+  ///
+  /// 用队列串行处理：老师连着发两道题时，两个调用会同时进来。
+  /// 原来用一个 `_autoSubmitting` 布尔标记挡，结果是后来的那道题
+  /// 走到提交那一步发现「有人正在提交」就**直接丢掉**了。
+  /// 现在改成排队，前一道处理完接着处理下一道。
+  Future<void> _maybeAutoSubmit(String problemId) async {
+    try {
+      await AutoAnswerSetting.ensureLoaded();
+      AppLogger.i(
+        '自动答题',
+        '收到发题 $problemId｜开关：自动提交=${AutoAnswerSetting.autoSubmit.value} '
+            '预选=${AutoAnswerSetting.autoSelect.value}｜PPT ${_slideModels.length} 页',
+      );
+
+      // 不管自动提交开没开，都要先把 prob 解析成 PPT 页号并记下来 ——
+      // 「提交」按钮的显示依赖这个映射（见 _publishedSlideOf 的说明）。
+      // 这是「边界处归一化一次」，比让各处去 contains 比对可靠。
+      final index = await _waitForProblemSlide(problemId);
+      if (!mounted) return;
+      if (index >= 0) {
+        setState(() => _publishedSlideOf[index] = problemId);
+        AppLogger.i('自动答题', '已记录发布位置：第 ${index + 1} 页 ← $problemId');
+      } else {
+        AppLogger.w('自动答题',
+            '解析不出 $problemId 对应哪一页，「提交」按钮可能不会出现');
+      }
+
+      if (!AutoAnswerSetting.autoSubmit.value) {
+        AppLogger.i('自动答题', '「自动提交」开关是关的，只记录发布位置');
+        return;
+      }
+      if (_autoSubmitted.contains(problemId)) {
+        AppLogger.i('自动答题', '题目 $problemId 已经提交过，跳过');
+        return;
+      }
+      if (_autoSubmitQueue.contains(problemId)) return;
+
+      _autoSubmitQueue.add(problemId);
+
+      // 已经有消费者在跑了 → 它会把这道题也处理掉，这里直接返回
+      if (_autoSubmitQueue.length > 1) return;
+
+      while (_autoSubmitQueue.isNotEmpty) {
+        if (!mounted) break;
+        final id = _autoSubmitQueue.removeAt(0);
+        await _doAutoSubmit(id);
+      }
+    } catch (e, st) {
+      AppLogger.e('自动答题', '自动提交调度出错：$e\n$st');
+    }
+  }
+
+  /// 真正干活的：定位题目 → 切页 → 等答案 → 填 → 延迟 → 提交
+  ///
+  /// 只由 [_maybeAutoSubmit] 的队列循环调用，保证同一时刻只有一道题在跑。
+  Future<void> _doAutoSubmit(String problemId) async {
+    if (_autoSubmitted.contains(problemId)) return;
+
+    try {
+      // ---- 第 1 步：先定位并切到题目页 ----
+      //
+      // 这一步必须**排在等答案前面**：切过去之后「提交」按钮会立刻出现，
+      // 就算答案还没搜好、用户等不及了，他也能自己点提交，不至于干瞪眼。
+      final index = await _waitForProblemSlide(problemId);
+      if (index < 0) {
+        AppLogger.w('自动答题',
+            '题目 $problemId 在这份 PPT 里找不到对应页（PPT 共 ${_slideModels.length} 页）');
+        return;
+      }
+      AppLogger.i('自动答题', '题目 $problemId 在第 ${index + 1} 页');
+
+      if (index != _currentSlideIndex) {
+        _toSlide(index + 1, animate: false);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+      if (!mounted) return;
+
+      // 把当前页题目的 problemId 也补进「已解锁」。
+      //
+      // 为什么要补：发题消息给的是 `prob`，而「提交」按钮的条件是
+      // `_unlockedProblemIds.contains(_currentProblem!.problemId)` ——
+      // 两者字段名不同，万一值也不一样，就算切到了正确的页按钮也不会出现。
+      // 我们已经确认这一页就是老师发的那道题（index 是定位出来的），
+      // 所以把它的 problemId 加进去是安全的。
+      // 这样用户等不及自动提交时，也能自己点提交。
+      final curId = _currentProblem?.problemId;
+      if (curId != null &&
+          curId.isNotEmpty &&
+          !_unlockedProblemIds.contains(curId)) {
+        AppLogger.i('自动答题',
+            '当前页 problemId=$curId 不在已解锁列表里，补进去（让提交按钮出现）');
+        setState(() => _unlockedProblemIds.add(curId));
+      }
+
+      final hash = _currentHash;
+      if (hash == null) {
+        AppLogger.w('自动答题', '第 ${index + 1} 页没识别到题目，放弃自动提交');
+        return;
+      }
+
+      // 先确认这题确实被扫描器收录了。
+      //
+      // 没收录 = AI 根本没搜过它（题干为空、或题目整个画成图片被标记成
+      // 需要识图）。这种情况下等下去也没用，直接放弃，别白等 25 秒。
+      final scanned = _scan.byHash[hash];
+      if (scanned == null) {
+        AppLogger.w(
+          '自动答题',
+          '指纹 ${_short(hash)} 不在扫描结果里（题干为空或题目是图片），放弃自动提交',
+        );
+        return;
+      }
+      if (scanned.needsVision) {
+        AppLogger.w('自动答题', '这题需要识图，AI 文本检索拿不到答案，放弃自动提交');
+        return;
+      }
+
+      // ---- 第 2 步：等答案就绪 ----
+      //
+      // AI 检索一道题要 3~6 秒。老师发题那一刻答案大概率还没回来，
+      // 原来这里是「没答案就 return」→ 结果什么都不做。
+      // 现在改成最多等 [answerWait] 秒。
+      var cached = _suggested[hash];
+      if (cached == null || !cached.usable) {
+        // 等答案的时间**不能超过本题的剩余作答时间** ——
+        // 否则等到答案了，题也早就关闭、交不上去了。
+        // 留 2 秒余量给「填写 + 提交」这两步。
+        final remain = _countdownSeconds;
+        final budget = (remain != null && remain > 0)
+            ? Duration(
+                seconds: (remain - 2).clamp(1, answerWait.inSeconds))
+            : answerWait;
+        AppLogger.i(
+          '自动答题',
+          '答案还没搜好，最多等 ${budget.inSeconds}s'
+              '（本题剩余 ${remain == null || remain <= 0 ? "不限时" : "${remain}s"}）',
+        );
+        cached = await _waitForAnswer(hash, timeout: budget);
+      }
+      if (cached == null || !cached.usable || cached.results.isEmpty) {
+        AppLogger.w('自动答题',
+            '等到超时仍没拿到可用答案（status=${cached?.status}），放弃自动提交');
+        return;
+      }
+      if (!mounted) return;
+
+      // ---- 第 2.5 步：确认还停在题目所在的页 ----
+      //
+      // 等答案的这几秒里，老师完全可能翻页（slide / slidenav 会把用户带走）。
+      // 这时候往下走，答案会被填到**当前页别的题**上，提交也就交错了题。
+      // 所以提交前必须复核一次，不在了就切回去。
+      if (_currentSlideIndex != index) {
+        AppLogger.w(
+          '自动答题',
+          '等答案期间页面被翻到第 ${_currentSlideIndex + 1} 页，切回第 ${index + 1} 页',
+        );
+        _toSlide(index + 1, animate: false);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        if (!mounted) return;
+        if (_currentHash != hash) {
+          AppLogger.w('自动答题', '切回来之后指纹对不上了，放弃自动提交');
+          return;
+        }
+      }
+
+      // ---- 第 3 步：填答案 ----
+      if (!_isAnswerFilled()) {
+        _fillAnswerSilently(scanned.question, cached.results.first);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+
+      if (!mounted) return;
+      if (!_isAnswerFilled()) {
+        AppLogger.w('自动答题', '答案没能填进作答区，放弃自动提交');
+        return;
+      }
+
+      // ---- 第 4 步：拟人化延迟后提交 ----
+      final delay = AutoAnswerSetting.randomDelay();
+      AppLogger.i('自动答题', '${delay.inMilliseconds}ms 后自动提交题目 $problemId');
+      await Future<void>.delayed(delay);
+      if (!mounted) return;
+
+      _autoSubmitted.add(problemId);
+
+      // 提交可能因为网络抖动失败 —— 那就**静默丢答案**了。
+      //
+      // 重试的两条边界：
+      // 1. 只重试「网络失败」（请求根本没到服务器）。
+      //    服务端明确拒绝（比如题已关闭）不重试 —— 重试没意义，还可能重复提交。
+      // 2. 只在**没带图片**时重试。图片提交完就被清掉了，
+      //    带图重试会变成空答案，反而更糟。
+      //
+      // ⚠️ 另外要认清一件事：这里的「网络失败」其实**分不出**
+      //   「请求根本没到服务器」和「到了但回包丢了」—— 超时就是这种模糊态。
+      //   所以重试本质是 at-least-once，理论上可能重复提交。
+      //   同一道题交两次、服务端按最后一次算，影响可控，可以接受。
+      final hadImages = _uploadedImageUrls.isNotEmpty;
+      var netFails = await _submitAnswer(
+          auto: true, problemIdOverride: problemId, silent: true);
+
+      var attempt = 0;
+      while (netFails > 0 && attempt < 2 && !hadImages && mounted) {
+        attempt++;
+        AppLogger.w(
+          '自动答题',
+          '提交 $problemId 有 $netFails 个账号网络失败，第 $attempt 次重试',
+        );
+        await Future<void>.delayed(Duration(milliseconds: 600 * attempt));
+        if (!mounted) break;
+        netFails = await _submitAnswer(
+            auto: true, problemIdOverride: problemId, silent: true);
+      }
+
+      // 日志必须说实话 —— 现在它是我唯一的验证手段。
+      //
+      // 原来这里无条件打「已自动提交」，于是：
+      //   - 重试 2 次后仍网络失败 → 照样打成功
+      //   - 这题带图（按设计不重试）而第一次就失败 → 也照样打成功
+      // 结果日志一片祥和、答案其实丢了，照日志根本查不出问题。
+      if (netFails > 0) {
+        AppLogger.e(
+          '自动答题',
+          '题目 $problemId 提交失败：仍有 $netFails 个账号网络异常，'
+              '${hadImages ? "这题带图，按设计不重试（重试会变成空答案）" : "已重试 $attempt 次"}'
+              ' —— 答案没交上去，需要手动补交',
+        );
+        _toast('自动提交失败：$netFails 个账号网络异常，请手动补交');
+      } else {
+        AppLogger.i('自动答题', '已自动提交题目 $problemId（请求已到达服务器）');
+        _toast('已自动提交');
+      }
+    } catch (e, st) {
+      // unawaited() 会把异常吞掉，日志里什么都看不到 —— 必须自己兜住
+      AppLogger.e('自动答题', '自动提交题目 $problemId 时出错：$e\n$st');
+      _autoSubmitted.remove(problemId); // 允许下次重试
+    }
+  }
+
+  /// 等某道题的答案就绪（AI 检索要几秒）
+  ///
+  /// 拿到**终态**就立刻返回，不傻等到超时：
+  /// - `ok` + 有结果 → 可用，返回
+  /// - `failed`（超时/鉴权/模型报错）、`empty`（模型说没答案）
+  ///   → 这两种再等也不会变（`_enqueueScan` 每题只提交一次，不会自动重试），
+  ///     提前返回，省下最多 25 秒 —— 这 25 秒在限时题里很宝贵。
+  Future<CachedAnswer?> _waitForAnswer(
+    String hash, {
+    Duration timeout = const Duration(seconds: 25),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final c = _suggested[hash];
+      if (c != null) {
+        if (c.usable) return c;
+        if (c.status == CachedAnswerStatus.failed ||
+            c.status == CachedAnswerStatus.empty) {
+          AppLogger.i('自动答题', '答案是终态（${c.status}），不再等待');
+          return c;
+        }
+      }
+      if (!mounted) return null;
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    return _suggested[hash];
+  }
+
+  /// 题目在 PPT 里的页号（0-based），找不到返回 -1
+  ///
+  /// 两条路：
+  /// 1. 直接比 PPT 里题目的 `problemId`
+  /// 2. **兜底**：从时间轴找。时间轴事件的 `problemId` 和发题消息的 `prob`
+  ///    是同一个字段（都读 JSON 里的 `prob`），而且事件里带 `si`（1-based
+  ///    页码，和 `_toSlide` / `showpresentation` 同源）——
+  ///    万一 `prob` 和 PPT 里的 `problemId` 不是同一个值，靠这条也能定位。
+  int _indexOfProblem(String problemId) {
+    for (var i = 0; i < _slideModels.length; i++) {
+      if (_slideModels[i].problem?.problemId == problemId) return i;
+    }
+
+    for (final e in _timeline) {
+      if (e.problemId != problemId) continue;
+      // 不同一份 PPT 的页码不能混用
+      if (e.presentationId != null &&
+          _currentPresentationId != null &&
+          e.presentationId != _currentPresentationId) {
+        continue;
+      }
+      final si = e.slideIndex;
+      if (si == null || si <= 0) continue;
+      final idx = si - 1;
+      if (idx >= 0 && idx < _slideModels.length) {
+        AppLogger.i(
+          '自动答题',
+          'PPT 里没匹配到 problemId=$problemId，改用时间轴的 si 定位到第 ${idx + 1} 页',
+        );
+        return idx;
+      }
+    }
+
+    return -1;
+  }
+
+  /// 等 PPT 加载完再找题目所在页
+  ///
+  /// 老师有可能在 PPT 还没到的时候就发题（尤其是刚上课那一下），
+  /// 这时候直接返回 -1 会白白错过一次自动提交。
+  Future<int> _waitForProblemSlide(
+    String problemId, {
+    int tries = 6,
+    Duration interval = const Duration(milliseconds: 500),
+  }) async {
+    for (var i = 0; i < tries; i++) {
+      final index = _indexOfProblem(problemId);
+      if (index >= 0) return index;
+      if (!mounted) return -1;
+      if (i < tries - 1) await Future<void>.delayed(interval);
+    }
+
+    // 找不到就把三方都打出来：
+    //   1. 发题消息给的 ID
+    //   2. PPT 里各页题目的 problemId
+    //   3. 时间轴里各事件的 problemId + si
+    // 这样能一眼分清是「ID 对不上」还是「题目确实不在这份 PPT 里」，
+    // 也能看出时间轴里到底有没有刚发的这道题（兜底方案的前提）。
+    final slides = <String>[];
+    for (var i = 0; i < _slideModels.length; i++) {
+      final id = _slideModels[i].problem?.problemId;
+      if (id != null && id.isNotEmpty) slides.add('${i + 1}页:$id');
+    }
+    final timeline = _timeline
+        .where((e) => e.problemId != null && e.problemId!.isNotEmpty)
+        .map((e) => 'si=${e.slideIndex}:${e.problemId}')
+        .toList();
+    AppLogger.w(
+      '自动答题',
+      '找不到题目 $problemId\n'
+          '  PPT（${_slideModels.length} 页）里的题目=[${slides.isEmpty ? "无" : slides.join("，")}]\n'
+          '  时间轴里的题目=[${timeline.isEmpty ? "无" : timeline.join("，")}]',
+    );
+    return -1;
+  }
+
+  /// 当前页的题是不是老师已经发布的 —— 决定「提交」按钮出不出现
+  ///
+  /// 具体判据在纯函数 [isCurrentProblemPublished] 里（有单测覆盖）。
+  /// 这里只负责把页面状态喂进去。
+  bool _isCurrentProblemPublished() => isCurrentProblemPublished(
+        currentSlideIndex: _currentSlideIndex,
+        publishedSlideOf: _publishedSlideOf,
+        currentProblemId: _currentProblem?.problemId,
+        publishedProbs: _unlockedProblemIds.toSet(),
+        timelineProblemId: _timelineProblemId,
+      );
+
+  /// 当前页的答案是否已经填好
+  bool _isAnswerFilled() {
+    if (_currentProblem == null) return false;
+    // 填空的 `_answer` 是「每空一项」，可能是个长度不为 0 但全是空串的列表
+    // （用户点过输入框又没输）—— 所以要按**内容**判断，不能只看长度。
+    final keys = _answer;
+    if (keys != null && keys.any((k) => k.trim().isNotEmpty)) return true;
+    final text = _textAnswer;
+    return text != null && text.trim().isNotEmpty;
   }
 
   // [新增] 搜索答案 - 从当前题目提取题干和选项，调用检索模块
@@ -253,30 +798,15 @@ class _PresentationPageState extends State<PresentationPage>
   /// 把选中的检索结果写回作答状态
   void _applyPickedAnswer(
       AnswerSearchResult picked, StandardizedQuestion question) {
-    final rawOptions = _currentProblem?.options ?? const [];
-    final options = rawOptions
-        .map((o) => StandardizedOption(key: o.key, value: o.value))
-        .toList();
-
-    final keys = picked.matchOptionKeys(options);
-
-    String message;
-    if (keys.isNotEmpty) {
-      setState(() {
-        _answer = keys;
-      });
-      message = '已填入 ${keys.join('、')}，请核对后提交';
-    } else if (!question.isChoice && picked.answer.trim().isNotEmpty) {
-      setState(() {
-        _textAnswer = picked.answer.trim();
-      });
-      message = '已填入答案文本，请核对后提交';
-    } else {
-      message = '未能匹配到选项，请手动选择';
-    }
+    // 复用统一填充逻辑（按题型决定写 _answer 还是 _textAnswer）。
+    // 原来这里也是「选择题 / 非选择题」二分，填空题会填到 UI 不读的字段上。
+    final ok = _fillAnswerSilently(question, picked, logTag: '填入答案');
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      SnackBar(
+        content: Text(ok ? '已填入，请核对后提交' : '未能匹配到选项，请手动选择'),
+        duration: const Duration(seconds: 2),
+      ),
     );
   }
   // [/新增]
@@ -315,20 +845,37 @@ class _PresentationPageState extends State<PresentationPage>
   /// 正常情况下直接取扫描阶段算好的，避免每次切页重算一遍 SHA-256。
   /// 扫描阶段没收录这一页时（题目是个「空壳」被跳过了）才现算一个，
   /// 这样手动检索拿到的结果仍然有地方展示。
-  void _refreshCurrentHash() {
-    final scanned = _scan.forSlide(_currentSlideIndex);
-    if (scanned != null) {
-      _currentHash = scanned.hash;
-      return;
+    void _refreshCurrentHash() {
+      final scanned = _scan.forSlide(_currentSlideIndex);
+      if (scanned != null) {
+        _currentHash = scanned.hash;
+      } else if (_currentProblem == null) {
+        _currentHash = null;
+      } else {
+        _currentHash = QuestionHash.of(_questionOfCurrentSlide());
+      }
+
+      // 切到一道「答案早就搜好」的题时，`_onAnswerReady` 不会再触发
+      // （那个事件只在答案刚到手的那一刻发一次），
+      // 所以这里补一次自动预选 —— 否则预搜虽然跑完了，
+      // 老师发题后翻到那一页也不会自动填。
+      final h = _currentHash;
+      if (h != null) {
+        // 诊断用：把「当前页指纹」和「已经有答案的指纹」都打出来，
+        // 一眼就能看出是「没搜到」还是「搜到了但对不上」
+        AppLogger.i(
+          '自动答题',
+          '第 ${_currentSlideIndex + 1} 页指纹=${_short(h)}'
+              '｜已有答案的题=[${_suggested.keys.map(_short).join(",")}]',
+        );
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_autoSelectIfCurrent(h));
+        });
+      }
     }
 
-    if (_currentProblem == null) {
-      _currentHash = null;
-      return;
-    }
-    _currentHash = QuestionHash.of(_questionOfCurrentSlide());
-  }
-  // [/新增]
+    String _short(String s) => s.length <= 8 ? s : s.substring(0, 8);
+    // [/新增]
 
   Future<void> _checkToken() async {
     final lessonToken = RCCourseApi().lessonToken;
@@ -436,7 +983,7 @@ class _PresentationPageState extends State<PresentationPage>
         },
       );
     } catch (e) {
-      debugPrint('WebSocket 连接失败：$e');
+      AppLogger.e('WebSocket', '连接失败：$e');
     }
   }
 
@@ -448,10 +995,11 @@ class _PresentationPageState extends State<PresentationPage>
       // _currentLessonSlideIndex = 老师当前所在页（「回到当前页」按钮靠它判断）
       _currentLessonSlideIndex = targetIndex;
       _currentSlideIndex = targetIndex;
-      if (targetIndex < _slides.length) {
-        _currentProblem = _slides[targetIndex]['problem'];
-      }
-      _refreshCurrentHash();
+        if (targetIndex < _slides.length) {
+          _currentProblem = _slides[targetIndex]['problem'];
+        }
+        _syncAnswerOwner();
+        _refreshCurrentHash();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -470,11 +1018,15 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   void _handleMessage(dynamic message) async {
+    // op 提到 try 外面：catch 里要用它。
+    // 之前异常只写 '解析消息失败：$e'，**不知道是哪条消息炸的** ——
+    // 上课排查时完全靠猜。现在带上 op，一眼能看出是 unlockproblem 还是别的。
+    String? op;
     try {
       final data = jsonDecode(message);
-      final op = data['op'];
+      op = data['op']?.toString();
 
-      debugPrint('WebSocket S2C：$message');
+      AppLogger.d('WebSocket', 'S2C：$message');
 
       final messageText = data['message'];
 
@@ -534,6 +1086,12 @@ class _PresentationPageState extends State<PresentationPage>
             final problemId = problemData['prob'];
             final limit = problemData['limit'];
             final dt = problemData['dt'];
+
+            // 诊断：把发题消息的原样打出来。
+            // 关键是确认 `prob` 和 PPT 里的 `problemId` 是不是同一个值 ——
+            // 不是的话「提交」按钮和自动提交都找不到题目。
+            AppLogger.i('自动答题', '收到 unlockproblem 原始数据：$problemData');
+
             if (limit != null && limit > 0) {
               setState(() {
                 _countdownSeconds = limit;
@@ -545,6 +1103,21 @@ class _PresentationPageState extends State<PresentationPage>
                 }
               });
               _startCountdown(limit);
+            } else if (problemId != null) {
+              // 不限时的题：没有倒计时，但一样要记进「已解锁」
+              setState(() {
+                if (!_unlockedProblemIds.contains(problemId)) {
+                  _unlockedProblemIds.add(problemId);
+                }
+              });
+            }
+
+            // [新增] 老师发布了题目 → 按设置尝试自动提交
+            //
+            // 注意这行**必须在 limit 判断之外**：不限时的题（limit 为 null/0）
+            // 也要能自动提交，否则那类题永远不会触发。
+            if (problemId != null) {
+              unawaited(_maybeAutoSubmit(problemId.toString()));
             }
           }
           break;
@@ -649,9 +1222,12 @@ class _PresentationPageState extends State<PresentationPage>
           }
           break;
       }
-    } catch (e) {
-      debugPrint('解析消息失败：$e');
-    }
+      } catch (e, st) {
+        AppLogger.e(
+          'WebSocket',
+          '处理消息失败 op=${op ?? "?"}：$e\n$st',
+        );
+      }
   }
 
   void _addTimelineEvents(List timeline) {
@@ -729,7 +1305,7 @@ class _PresentationPageState extends State<PresentationPage>
         presentation = Presentation.fromJson(pptData);
       }
     } catch (e) {
-      debugPrint('加载 PPT 失败：$e');
+      AppLogger.e('Presentation', '加载 PPT 失败：$e');
       AppLogger.w('Presentation', '加载 PPT 失败：$e');
     }
 
@@ -831,7 +1407,7 @@ class _PresentationPageState extends State<PresentationPage>
     }
 
     final todo = scan.autoSearchable
-        .where((item) => !(_suggested[item.hash]?.isFresh() ?? false))
+        .where((item) => !(_suggested[item.hash]?.shouldSkipRefetch() ?? false))
         .toList();
 
     setState(() {
@@ -843,16 +1419,23 @@ class _PresentationPageState extends State<PresentationPage>
     for (final item in todo) {
       unawaited(
         AnswerQueue.submit(AnswerJob(
-          lessonId: widget.lessonId,
-          hash: item.hash,
-          question: item.question,
-        )).then((result) {
-          if (!mounted) return;
-          setState(() {
-            if (result != null) _suggested[result.hash] = result.answer;
-            _searching.remove(item.hash);
-          });
-        }).catchError((Object e) {
+            lessonId: widget.lessonId,
+            hash: item.hash,
+            question: item.question,
+          )).then((result) {
+            if (!mounted) return;
+            setState(() {
+              if (result != null) _suggested[result.hash] = result.answer;
+              _searching.remove(item.hash);
+            });
+
+            // 自动预选不在这里触发 —— AnswerQueue 现在**不管走缓存还是
+            // 真去请求都会广播**（契约统一在 submit() 的出口），
+            // 所以 _onAnswerReady 一定会被调到，那边负责预选。
+            //
+            // 这里仍然写一次 _suggested：广播是流，万一界面刚好在
+            // dispose 边缘错过了，这里能兜住，而且写两次是幂等的。
+          }).catchError((Object e) {
           AppLogger.w('Presentation', '自动检索失败（${item.hash}）：$e');
           if (mounted) {
             setState(() => _searching.remove(item.hash));
@@ -1018,6 +1601,7 @@ class _PresentationPageState extends State<PresentationPage>
             setState(() {
               _currentSlideIndex = index;
               _currentProblem = _slides[index]['problem'];
+              _syncAnswerOwner();
               // 注意：这里**不**动 _currentLessonSlideIndex ——
               // 用户手动翻页就表示脱离了老师那页，按钮才会出现
               _refreshCurrentHash();
@@ -1115,20 +1699,48 @@ class _PresentationPageState extends State<PresentationPage>
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
         actions: [
-          // [新增] 导出整份 PPT 为 PDF
-          IconButton(
-            tooltip: '导出整份 PPT 为 PDF',
-            onPressed: _isExporting ? null : _exportPresentationPdf,
-            icon: _isExporting
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
+          // [新增] 课件缓存进度 + 导出 PDF
+          //
+          // 缓存没完成时 PDF 按钮是禁用的（防呆），
+          // 避免用户上来就点，导出一个只有几页的残缺 PDF。
+          ValueListenableBuilder<SlidePrefetchProgress>(
+            valueListenable: SlideImagePrefetcher.progress,
+            builder: (context, p, _) {
+              if (p.isRunning) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Center(
+                    child: Text(
+                      '缓存中 ${p.label}',
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
                     ),
-                  )
-                : const Icon(Icons.picture_as_pdf_outlined),
+                  ),
+                );
+              }
+              if (p.isNotEmpty && !p.isComplete) {
+                return IconButton(
+                  tooltip: '课件缓存不完整（${p.label}），点击重试',
+                  onPressed: _retryPrefetch,
+                  icon: const Icon(Icons.refresh),
+                );
+              }
+              return IconButton(
+                tooltip: p.isComplete ? '导出整份 PPT 为 PDF' : '课件还没开始缓存',
+                onPressed: (_isExporting || !p.isComplete)
+                    ? null
+                    : _exportPresentationPdf,
+                icon: _isExporting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.picture_as_pdf_outlined),
+              );
+            },
           ),
         ],
       ),
@@ -1175,6 +1787,7 @@ class _PresentationPageState extends State<PresentationPage>
                               setState(() {
                                 _currentSlideIndex = index;
                                 _currentProblem = _slides[index]['problem'];
+                                _syncAnswerOwner();
                                 // 同全屏视图：手动翻页不改变老师所在页
                                 _refreshCurrentHash();
                               });
@@ -1325,7 +1938,8 @@ class _PresentationPageState extends State<PresentationPage>
                                               ),
                                             ),
                                           const Spacer(),
-                                          if (_currentProblem != null && _unlockedProblemIds.contains(_currentProblem!.problemId) && _countdownSeconds != null)
+                                          // 倒计时红标：题目已发布 + 有倒计时才显示
+                                          if (_isCurrentProblemPublished() && _countdownSeconds != null)
                                             Container(
                                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                               decoration: BoxDecoration(
@@ -1390,8 +2004,9 @@ class _PresentationPageState extends State<PresentationPage>
                                         ),
                                       ),
                                       // [/新增]
-                                      if ((_currentProblem != null && _unlockedProblemIds.contains(_currentProblem!.problemId)) ||
-                                          (_timelineProblemId != null && _unlockedProblemIds.contains(_timelineProblemId!))) ...[
+                                      // 单一事实来源判断，不再在这里裸写 ID 比对
+                                      // （发题消息用 prob，PPT 用 problemId，两套命名空间）
+                                      if (_isCurrentProblemPublished()) ...[
                                         const SizedBox(height: 16),
                                         Row(
                                           mainAxisAlignment: MainAxisAlignment.end,
@@ -1625,37 +2240,56 @@ class _PresentationPageState extends State<PresentationPage>
     }
   }
 
-  Future<void> _submitAnswer() async {
-    final problemId = _currentProblem?.problemId ?? _timelineProblemId;
-    if (problemId == null) return;
+  /// 提交答案
+  ///
+  /// [problemIdOverride] 用于自动提交：直接传**服务器发题时给的 ID**（`prob`），
+  /// 而不是用 `_currentProblem.problemId`。
+  /// 两个字段名不同，万一值也不一样，用 PPT 里那个 ID 提交会被服务器拒。
+  /// 返回**网络失败**的账号数（0 = 没有网络问题）
+  ///
+  /// 注意只统计「请求没到服务器」这类网络异常，
+  /// 服务端明确拒绝（比如题已关闭）不算 —— 那种重试没意义还可能重复提交。
+  Future<int> _submitAnswer({
+    bool auto = false,
+    String? problemIdOverride,
+    bool silent = false,
+  }) async {
+    final problemId =
+        problemIdOverride ?? _currentProblem?.problemId ?? _timelineProblemId;
+    if (problemId == null) return 0;
 
     final problemType = _currentProblem?.problemType ?? 0;
     final problemDt = _currentProblem?.dt;
 
     if (_answer == null && _textAnswer == null && _uploadedImageUrls.isEmpty) {
-      if (mounted) {
+      if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('请先选择或填写答案')),
         );
       }
-      return;
+      return 0;
     }
 
     final isTimeout = _countdownSeconds != null && _countdownSeconds! <= 0;
 
-    await _submitForAllAccounts(problemId, problemType, _uploadedImageUrls, isTimeout, problemDt);
+    return await _submitForAllAccounts(problemId, problemType,
+        _uploadedImageUrls, isTimeout, problemDt,
+        auto: auto, silent: silent);
   }
 
-  Future<void> _submitForAllAccounts(String problemId, int problemType, List<String>? imageUrls, bool isTimeout, int? problemDt) async {
+  /// 返回**网络失败**的账号数（0 = 没有网络问题）
+  Future<int> _submitForAllAccounts(String problemId, int problemType,
+      List<String>? imageUrls, bool isTimeout, int? problemDt,
+      {bool auto = false, bool silent = false}) async {
     final allAccounts = AccountManager.allAccounts;
 
     if (allAccounts.isEmpty) {
-      if (mounted) {
+      if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('没有可用的账号')),
         );
       }
-      return;
+      return 0;
     }
 
     int successCount = 0;
@@ -1704,27 +2338,35 @@ class _PresentationPageState extends State<PresentationPage>
       }
     }
 
-    _showSubmitResult(
-      successCount,
-      allAccounts.length,
-      failedAccounts,
-      networkFailCount: networkFailCount,
-    );
+      // silent：自动提交的重试过程中不弹结果，等重试全部走完再统一报一次，
+      // 否则「网络异常」和「全部提交成功」会先后叠两条 SnackBar，自相矛盾。
+      if (!silent) {
+        _showSubmitResult(
+          successCount,
+          allAccounts.length,
+          failedAccounts,
+          networkFailCount: networkFailCount,
+          auto: auto,
+        );
+      }
 
     setState(() {
       _countdownSeconds = 0;
       _selectedImages.clear();
       _uploadedImageUrls.clear();
     });
+
+    return networkFailCount;
   }
 
-  void _showSubmitResult(
-    int successCount,
-    int totalCount,
-    List<String> failedAccounts, {
-    int networkFailCount = 0,
-  }) {
-    if (!mounted) return;
+    void _showSubmitResult(
+      int successCount,
+      int totalCount,
+      List<String> failedAccounts, {
+      int networkFailCount = 0,
+      bool auto = false,
+    }) {
+      if (!mounted) return;
 
     final bool allNetworkFailed = successCount == 0 &&
         networkFailCount > 0 &&
@@ -1747,12 +2389,24 @@ class _PresentationPageState extends State<PresentationPage>
       message += '\n\n提示：网络异常表示请求没有到达服务器，'
           '通常是断网、超时或接口无法访问。请检查手机网络后重新提交。';
     }
-    if (failedAccounts.isNotEmpty) {
-      message += '\n\n失败账号:\n${failedAccounts.join('\n')}';
-    }
+      if (failedAccounts.isNotEmpty) {
+        message += '\n\n失败账号:\n${failedAccounts.join('\n')}';
+      }
 
-    showDialog(
-      context: context,
+      // 自动提交不弹模态框：课堂上弹窗会挡住界面、还得手动关，
+      // 连发几道题就会叠一堆。改成 SnackBar，瞄一眼就知道结果。
+      if (auto) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$title（$successCount/$totalCount）'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+
+      showDialog(
+        context: context,
       builder: (context) => AlertDialog(
         title: Text(
           title,
@@ -2065,6 +2719,47 @@ class _PresentationPageState extends State<PresentationPage>
 
   // ==================== [新增] 导出整份 PPT 为 PDF ====================
 
+  /// 当前 PPT 的所有幻灯片图片地址（去重、保序）
+  List<String> _allSlideImageUrls() {
+    final urls = <String>[];
+    final seen = <String>{};
+    for (final slide in _slideModels) {
+      final url =
+          (slide.coverAlt.trim().isNotEmpty ? slide.coverAlt : slide.cover)
+              .trim();
+      if (url.isEmpty || !seen.add(url)) continue;
+      urls.add(url);
+    }
+    return urls;
+  }
+
+  /// 还有几张没缓存（只查磁盘，不触发下载）
+  Future<int> _missingSlideCount(List<String> urls) async {
+    var missing = 0;
+    for (final url in urls) {
+      final hit = await SlideImageStore.existing(widget.lessonId, url);
+      if (hit == null) missing++;
+    }
+    return missing;
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
+    );
+  }
+
+  /// 重新拉一遍没缓存完的页（AppBar 上那个刷新按钮）
+  void _retryPrefetch() {
+    if (_slideModels.isEmpty) return;
+    AppLogger.i('PPT缓存', '手动重试缓存');
+    SlideImagePrefetcher.start(
+      widget.lessonId,
+      SlideScanner.imageUrlsOf(_slideModels),
+    );
+  }
+
   /// 把当前这份 PPT 的所有页面合成一个 PDF
   ///
   /// - 图片走 [SlideImageStore]（磁盘缓存 + 并发去重），不另起一套缓存
@@ -2074,31 +2769,41 @@ class _PresentationPageState extends State<PresentationPage>
     if (_isExporting) return;
 
     if (_slideModels.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('还没有加载到 PPT')),
+      _toast('还没有加载到 PPT');
+      return;
+    }
+
+    // [防呆] 必须整份课件都缓存完才能导，否则会生成残缺 PDF。
+    // 实测 bug：第二次进课堂时缓存还没开始下，导出只拿到 1/42 页。
+    final urls = _allSlideImageUrls();
+    final missing = await _missingSlideCount(urls);
+    if (missing > 0) {
+      final p = SlideImagePrefetcher.progress.value;
+      AppLogger.w(
+        '导出PDF',
+        '拒绝导出：缓存未完成 ${p.label}（缺 $missing 张）',
       );
+      _toast('课件还在缓存中（${p.label}），等缓存完成再转 PDF');
       return;
     }
 
     setState(() => _isExporting = true);
 
     try {
-      // 1. 逐页取本地图片（缓存命中直接返回，没有才下载）
+      // 1. 逐页取本地文件（上面已确认全部命中，这里只读盘、不下载）
       final paths = <String>[];
-      final seen = <String>{};
-      for (final slide in _slideModels) {
-        final url = (slide.coverAlt.trim().isNotEmpty
-                ? slide.coverAlt
-                : slide.cover)
-            .trim();
-        if (url.isEmpty || !seen.add(url)) continue;
-        try {
-          final file = await SlideImageStore.fileFor(widget.lessonId, url);
-          paths.add(file.path);
-        } catch (e) {
-          AppLogger.w('导出PDF', '取图失败 $url：$e');
-        }
+      for (final url in urls) {
+        final file = await SlideImageStore.existing(widget.lessonId, url);
+        if (file != null) paths.add(file.path);
       }
+
+      // 2. 最终完整性校验：拿到的必须一页不少
+      if (paths.length != urls.length) {
+        AppLogger.w('导出PDF', '完整性校验失败：${paths.length}/${urls.length}');
+        _toast('课件缓存发生变化（${paths.length}/${urls.length}），请等缓存完成');
+        return;
+      }
+      AppLogger.i('导出PDF', '完整性校验通过：${paths.length}/${urls.length}');
 
       if (paths.isEmpty) {
         throw Exception('没有取到任何幻灯片图片');
