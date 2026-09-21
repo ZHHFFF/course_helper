@@ -137,6 +137,12 @@ class _PresentationPageState extends State<PresentationPage>
   /// 待自动提交的题目队列（串行处理，避免连发两题时丢掉后一道）
   final List<String> _autoSubmitQueue = [];
 
+  /// 老师发题后，最多等多久让 AI 把答案搜出来
+  ///
+  /// AI 一道题要 3~6 秒，老师发题那一刻答案通常还没回来。
+  /// 超过这个时间还拿不到就放弃（总比交白卷强）。
+  static const Duration answerWait = Duration(seconds: 25);
+
   /// 当前作答区（[_answer] / [_textAnswer]）属于哪道题
   ///
   /// `_answer` 是单个字段、不分题目存，切题时必须清空，
@@ -347,82 +353,132 @@ class _PresentationPageState extends State<PresentationPage>
   /// 走到提交那一步发现「有人正在提交」就**直接丢掉**了。
   /// 现在改成排队，前一道处理完接着处理下一道。
   Future<void> _maybeAutoSubmit(String problemId) async {
-    await AutoAnswerSetting.ensureLoaded();
-    if (!AutoAnswerSetting.autoSubmit.value) return;
-    if (_autoSubmitted.contains(problemId)) return;
-    if (_autoSubmitQueue.contains(problemId)) return;
+    try {
+      await AutoAnswerSetting.ensureLoaded();
+      AppLogger.i(
+        '自动答题',
+        '收到发题 $problemId｜开关：自动提交=${AutoAnswerSetting.autoSubmit.value} '
+            '预选=${AutoAnswerSetting.autoSelect.value}｜PPT ${_slideModels.length} 页',
+      );
+      if (!AutoAnswerSetting.autoSubmit.value) {
+        AppLogger.i('自动答题', '「自动提交」开关是关的，跳过');
+        return;
+      }
+      if (_autoSubmitted.contains(problemId)) {
+        AppLogger.i('自动答题', '题目 $problemId 已经提交过，跳过');
+        return;
+      }
+      if (_autoSubmitQueue.contains(problemId)) return;
 
-    _autoSubmitQueue.add(problemId);
+      _autoSubmitQueue.add(problemId);
 
-    // 已经有消费者在跑了 → 它会把这道题也处理掉，这里直接返回
-    if (_autoSubmitQueue.length > 1) return;
+      // 已经有消费者在跑了 → 它会把这道题也处理掉，这里直接返回
+      if (_autoSubmitQueue.length > 1) return;
 
-    while (_autoSubmitQueue.isNotEmpty) {
-      if (!mounted) break;
-      final id = _autoSubmitQueue.removeAt(0);
-      await _doAutoSubmit(id);
+      while (_autoSubmitQueue.isNotEmpty) {
+        if (!mounted) break;
+        final id = _autoSubmitQueue.removeAt(0);
+        await _doAutoSubmit(id);
+      }
+    } catch (e, st) {
+      AppLogger.e('自动答题', '自动提交调度出错：$e\n$st');
     }
   }
 
-  /// 真正干活的：定位题目 → 切页 → 确保答案已填 → 延迟 → 提交
+  /// 真正干活的：定位题目 → 切页 → 等答案 → 填 → 延迟 → 提交
   ///
   /// 只由 [_maybeAutoSubmit] 的队列循环调用，保证同一时刻只有一道题在跑。
   Future<void> _doAutoSubmit(String problemId) async {
     if (_autoSubmitted.contains(problemId)) return;
 
-    final index = await _waitForProblemSlide(problemId);
-    if (index < 0) {
-      AppLogger.w('自动答题', '发布的题目 $problemId 在这份 PPT 里找不到对应页');
-      return;
-    }
-
-    // 切到题目所在页（_toSlide 是 1-based）
-    if (index != _currentSlideIndex) {
-      _toSlide(index + 1, animate: false);
-      // 给 setState / 布局一点时间，让 _currentProblem 和 _currentHash 生效
-      await Future<void>.delayed(const Duration(milliseconds: 250));
-    }
-    if (!mounted) return;
-
-    final hash = _currentHash;
-    if (hash == null) {
-      AppLogger.w('自动答题', '第 ${index + 1} 页没识别到题目，放弃自动提交');
-      return;
-    }
-
-    // 还没填就现场补填一次（预搜没赶上时走这条路）
-    if (!_isAnswerFilled()) {
-      final cached = _suggested[hash];
-      if (cached == null || !cached.usable || cached.results.isEmpty) {
-        AppLogger.w('自动答题', '题目 $problemId 还没有可用答案，放弃自动提交');
+    try {
+      // ---- 第 1 步：先定位并切到题目页 ----
+      //
+      // 这一步必须**排在等答案前面**：切过去之后「提交」按钮会立刻出现，
+      // 就算答案还没搜好、用户等不及了，他也能自己点提交，不至于干瞪眼。
+      final index = await _waitForProblemSlide(problemId);
+      if (index < 0) {
+        AppLogger.w('自动答题',
+            '题目 $problemId 在这份 PPT 里找不到对应页（PPT 共 ${_slideModels.length} 页）');
         return;
       }
-      final scanned = _scan.byHash[hash];
-      if (scanned == null) return;
-      _fillAnswerSilently(scanned.question, cached.results.first);
-      await Future<void>.delayed(const Duration(milliseconds: 150));
-    }
+      AppLogger.i('自动答题', '题目 $problemId 在第 ${index + 1} 页');
 
-    if (!mounted) return;
-    if (!_isAnswerFilled()) {
-      AppLogger.w('自动答题', '答案没能填上，放弃自动提交');
-      return;
-    }
+      if (index != _currentSlideIndex) {
+        _toSlide(index + 1, animate: false);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+      if (!mounted) return;
 
-    // 拟人化延迟：避免「老师刚发就秒交」这种明显的脚本特征
-    final delay = AutoAnswerSetting.randomDelay();
-    AppLogger.i('自动答题', '${delay.inMilliseconds}ms 后自动提交题目 $problemId');
-    await Future<void>.delayed(delay);
-    if (!mounted) return;
+      final hash = _currentHash;
+      if (hash == null) {
+        AppLogger.w('自动答题', '第 ${index + 1} 页没识别到题目，放弃自动提交');
+        return;
+      }
 
-    _autoSubmitted.add(problemId);
-    try {
+      // ---- 第 2 步：等答案就绪 ----
+      //
+      // AI 检索一道题要 3~6 秒。老师发题那一刻答案大概率还没回来，
+      // 原来这里是「没答案就 return」→ 结果什么都不做。
+      // 现在改成最多等 [answerWait] 秒。
+      var cached = _suggested[hash];
+      if (cached == null || !cached.usable) {
+        AppLogger.i('自动答题', '答案还没搜好，最多等 ${answerWait.inSeconds}s');
+        cached = await _waitForAnswer(hash, timeout: answerWait);
+      }
+      if (cached == null || !cached.usable || cached.results.isEmpty) {
+        AppLogger.w('自动答题',
+            '等了 ${answerWait.inSeconds}s 仍没拿到可用答案（status=${cached?.status}），放弃自动提交');
+        return;
+      }
+      if (!mounted) return;
+
+      // ---- 第 3 步：填答案 ----
+      if (!_isAnswerFilled()) {
+        final scanned = _scan.byHash[hash];
+        if (scanned == null) {
+          AppLogger.w('自动答题', '拿不到题目对象（hash=$hash），放弃自动提交');
+          return;
+        }
+        _fillAnswerSilently(scanned.question, cached.results.first);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+
+      if (!mounted) return;
+      if (!_isAnswerFilled()) {
+        AppLogger.w('自动答题', '答案没能填进作答区，放弃自动提交');
+        return;
+      }
+
+      // ---- 第 4 步：拟人化延迟后提交 ----
+      final delay = AutoAnswerSetting.randomDelay();
+      AppLogger.i('自动答题', '${delay.inMilliseconds}ms 后自动提交题目 $problemId');
+      await Future<void>.delayed(delay);
+      if (!mounted) return;
+
+      _autoSubmitted.add(problemId);
       await _submitAnswer(auto: true);
       AppLogger.i('自动答题', '已自动提交题目 $problemId');
-    } catch (e) {
-      AppLogger.e('自动答题', '自动提交失败：$e');
-      _autoSubmitted.remove(problemId); // 失败了允许下次重试
+    } catch (e, st) {
+      // unawaited() 会把异常吞掉，日志里什么都看不到 —— 必须自己兜住
+      AppLogger.e('自动答题', '自动提交题目 $problemId 时出错：$e\n$st');
+      _autoSubmitted.remove(problemId); // 允许下次重试
     }
+  }
+
+  /// 等某道题的答案就绪（AI 检索要几秒）
+  Future<CachedAnswer?> _waitForAnswer(
+    String hash, {
+    Duration timeout = const Duration(seconds: 25),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final c = _suggested[hash];
+      if (c != null && c.usable) return c;
+      if (!mounted) return null;
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    return _suggested[hash];
   }
 
   /// 题目在 PPT 里的页号（0-based），找不到返回 -1
@@ -599,11 +655,20 @@ class _PresentationPageState extends State<PresentationPage>
       // 老师发题后翻到那一页也不会自动填。
       final h = _currentHash;
       if (h != null) {
+        // 诊断用：把「当前页指纹」和「已经有答案的指纹」都打出来，
+        // 一眼就能看出是「没搜到」还是「搜到了但对不上」
+        AppLogger.i(
+          '自动答题',
+          '第 ${_currentSlideIndex + 1} 页指纹=${_short(h)}'
+              '｜已有答案的题=[${_suggested.keys.map(_short).join(",")}]',
+        );
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) unawaited(_autoSelectIfCurrent(h));
         });
       }
     }
+
+    String _short(String s) => s.length <= 8 ? s : s.substring(0, 8);
     // [/新增]
 
   Future<void> _checkToken() async {

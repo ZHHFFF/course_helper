@@ -17,8 +17,11 @@ class AutoAnswerSetting {
   static const _keyAutoSearch = 'aa_auto_search';
   static const _keyAutoSelect = 'aa_auto_select';
   static const _keyAutoSubmit = 'aa_auto_submit';
-  static const _keyDelayMin = 'aa_delay_min_ms';
-  static const _keyDelayMax = 'aa_delay_max_ms';
+  // 延迟的键名带 _v2：旧版把 800/2000 存进过用户手机，
+  // 沿用旧键的话新默认值永远不生效（ensureLoaded 会读回旧值）。
+  // 延迟没有 UI，用户不可能手动改过，所以直接换键是安全的。
+  static const _keyDelayMin = 'aa_delay_min_ms_v2';
+  static const _keyDelayMax = 'aa_delay_max_ms_v2';
 
   /// 进课堂后自动检索整份 PPT 的题目
   ///
@@ -37,8 +40,11 @@ class AutoAnswerSetting {
   static final ValueNotifier<bool> autoSubmit = ValueNotifier<bool>(true);
 
   /// 拟人化延迟区间（毫秒）
-  static final ValueNotifier<int> delayMinMs = ValueNotifier<int>(800);
-  static final ValueNotifier<int> delayMaxMs = ValueNotifier<int>(2000);
+  ///
+  /// 用户明确要求「延迟要低」—— 老师发题到交卷之间只留 0.3~0.8 秒。
+  /// 再低就接近「零延迟秒交」了，那个特征反而更明显。
+  static final ValueNotifier<int> delayMinMs = ValueNotifier<int>(300);
+  static final ValueNotifier<int> delayMaxMs = ValueNotifier<int>(800);
 
   static bool _loaded = false;
 
@@ -50,8 +56,8 @@ class AutoAnswerSetting {
       autoSearch.value = p.getBool(_keyAutoSearch) ?? true;
       autoSelect.value = p.getBool(_keyAutoSelect) ?? true;
       autoSubmit.value = p.getBool(_keyAutoSubmit) ?? true;
-      delayMinMs.value = p.getInt(_keyDelayMin) ?? 800;
-      delayMaxMs.value = p.getInt(_keyDelayMax) ?? 2000;
+      delayMinMs.value = p.getInt(_keyDelayMin) ?? 300;
+      delayMaxMs.value = p.getInt(_keyDelayMax) ?? 800;
       _loaded = true;
     } catch (e) {
       debugPrint('读取自动答题设置失败：$e');
