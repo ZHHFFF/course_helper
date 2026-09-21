@@ -412,6 +412,11 @@ class _MainPageState extends State<MainPage> {
           // MiuixTheme.of(context).colors，因此这里**不需要**手动传 colorScheme /
           // isDark —— 之前自研组件要传的那两个参数已经不需要了。
           //
+          // 两种形态都靠 left:0/right:0 拉满宽度：贴边版用 Row+Expanded 等分；
+          // 悬浮版虽然 `Row(mainAxisSize: min)` 只要自身宽度，但它外层包了
+          // `Align`，仍需要外部给满宽约束才能正确居中（见库源码
+          // miuix_navigation_bar.dart 的 Align + ConstrainedBox 结构）。
+          //
           // 外面套 ValueListenableBuilder：设置页一改「悬浮底栏」开关，
           // 这里立刻重建并切换形态（悬浮 ↔ 贴边），无需重启。
           Positioned(
@@ -430,38 +435,55 @@ class _MainPageState extends State<MainPage> {
 
   /// 按当前设置构建 Miuix 底栏（悬浮 / 贴边二选一）。
   ///
-  /// 两个组件的构造参数并不相同：悬浮版接管自己的圆角、阴影与外边距，
-  /// 贴边版则由 `MiuixNavigationBarDefaults` 固定 `itemHeight=64`。
-  /// 二者都要求 2~5 个 `MiuixNavigationBarItem`（库内有 assert）。
+  /// ⚠️ 两种形态必须用**各自的 item 类型**（踩过坑，务必记住）：
+  /// - 贴边版 → `MiuixNavigationBarItem`，外层是 `Row + Expanded` 等分；
+  /// - 悬浮版 → `MiuixFloatingNavigationBarItem`，外层是
+  ///   `Row(mainAxisSize: min)` 紧凑排列。
+  ///
+  /// 混用会出问题：把普通 item 塞进悬浮栏，它内部按等分假设算出的尺寸
+  /// 在紧凑布局里会塌成 0，表现为**胶囊里空无一物、按钮 bounds 全为
+  /// `[0,0][0,0]`**（既看不见也点不到）。实测踩过一次。
+  ///
+  /// 二者都要求 2~5 个 item（库内有 assert）。
   Widget _buildMiuixNavBar(BuildContext context) {
-    final items = <Widget>[
-      MiuixNavigationBarItem(
-        selected: _selectedIndex == 0,
-        onPressed: () => _onNavTap(0),
-        icon: Icon(_selectedIndex == 0 ? Icons.school : Icons.school_outlined),
-        label: '课程',
-      ),
-      MiuixNavigationBarItem(
-        selected: _selectedIndex == 1,
-        onPressed: () => _onNavTap(1),
-        icon: Icon(
-          _selectedIndex == 1
-              ? Icons.account_circle
-              : Icons.account_circle_outlined,
-        ),
-        label: '账号',
+    // 图标按选中态切换实心/描边（Miuix 两种 item 的 API 在这一点上一致）
+    final icons = <Widget>[
+      Icon(_selectedIndex == 0 ? Icons.school : Icons.school_outlined),
+      Icon(
+        _selectedIndex == 1 ? Icons.account_circle : Icons.account_circle_outlined,
       ),
     ];
+    const labels = <String>['课程', '账号'];
 
     if (_floatingNavBar) {
-      // 悬浮版：cornerRadius 默认 50（胶囊），阴影由 shadowElevation 控制开关
+      // 悬浮版：cornerRadius 默认 50（胶囊），阴影由 shadowElevation 控制开关。
+      // defaultWindowInsetsPadding 置 false，底部间距由组件自身的 bottomPadding
+      // 负责，避免在 Positioned 里再叠一层安全区导致底栏被顶太高。
       return MiuixFloatingNavigationBar(
         defaultWindowInsetsPadding: false,
-        children: items,
+        children: [
+          for (var i = 0; i < labels.length; i++)
+            MiuixFloatingNavigationBarItem(
+              selected: _selectedIndex == i,
+              onPressed: () => _onNavTap(i),
+              icon: icons[i],
+              label: labels[i],
+            ),
+        ],
       );
     }
     // 贴边版：自带底部安全区内边距，故 defaultWindowInsetsPadding 保持默认 true
-    return MiuixNavigationBar(children: items);
+    return MiuixNavigationBar(
+      children: [
+        for (var i = 0; i < labels.length; i++)
+          MiuixNavigationBarItem(
+            selected: _selectedIndex == i,
+            onPressed: () => _onNavTap(i),
+            icon: icons[i],
+            label: labels[i],
+          ),
+      ],
+    );
   }
 
   /// 底栏点击统一入口（切页 + 通知课程页可见性变化）
