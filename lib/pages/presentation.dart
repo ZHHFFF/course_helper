@@ -498,7 +498,8 @@ class _PresentationPageState extends State<PresentationPage>
       if (!mounted) return;
 
       _autoSubmitted.add(problemId);
-      await _submitAnswer(auto: true);
+      // 用服务器发题时给的 ID（prob）提交，别用 PPT 里的 problemId
+      await _submitAnswer(auto: true, problemIdOverride: problemId);
       AppLogger.i('自动答题', '已自动提交题目 $problemId');
     } catch (e, st) {
       // unawaited() 会把异常吞掉，日志里什么都看不到 —— 必须自己兜住
@@ -2241,8 +2242,17 @@ class _PresentationPageState extends State<PresentationPage>
     }
   }
 
-  Future<void> _submitAnswer({bool auto = false}) async {
-    final problemId = _currentProblem?.problemId ?? _timelineProblemId;
+  /// 提交答案
+  ///
+  /// [problemIdOverride] 用于自动提交：直接传**服务器发题时给的 ID**（`prob`），
+  /// 而不是用 `_currentProblem.problemId`。
+  /// 两个字段名不同，万一值也不一样，用 PPT 里那个 ID 提交会被服务器拒。
+  Future<void> _submitAnswer({
+    bool auto = false,
+    String? problemIdOverride,
+  }) async {
+    final problemId =
+        problemIdOverride ?? _currentProblem?.problemId ?? _timelineProblemId;
     if (problemId == null) return;
 
     final problemType = _currentProblem?.problemType ?? 0;
