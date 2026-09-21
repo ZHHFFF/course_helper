@@ -1101,9 +1101,13 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   void _handleMessage(dynamic message) async {
+    // op 提到 try 外面：catch 里要用它。
+    // 之前异常只写 '解析消息失败：$e'，**不知道是哪条消息炸的** ——
+    // 上课排查时完全靠猜。现在带上 op，一眼能看出是 unlockproblem 还是别的。
+    String? op;
     try {
       final data = jsonDecode(message);
-      final op = data['op'];
+      op = data['op']?.toString();
 
       AppLogger.d('WebSocket', 'S2C：$message');
 
@@ -1301,9 +1305,12 @@ class _PresentationPageState extends State<PresentationPage>
           }
           break;
       }
-    } catch (e) {
-      AppLogger.e('WebSocket', '解析消息失败：$e');
-    }
+      } catch (e, st) {
+        AppLogger.e(
+          'WebSocket',
+          '处理消息失败 op=${op ?? "?"}：$e\n$st',
+        );
+      }
   }
 
   void _addTimelineEvents(List timeline) {
