@@ -134,8 +134,8 @@ class _PresentationPageState extends State<PresentationPage>
   /// 已经自动提交过的指纹（防重复提交）
   final Set<String> _autoSubmitted = {};
 
-  /// 正在自动提交中
-  bool _autoSubmitting = false;
+  /// 待自动提交的题目队列（串行处理，避免连发两题时丢掉后一道）
+  final List<String> _autoSubmitQueue = [];
 
   /// 当前作答区（[_answer] / [_textAnswer]）属于哪道题
   ///
@@ -340,10 +340,34 @@ class _PresentationPageState extends State<PresentationPage>
   /// 老师发布题目（unlockproblem）后，按设置决定是否自动提交
   ///
   /// 流程：定位题目所在页 → 切过去 → 确保答案已填 → 随机延迟 → 提交
+  /// 老师发布题目（unlockproblem）后，按设置决定是否自动提交
+  ///
+  /// 用队列串行处理：老师连着发两道题时，两个调用会同时进来。
+  /// 原来用一个 `_autoSubmitting` 布尔标记挡，结果是后来的那道题
+  /// 走到提交那一步发现「有人正在提交」就**直接丢掉**了。
+  /// 现在改成排队，前一道处理完接着处理下一道。
   Future<void> _maybeAutoSubmit(String problemId) async {
     await AutoAnswerSetting.ensureLoaded();
     if (!AutoAnswerSetting.autoSubmit.value) return;
-    if (_autoSubmitting) return;
+    if (_autoSubmitted.contains(problemId)) return;
+    if (_autoSubmitQueue.contains(problemId)) return;
+
+    _autoSubmitQueue.add(problemId);
+
+    // 已经有消费者在跑了 → 它会把这道题也处理掉，这里直接返回
+    if (_autoSubmitQueue.length > 1) return;
+
+    while (_autoSubmitQueue.isNotEmpty) {
+      if (!mounted) break;
+      final id = _autoSubmitQueue.removeAt(0);
+      await _doAutoSubmit(id);
+    }
+  }
+
+  /// 真正干活的：定位题目 → 切页 → 确保答案已填 → 延迟 → 提交
+  ///
+  /// 只由 [_maybeAutoSubmit] 的队列循环调用，保证同一时刻只有一道题在跑。
+  Future<void> _doAutoSubmit(String problemId) async {
     if (_autoSubmitted.contains(problemId)) return;
 
     final index = await _waitForProblemSlide(problemId);
@@ -389,9 +413,8 @@ class _PresentationPageState extends State<PresentationPage>
     final delay = AutoAnswerSetting.randomDelay();
     AppLogger.i('自动答题', '${delay.inMilliseconds}ms 后自动提交题目 $problemId');
     await Future<void>.delayed(delay);
-    if (!mounted || _autoSubmitting) return;
+    if (!mounted) return;
 
-    _autoSubmitting = true;
     _autoSubmitted.add(problemId);
     try {
       await _submitAnswer();
@@ -399,8 +422,6 @@ class _PresentationPageState extends State<PresentationPage>
     } catch (e) {
       AppLogger.e('自动答题', '自动提交失败：$e');
       _autoSubmitted.remove(problemId); // 失败了允许下次重试
-    } finally {
-      _autoSubmitting = false;
     }
   }
 
