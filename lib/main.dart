@@ -2,6 +2,9 @@ import'dart:ui' show PlatformDispatcher;
 import'package:flutter/material.dart';
 import'package:flutter_localizations/flutter_localizations.dart';
 // [移除] dynamic_color：已取消 Material You 动态取色，改为固定主题色 + 纯白/纯黑背景
+// [新增] flutter_miuix：HyperOS 设计语言（Miuix）组件库。
+// 用户已拍板「所有规范都按 miuix」，后续底栏与各页面逐步迁移到 Miuix 组件。
+import'package:flutter_miuix/miuix.dart';
 import'package:package_info_plus/package_info_plus.dart';
 import'package:url_launcher/url_launcher.dart';
 import'package:dio/dio.dart';
@@ -96,14 +99,28 @@ class MyApp extends StatelessWidget {
       theme: _buildLightTheme(),
       darkTheme: _buildDarkTheme(),
       themeMode: ThemeMode.system,
-      // [新增] 给所有页面的 SnackBar / 底部提示注入底栏高度的内边距。
+      // [改动] 用 MiuixTheme 包裹整棵树。
+      //
+      // 为什么必须包在最外层：MiuixTheme.of() 在上下文**未被包裹**时不会抛错，
+      // 而是**静默回退到浅色默认值**（MiuixThemeData.light()）。深色模式下会
+      // 表现为「界面莫名变白」且不报任何异常，极难排查。所以这里必须在
+      // MaterialApp 之外就包好，保证所有后代都拿得到正确主题。
+      //
+      // 注意：MiuixThemeData.of(context) 依赖 MediaQuery 判断明暗，
+      // 因此它要在 MaterialApp **内部**才能拿到正确的 platformBrightness，
+      // 但又必须包住 materialApp 的所有后代 —— 故放在 builder 里，
+      // 与 _GlassNavInsets 同层。
+      //
+      // 同时给所有页面的 SnackBar / 底部提示注入底栏高度的内边距。
       //
       // 背景：底栏是悬浮的，不占 Scaffold 的 bottomNavigationBar 槽位，
       // 所以各页面自己的 Scaffold 并不知道底下还压着一层底栏。
       // SnackBar 默认贴 Scaffold 底部 → 会被玻璃底栏盖住。
       // 这里统一给 MediaQuery 加上底部 padding，框架会据此把 SnackBar 抬高。
       builder: (context, child) {
-        return _GlassNavInsets(child: child);
+        return _MiuixScope(
+          child: _GlassNavInsets(child: child),
+        );
       },
       home: const MyHomePage(),
       routes: {
@@ -170,6 +187,32 @@ class MyApp extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
         ),
       ),
+    );
+  }
+}
+
+/// 把 Miuix 主题注入整棵子树。
+///
+/// 放在 `MaterialApp.builder` 里，好处是能拿到已由 `MaterialApp` 建立好的
+/// `MediaQuery`（含正确的 `platformBrightness`），从而让浅色/深色自动跟随系统。
+///
+/// ⚠️ 签名注意：`MiuixThemeData.of()` 的第一个参数是 `Brightness`（不是
+/// `BuildContext`），与 Flutter 里 `Theme.of(context)` 的习惯不同，别写错。
+///
+/// ⚠️ 关键坑：`MiuixTheme.of()` 在未包裹时**不报错**，而是静默返回
+/// `MiuixThemeData.light()`。若这里忘记包裹，深色模式下界面会莫名变浅色，
+/// 且没有任何异常提示。所以这个 wrapper 不允许被移除。
+class _MiuixScope extends StatelessWidget {
+  const _MiuixScope({required this.child});
+
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (child == null) return const SizedBox.shrink();
+    return MiuixTheme(
+      data: MiuixThemeData.of(MediaQuery.platformBrightnessOf(context)),
+      child: child!,
     );
   }
 }
