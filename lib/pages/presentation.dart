@@ -31,6 +31,7 @@ import '../setting/auto_answer_setting.dart';
 import '../utils/answer_filling.dart';
 import '../utils/app_logger.dart';
 import '../utils/network_error.dart';
+import '../utils/problem_publish.dart';
 import '../utils/ppt_exporter.dart';
 import '../utils/storage.dart';
 import 'widget/answer_search_dialog.dart';
@@ -660,26 +661,15 @@ class _PresentationPageState extends State<PresentationPage>
 
   /// 当前页的题是不是老师已经发布的 —— 决定「提交」按钮出不出现
   ///
-  /// 判断依据（任一成立）：
-  /// 1. **当前页在「已发布页」映射里** —— 最可靠，不依赖 ID 字符串比对
-  ///    （发题消息给的是 prob，PPT 里是 problemId，两套命名空间）
-  /// 2. 当前页题目的 problemId 直接在已发布集合里（prob == problemId 时成立）
-  /// 3. 时间轴上点开的那道题已发布（用户从时间轴进来的场景）
-  bool _isCurrentProblemPublished() {
-    if (_publishedSlideOf.containsKey(_currentSlideIndex)) return true;
-
-    final id = _currentProblem?.problemId;
-    if (id != null && id.isNotEmpty && _unlockedProblemIds.contains(id)) {
-      return true;
-    }
-
-    final t = _timelineProblemId;
-    if (t != null && t.isNotEmpty && _unlockedProblemIds.contains(t)) {
-      return true;
-    }
-
-    return false;
-  }
+  /// 具体判据在纯函数 [isCurrentProblemPublished] 里（有单测覆盖）。
+  /// 这里只负责把页面状态喂进去。
+  bool _isCurrentProblemPublished() => isCurrentProblemPublished(
+        currentSlideIndex: _currentSlideIndex,
+        publishedSlideOf: _publishedSlideOf,
+        currentProblemId: _currentProblem?.problemId,
+        publishedProbs: _unlockedProblemIds.toSet(),
+        timelineProblemId: _timelineProblemId,
+      );
 
   /// 当前页的答案是否已经填好
   bool _isAnswerFilled() {
