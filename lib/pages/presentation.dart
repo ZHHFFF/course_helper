@@ -144,20 +144,43 @@ class _PresentationPageState extends State<PresentationPage>
   static const Duration answerWait = Duration(seconds: 25);
 
   /// 当前作答区（[_answer] / [_textAnswer]）属于哪道题
-  ///
-  /// `_answer` 是单个字段、不分题目存，切题时必须清空，
-  /// 否则 A 题选完翻到 B 题，B 题会显示 A 的答案 ——
-  /// 自动提交就会把 A 的答案交到 B 上。
   String? _answerOwnerProblemId;
 
-  /// 切题时清空作答区（同一道题不重复清，免得把用户刚填的擦掉）
-  void _resetAnswerIfProblemChanged() {
-    final id = _currentProblem?.problemId;
-    if (id == _answerOwnerProblemId) return;
-    _answerOwnerProblemId = id;
-    _answer = null;
-    _textAnswer = null;
-    _uploadedImageUrls.clear();
+  /// 每道题各自的作答 —— 切页时按题存取，而不是一清了之
+  ///
+  /// `_answer` / `_textAnswer` 是单份字段，切题时必须换掉，
+  /// 否则 A 题选完翻到 B 题，B 题会显示 A 的答案（自动提交就会交串）。
+  /// 但**直接清空**又会把用户填好的答案弄丢 ——
+  /// 「填完翻页看一眼再翻回来，答案没了」。
+  /// 所以按 problemId 存一份，切回去能原样恢复。
+  final Map<String, List<String>> _answersByProblem = {};
+  final Map<String, String> _textAnswersByProblem = {};
+
+  /// 切题：先存下旧题的作答，再恢复新题的
+  void _syncAnswerOwner() {
+    final newId = _currentProblem?.problemId;
+    if (newId == _answerOwnerProblemId) return;
+
+    // 1. 把旧题的作答存起来
+    final oldId = _answerOwnerProblemId;
+    if (oldId != null) {
+      final a = _answer;
+      if (a != null && a.any((k) => k.trim().isNotEmpty)) {
+        _answersByProblem[oldId] = List<String>.of(a);
+      }
+      final t = _textAnswer;
+      if (t != null && t.trim().isNotEmpty) {
+        _textAnswersByProblem[oldId] = t;
+      }
+    }
+
+    // 2. 换成新题的作答（没有就清空）
+    _answerOwnerProblemId = newId;
+    _answer = newId == null ? null : _answersByProblem[newId]?.toList();
+    _textAnswer = newId == null ? null : _textAnswersByProblem[newId];
+    if (newId == null) {
+      _uploadedImageUrls.clear();
+    }
   }
 
   StreamSubscription<AnswerJobResult>? _answerSub;
@@ -258,10 +281,11 @@ class _PresentationPageState extends State<PresentationPage>
 
     // 判据是「作答区有没有内容」，不是「有没有自动填过」。
     //
-    // 因为切题时 `_resetAnswerIfProblemChanged()` 会清空 `_answer`：
+    // 因为切题时 `_syncAnswerOwner()` 会把 `_answer` 换成新题的值
+    // （旧题的存进 `_answersByProblem`，切回来能恢复）：
     // 如果用「填过就不再填」的标记，A→B→A 切回来时 A 会被误判成
-    // 已经处理过而不重新填，作答区就空着了。
-    // 而「有内容就不动」同时兼顾了「不覆盖用户手动修改」。
+    // 已经处理过而不重新填。而「有内容就不动」同时兼顾了
+    // 「不覆盖用户手动修改」。
     if (_isAnswerFilled()) return;
 
     final cached = _suggested[hash];
@@ -1012,7 +1036,7 @@ class _PresentationPageState extends State<PresentationPage>
         if (targetIndex < _slides.length) {
           _currentProblem = _slides[targetIndex]['problem'];
         }
-        _resetAnswerIfProblemChanged();
+        _syncAnswerOwner();
         _refreshCurrentHash();
     });
 
@@ -1613,7 +1637,7 @@ class _PresentationPageState extends State<PresentationPage>
             setState(() {
               _currentSlideIndex = index;
               _currentProblem = _slides[index]['problem'];
-              _resetAnswerIfProblemChanged();
+              _syncAnswerOwner();
               // 注意：这里**不**动 _currentLessonSlideIndex ——
               // 用户手动翻页就表示脱离了老师那页，按钮才会出现
               _refreshCurrentHash();
@@ -1799,7 +1823,7 @@ class _PresentationPageState extends State<PresentationPage>
                               setState(() {
                                 _currentSlideIndex = index;
                                 _currentProblem = _slides[index]['problem'];
-                                _resetAnswerIfProblemChanged();
+                                _syncAnswerOwner();
                                 // 同全屏视图：手动翻页不改变老师所在页
                                 _refreshCurrentHash();
                               });
