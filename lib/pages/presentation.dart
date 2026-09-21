@@ -588,18 +588,26 @@ class _PresentationPageState extends State<PresentationPage>
       if (i < tries - 1) await Future<void>.delayed(interval);
     }
 
-    // 找不到就把两边都打出来：是「ID 对不上」还是「题目真不在这份 PPT 里」，
-    // 一眼能分出来。（发题消息里字段叫 prob，PPT 里叫 problemId，
-    // 万一不是同一个值，这条日志能直接证明）
-    final available = <String>[];
+    // 找不到就把三方都打出来：
+    //   1. 发题消息给的 ID
+    //   2. PPT 里各页题目的 problemId
+    //   3. 时间轴里各事件的 problemId + si
+    // 这样能一眼分清是「ID 对不上」还是「题目确实不在这份 PPT 里」，
+    // 也能看出时间轴里到底有没有刚发的这道题（兜底方案的前提）。
+    final slides = <String>[];
     for (var i = 0; i < _slideModels.length; i++) {
       final id = _slideModels[i].problem?.problemId;
-      if (id != null && id.isNotEmpty) available.add('${i + 1}页:$id');
+      if (id != null && id.isNotEmpty) slides.add('${i + 1}页:$id');
     }
+    final timeline = _timeline
+        .where((e) => e.problemId != null && e.problemId!.isNotEmpty)
+        .map((e) => 'si=${e.slideIndex}:${e.problemId}')
+        .toList();
     AppLogger.w(
       '自动答题',
-      '找不到题目 $problemId｜PPT 共 ${_slideModels.length} 页，'
-          '其中带题目的页=[${available.isEmpty ? "无" : available.join("，")}]',
+      '找不到题目 $problemId\n'
+          '  PPT（${_slideModels.length} 页）里的题目=[${slides.isEmpty ? "无" : slides.join("，")}]\n'
+          '  时间轴里的题目=[${timeline.isEmpty ? "无" : timeline.join("，")}]',
     );
     return -1;
   }
