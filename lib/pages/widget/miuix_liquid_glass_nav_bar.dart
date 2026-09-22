@@ -643,10 +643,14 @@ class _MiuixLiquidGlassNavigationBarState
                 decoration: BoxDecoration(
                   borderRadius: borderRadius,
                   border: Border.all(color: rim.color, width: rim.width),
-                  // 按下高光：深色底用白、浅色底用黑，透明度随弹簧抬升
+                  // 按下高光：深色底用白、浅色底用黑。
+                  // alpha 逐值对齐 Miuix 原版 `MiuixGlassNavigationBar`：
+                  //   neutral.withValues(alpha: dark ? .12 : .06)   ← 静止
+                  //   neutral.withValues(alpha: dark ? .26 : .16)   ← 按下
+                  // 这里写成 base + delta * t 的形式，由弹簧 t 驱动过渡。
                   color: (dark ? Colors.white : Colors.black).withValues(
                     alpha:
-                        ((dark ? .09 : .04) + (dark ? .12 : .05) * t) *
+                        ((dark ? .12 : .06) + (dark ? .14 : .10) * t) *
                         widget.alpha,
                   ),
                 ),
