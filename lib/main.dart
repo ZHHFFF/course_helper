@@ -124,13 +124,35 @@ class MyApp extends StatelessWidget {
       // 背景：底栏是悬浮的，不占 Scaffold 的 bottomNavigationBar 槽位，
       // 所以各页面自己的 Scaffold 并不知道底下还压着一层底栏。
       // SnackBar 默认贴 Scaffold 底部 → 会被玻璃底栏盖住。
-      // 这里统一给 MediaQuery 加上底部 padding，框架会据此把 SnackBar 抬高。
+      // 给 MediaQuery 加上底部 padding，框架就会据此把 SnackBar 抬高。
+      //
+      // ⚠️⚠️ 这段补偿**只能在 `MyHomePage` 里做**，绝不能放在 `builder` 里全局生效。
+      // 曾经就是放在这里（MaterialApp.builder 会包住整个 Navigator），
+      // 后果是**每一个二级页**（登录页 / 日志页 / 各设置页……）的
+      // `MediaQuery.padding.bottom` 都被凭空加了 `glassNavBarOccupiedHeight`。
+      // 而那些页面根本没有底栏（push 出来的路由会盖住它），于是：
+      //   - 它们自己的 `SafeArea` 底部会多出 ~76dp 空白
+      //   - 它们底部的 SnackBar 会凭空悬高 76dp
+      //   - 它们自己铺的底栏（如日志页的操作条）会飘在屏幕中间
+      // 所以补偿下沉到 `MyHomePage`，只影响真正有底栏的那一层。
       builder: (context, child) {
-        return _MiuixScope(
-          child: _GlassNavInsets(child: child),
-        );
+        return _MiuixScope(child: child);
       },
-      home: const MyHomePage(),
+      // ⚠️⚠️ 底栏补偿**只能挂在 `home:` 上**，绝不能放进 `builder:` 里全局生效。
+      //
+      // `_GlassNavInsets` 给 `MediaQuery.padding.bottom` 加
+      // `glassNavBarOccupiedHeight`，目的是让首页 Scaffold 渲染的 SnackBar
+      // 不被悬浮玻璃底栏盖住。但 `MaterialApp.builder` 包住的是**整个 Navigator**，
+      // 放在那里会连所有 push 出来的二级页（登录页 / 日志页 / 各设置页……）
+      // 一起污染。而那些页面根本没有底栏（push 出来的路由会盖住它），于是：
+      //   - 它们自己的 `SafeArea` 底部凭空多出 ~76dp 空白
+      //   - 它们底部的 SnackBar 凭空悬高 76dp
+      //   - 它们自己铺的底栏（如日志页的操作条）会飘在屏幕中间
+      //
+      // 挂在 `home:` 上则只作用于**首页这一个路由**：push 出来的路由是
+      // Navigator overlay 里的**兄弟节点**而非 `home` 的后代，拿不到这层 MediaQuery，
+      // 天然免疫。这正是我们要的「只补偿真正有底栏的那一层」。
+      home: const _GlassNavInsets(child: MyHomePage()),
       routes: {
         '/accounts': (context) => const AccountsPage(),
         '/login': (context) => const LoginPage(),
