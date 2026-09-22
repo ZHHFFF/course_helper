@@ -5,8 +5,6 @@
 > 本分支在原项目基础上新增了 **AI 答题、PPT 整份缓存、导出 PDF、自动预选与自动提交**等能力，
 > 详见下方「功能」与「AI 答题」两节。
 >
-> 开发者：[makisekurse](https://github.com/makisekurse) & [ZHHFFF](https://github.com/ZHHFFF)
-
 |账号管理|课程列表|课程设置|签到功能|
 |---|---|---|---|
 | ![账号管理](images/screenshot/accounts.jpg) | ![课程列表](images/screenshot/courses.jpg) | ![课程设置](images/screenshot/course_setting.jpg) | ![签到功能](images/screenshot/sign_in.jpg) |
