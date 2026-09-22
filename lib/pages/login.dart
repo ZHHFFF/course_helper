@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+// [新增] Miuix：整页按「所有规范都按 miuix」迁移
+import 'package:flutter_miuix/miuix.dart';
 import 'package:flutter_tencent_captcha/flutter_tencent_captcha.dart';
 import 'dart:async';
 
@@ -9,7 +11,17 @@ import '../utils/encrypt.dart';
 import '../platform.dart';
 
 /// 登录成功处理
-Future<bool> handleLoginSuccess(BuildContext context) async {
+///
+/// ⚠️ 必须由调用方把 `MiuixSnackbarHostState` 传进来，不能用
+/// `ScaffoldMessenger`。本仓库的页面都换成了 `MiuixScaffold`，而
+/// `MiuixScaffold` **不是** Material 的 `Scaffold` ——
+/// `ScaffoldMessenger.of(context)` 会一路找到 `MaterialApp` 的根 messenger，
+/// 再挂到 `MyHomePage` 那一层 Material `Scaffold` 上。在账号页（Tab 页）
+/// 的后果是提示显示在玻璃底栏**下面**、被底栏盖住。
+Future<bool> handleLoginSuccess(
+  BuildContext context, {
+  required MiuixSnackbarHostState snackbarHost,
+}) async {
   try {
     late User? user;
     if (PlatformManager().isChaoxing) {
@@ -18,28 +30,16 @@ Future<bool> handleLoginSuccess(BuildContext context) async {
       user = await RCLoginApi(User.empty).getUserInfo();
     }
     if (user == null) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('获取用户信息失败')),
-        );
-      }
+      if (context.mounted) snackbarHost.showSnackbar('获取用户信息失败');
       return false;
     }
 
     await AccountManager.addAccount(user);
 
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${user.name} 登录成功')),
-      );
-    }
+    if (context.mounted) snackbarHost.showSnackbar('${user.name} 登录成功');
     return true;
   } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('登录处理失败')),
-      );
-    }
+    if (context.mounted) snackbarHost.showSnackbar('登录处理失败');
     return false;
   }
 }
@@ -206,6 +206,17 @@ class _LoginPageState extends State<LoginPage> {
   String _currentLoginType = '1'; // '1'密码登录，'2'验证码登录，'3'二维码登录
   Timer? _countdownTimer;
   int _countdownSeconds = 0;
+
+  /// Miuix 的 Snackbar 走「host + state」模型，不是 `ScaffoldMessenger`。
+  final MiuixSnackbarHostState _snackbarHost = MiuixSnackbarHostState();
+
+  /// 顶栏滚动折叠行为。必须**只创建一次**（它持有折叠进度，
+  /// 在 `build()` 里 new 会导致折叠状态每帧被重置）。
+  late final MiuixExitUntilCollapsedScrollBehavior _topBarBehavior =
+      miuixScrollBehavior();
+
+  /// 内容顶部留白（= 顶栏**展开态**高度），只记最大值、不跟随折叠回缩。
+  double _topBarInset = 0;
   
   // 腾讯验证码参数
   String? _ticket;
@@ -234,6 +245,7 @@ class _LoginPageState extends State<LoginPage> {
     _captchaController.dispose();
     _countdownTimer?.cancel();
     _captchaFocusNode.dispose();
+    _snackbarHost.dispose();
     super.dispose();
   }
 
@@ -244,9 +256,7 @@ class _LoginPageState extends State<LoginPage> {
     final initialized = await qrState.initialize();
     if (!initialized) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('获取二维码失败')),
-        );
+        _snackbarHost.showSnackbar('获取二维码失败');
       }
       qrState.dispose();
       return;
@@ -254,7 +264,7 @@ class _LoginPageState extends State<LoginPage> {
 
     qrState.startPolling((bool success) async {
       if (success) {
-        final loginSuccess = await handleLoginSuccess(context);
+        final loginSuccess = await handleLoginSuccess(context, snackbarHost: _snackbarHost);
         if (loginSuccess && mounted) {
           Navigator.pop(context, true);
         }
@@ -280,91 +290,7 @@ class _LoginPageState extends State<LoginPage> {
                   qrState.dispose();
                 }
               },
-              child: AlertDialog(
-                title: const Text('二维码登录'),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 220,
-                      height: 220,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.grey.withValues(alpha: 0.1),
-                            spreadRadius: 2,
-                            blurRadius: 8,
-                            offset: const Offset(0, 3),
-                          ),
-                        ],
-                      ),
-                      child: qrState.qrImageUrl != null
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Image.network(
-                                qrState.qrImageUrl!,
-                                fit: BoxFit.contain,
-                              ),
-                            )
-                          : qrState.isLoading
-                          ? const Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  CircularProgressIndicator(),
-                                  SizedBox(height: 8),
-                                  Text(
-                                    '生成中...',
-                                    style: TextStyle(fontSize: 12),
-                                  ),
-                                ],
-                              ),
-                            )
-                          : const Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.error_outline,
-                                    size: 48,
-                                    color: Colors.grey,
-                                  ),
-                                  SizedBox(height: 8),
-                                  Text(
-                                    '二维码加载失败',
-                                    style: TextStyle(color: Colors.grey),
-                                  ),
-                                ],
-                              ),
-                            ),
-                    ),
-                    const SizedBox(height: 20),
-                    const Text(
-                      '请使用学习通APP扫描上方二维码进行登录',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      '二维码失效时会自动刷新',
-                      style: TextStyle(color: Colors.grey, fontSize: 12),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () {
-                      qrState.isLoginActive = false;
-                      qrState.dispose();
-                      Navigator.pop(context);
-                    },
-                    child: const Text('取消'),
-                  ),
-                ],
-              ),
+              child: _wrapDialogPanel(_buildQrDialogPanel(qrState)),
             );
           },
         );
@@ -378,7 +304,12 @@ class _LoginPageState extends State<LoginPage> {
   Future<bool?> _showTencentCaptcha() async {
     final config = TencentCaptchaConfig(
       bizState: 'tencent-captcha',
-      enableDarkMode: Theme.of(context).brightness == Brightness.dark
+      // 用 `platformBrightnessOf` 而不是 `Theme.of(context).brightness`：
+      // 后者读的是 MaterialApp 的主题，而本页已经换成 Miuix 体系，
+      // 用平台亮度才能保证与 `MiuixTheme` 的明暗判断完全一致
+      // （`MiuixTheme` 内部也是读它）。
+      enableDarkMode:
+          MediaQuery.platformBrightnessOf(context) == Brightness.dark,
     );
 
     try {
@@ -400,9 +331,7 @@ class _LoginPageState extends State<LoginPage> {
         },
         onFail: (data) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('验证失败：${data['errorMessage']}')),
-            );
+            _snackbarHost.showSnackbar('验证失败：${data['errorMessage']}');
           }
           completer.complete(false);
         },
@@ -411,9 +340,7 @@ class _LoginPageState extends State<LoginPage> {
       return completer.future;
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('验证异常：$e')),
-        );
+        _snackbarHost.showSnackbar('验证异常：$e');
       }
       return false;
     }
@@ -441,16 +368,14 @@ class _LoginPageState extends State<LoginPage> {
               await _showSecurityVerificationDialog();
             }
   
-            final success = await handleLoginSuccess(context);
+            final success = await handleLoginSuccess(context, snackbarHost: _snackbarHost);
             if (success && mounted) {
               Navigator.pop(context, true);
             }
           } else {
             String errorMessage = result?['mes'] ?? '登录失败，请检查账号密码';
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(errorMessage)),
-              );
+              _snackbarHost.showSnackbar(errorMessage);
             }
           }
         } else {
@@ -463,9 +388,7 @@ class _LoginPageState extends State<LoginPage> {
         
             if (verifyResult == null || verifyResult['code'] != 0) {
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(verifyResult?['msg'] ?? '验证码验证失败')),
-                );
+                _snackbarHost.showSnackbar(verifyResult?['msg'] ?? '验证码验证失败');
               }
               return;
             }
@@ -496,7 +419,7 @@ class _LoginPageState extends State<LoginPage> {
           late String errorMessage;
           if (result != null) {
             if (result['code'] == 0) {
-              final success = await handleLoginSuccess(context);
+              final success = await handleLoginSuccess(context, snackbarHost: _snackbarHost);
               if (success && mounted) {
                 Navigator.pop(context, true);
               }
@@ -508,16 +431,12 @@ class _LoginPageState extends State<LoginPage> {
             errorMessage = '登录失败，请检查账号密码';
           }
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(errorMessage)),
-            );
+            _snackbarHost.showSnackbar(errorMessage);
           }
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('登录时发生错误：$e')),
-          );
+          _snackbarHost.showSnackbar('登录时发生错误：$e');
         }
       } finally {
         if (mounted) {
@@ -533,9 +452,7 @@ class _LoginPageState extends State<LoginPage> {
     String phone = _usernameController.text.trim();
     if (phone.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请输入手机号')),
-        );
+        _snackbarHost.showSnackbar('请输入手机号');
       }
       return;
     }
@@ -549,9 +466,7 @@ class _LoginPageState extends State<LoginPage> {
   
       if (_ticket == null || _randstr == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('验证码验证失败，请重试')),
-          );
+          _snackbarHost.showSnackbar('验证码验证失败，请重试');
         }
         return;
       }
@@ -569,9 +484,7 @@ class _LoginPageState extends State<LoginPage> {
           
         if (result == null) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('发送验证码失败，请重试')),
-            );
+            _snackbarHost.showSnackbar('发送验证码失败，请重试');
           }
           return;
         }
@@ -581,18 +494,14 @@ class _LoginPageState extends State<LoginPage> {
           if (mounted) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('验证码已发送')),
-                );
+                _snackbarHost.showSnackbar('验证码已发送');
               }
             });
           }
         } else {
           final message = result['mes'] ?? '发送验证码失败';
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(message)),
-            );
+            _snackbarHost.showSnackbar(message);
           }
         }
       } else {
@@ -600,9 +509,7 @@ class _LoginPageState extends State<LoginPage> {
           
         if (result == null) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('发送验证码失败，请重试')),
-            );
+            _snackbarHost.showSnackbar('发送验证码失败，请重试');
           }
           return;
         }
@@ -612,26 +519,20 @@ class _LoginPageState extends State<LoginPage> {
           if (mounted) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('验证码已发送')),
-                );
+                _snackbarHost.showSnackbar('验证码已发送');
               }
             });
           }
         } else {
           final message = result['msg'] ?? '发送验证码失败';
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(message)),
-            );
+            _snackbarHost.showSnackbar(message);
           }
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('发送验证码时发生错误：$e')),
-        );
+        _snackbarHost.showSnackbar('发送验证码时发生错误：$e');
       }
     } finally {
       if (mounted) {
@@ -660,213 +561,383 @@ class _LoginPageState extends State<LoginPage> {
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('安全验证'),
-          content: const Text('新设备登录需要安全验证，请使用验证码登录'),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              child: const Text('取消'),
+        return _wrapDialogPanel(
+          MiuixSurface(
+            color: MiuixTheme.of(context).colors.surfaceContainer,
+            cornerRadius: 32,
+            shadowElevation: 8,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  MiuixText(
+                    '安全验证',
+                    fontSize: MiuixTheme.of(context).textStyles.title4.fontSize,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  const SizedBox(height: 12),
+                  MiuixText('新设备登录需要安全验证，请使用验证码登录', fontSize: 14),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      MiuixTextButton(
+                        '取消',
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                      const SizedBox(width: 12),
+                      MiuixButton(
+                        // `MiuixButton` 默认取 `buttonColors`（次级色），
+                        // 对话框的确认键要用主色
+                        colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          setState(() {
+                            _currentLoginType = '2';
+                          });
+                        },
+                        child: const MiuixText('确定'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                setState(() {
-                  _currentLoginType = '2';
-                });
-              },
-              child: const Text('确定'),
-            ),
-          ],
+          ),
         );
       },
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      appBar: AppBar(
-        title: Text(_currentLoginType == '1'
-            ? '密码登录'
-            : _currentLoginType == '2'
-            ? '验证码登录'
-            : '二维码登录'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
-        elevation: 0,
+  // ---------------------------------------------------------------------------
+  // Miuix 迁移新增的辅助方法
+  // ---------------------------------------------------------------------------
+
+  /// 把面板包成「居中 + 限宽」的弹窗。
+  ///
+  /// ⚠️ 必须自己包 `Center` + 限宽。本仓库 Flutter 版本的
+  /// `DialogRoute.pageBuilder` 只做了 `SafeArea(Semantics(child: builder 结果))`，
+  /// **既没有 `Align` 也没有 `ConstrainedBox`** —— 路由页把整屏的**紧约束**
+  /// 直接交给返回值，`Column(mainAxisSize: MainAxisSize.min)` 在紧约束下形同虚设，
+  /// 面板会铺满整屏（实测整屏 `#242424`）。Material 的 `Dialog` 组件内部才做了
+  /// `Center` + 限宽，所以换成自绘面板就必须自己补这一层。
+  Widget _wrapDialogPanel(Widget panel) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 280, maxWidth: 300),
+        child: panel,
       ),
-      body: SingleChildScrollView(
-        child: Container(
-          padding: const EdgeInsets.all(24.0),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+    );
+  }
+
+  /// 二维码登录弹窗的面板（Miuix 自绘）。
+  Widget _buildQrDialogPanel(QRCodeLoginState qrState) {
+    final colors = MiuixTheme.of(context).colors;
+    final textStyles = MiuixTheme.of(context).textStyles;
+    return MiuixSurface(
+      // 弹窗面板用 `surfaceContainer`（深色 #242424），与 `MiuixOverlayDialog`
+      // 的默认底色一致；`MiuixSurface` 自己的默认是 `surface`（深色纯黑），
+      // 贴在黑色遮罩上会糊成一片、看不出面板边界。
+      color: colors.surfaceContainer,
+      cornerRadius: 32,
+      shadowElevation: 8,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MiuixText(
+              '二维码登录',
+              fontSize: textStyles.title4.fontSize,
+              fontWeight: FontWeight.w600,
+            ),
+            const SizedBox(height: 20),
+            Container(
+              width: 220,
+              height: 220,
+              decoration: BoxDecoration(
+                // ⚠️ 必须是**白底**，不能跟主题走：
+                // 二维码是黑白位图，深色底上扫不出来。
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: qrState.qrImageUrl != null
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.network(
+                        qrState.qrImageUrl!,
+                        fit: BoxFit.contain,
+                      ),
+                    )
+                  : qrState.isLoading
+                  ? const Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          MiuixCircularProgressIndicator(
+                            size: 24,
+                            strokeWidth: 3,
+                          ),
+                          SizedBox(height: 8),
+                          // 白底上的文字用固定深色，不跟主题
+                          MiuixText(
+                            '生成中...',
+                            fontSize: 12,
+                            color: Colors.black54,
+                          ),
+                        ],
+                      ),
+                    )
+                  : const Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.error_outline,
+                            size: 48,
+                            color: Colors.black38,
+                          ),
+                          SizedBox(height: 8),
+                          MiuixText(
+                            '二维码加载失败',
+                            fontSize: 12,
+                            color: Colors.black54,
+                          ),
+                        ],
+                      ),
+                    ),
+            ),
+            const SizedBox(height: 20),
+            MiuixText(
+              '请使用学习通APP扫描上方二维码进行登录',
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            MiuixText(
+              '二维码失效时会自动刷新',
+              fontSize: 12,
+              color: colors.onSurfaceVariantSummary,
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: MiuixTextButton(
+                '取消',
+                onPressed: () {
+                  qrState.isLoginActive = false;
+                  qrState.dispose();
+                  Navigator.pop(context);
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 输入框下方的错误提示。
+  ///
+  /// `MiuixTextField` **没有** `errorText`，错误文案得自己画。
+  Widget _buildFieldError(String message, MiuixColors colors) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, top: 6),
+      child: MiuixText(message, fontSize: 12, color: colors.error),
+    );
+  }
+
+  /// 账号输入框。
+  ///
+  /// ⚠️ `MiuixTextField` **没有** `validator` / `errorText`，所以外面套一层
+  /// `FormField<String>` 把校验接回来：`validator` 直接读 controller，
+  /// `_formKey.currentState!.validate()` 的语义与原来的 `TextFormField` 完全一致，
+  /// 错误文案交给 `_buildFieldError` 画在输入框下方。
+  ///
+  /// 注：原来 `InputDecoration` 里的 `hintText`（「手机号/超星号」）没有对应组件 ——
+  /// Miuix 的输入框只有 `label`，且 `useLabelAsPlaceholder: false`（默认）时
+  /// 就是「空态贴内、有内容时上浮」的浮动标签，与 Material `labelText` 行为一致，
+  /// 信息量与 hint 重复，故不再单独保留。
+  Widget _buildAccountField(MiuixColors colors) {
+    return FormField<String>(
+      validator: (_) => _usernameController.text.isEmpty ? '请输入账号' : null,
+      builder: (field) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          MiuixTextField(
+            controller: _usernameController,
+            keyboardType: TextInputType.number,
+            autofocus: true,
+            label: '账号',
+          ),
+          if (field.hasError) _buildFieldError(field.errorText!, colors),
+        ],
+      ),
+    );
+  }
+
+  /// 密码输入框（含显隐切换）。
+  Widget _buildPasswordField(MiuixColors colors) {
+    return FormField<String>(
+      validator: (_) => _passwordController.text.isEmpty ? '请输入密码' : null,
+      builder: (field) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          MiuixTextField(
+            controller: _passwordController,
+            label: '密码',
+            obscureText: !_showPassword,
+            // ⚠️ `MiuixTextField.trailingIcon` 只是被放进 Row 的普通 Widget，
+            // 不接管手势。这里放 `MiuixIconButton`（自带 `MiuixPressable`），
+            // 它与输入框是**兄弟**关系且绘制在上层，命中测试时先入手势竞技场
+            // → 点击能正常落到按钮上。
+            trailingIcon: MiuixIconButton(
+              onPressed: () => setState(() => _showPassword = !_showPassword),
+              child: Icon(
+                _showPassword ? Icons.visibility : Icons.visibility_off,
+              ),
+            ),
+          ),
+          if (field.hasError) _buildFieldError(field.errorText!, colors),
+        ],
+      ),
+    );
+  }
+
+  /// 验证码输入框 + 「获取验证码」按钮。
+  Widget _buildCaptchaRow(MiuixColors colors) {
+    final canSend = _countdownSeconds == 0 && !_isLoading;
+    return Row(
+      children: [
+        Expanded(
+          flex: 3,
+          child: FormField<String>(
+            validator: (_) =>
+                _captchaController.text.isEmpty ? '请输入验证码' : null,
+            builder: (field) => Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: TextFormField(
-                    controller: _usernameController,
-                    keyboardType: TextInputType.number,
-                    autofocus: true,
-                    decoration: InputDecoration(
-                      labelText: '账号',
-                      hintText: PlatformManager().isChaoxing ? '手机号/超星号' : '手机号/邮箱',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                        borderSide: BorderSide(
-                          color: Theme.of(context).colorScheme.primary,
-                          width: 2,
-                        ),
-                      ),
-                    ),
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return '请输入账号';
-                      }
-                      return null;
-                    },
-                  ),
+                MiuixTextField(
+                  controller: _captchaController,
+                  focusNode: _captchaFocusNode,
+                  keyboardType: TextInputType.number,
+                  label: '验证码',
                 ),
-                Container(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: _currentLoginType == '1'
-                      ? TextFormField(
-                    controller: _passwordController,
-                    obscureText: !_showPassword,
-                    decoration: InputDecoration(
-                      labelText: '密码',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                        borderSide: BorderSide(
-                          color: Theme.of(context).colorScheme.primary,
-                          width: 2,
-                        ),
-                      ),
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _showPassword ? Icons.visibility : Icons.visibility_off,
-                        ),
-                        onPressed: () {
-                          setState(() {
-                            _showPassword = !_showPassword;
-                          });
-                        },
-                      ),
-                    ),
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return '请输入密码';
-                      }
-                      return null;
-                    },
-                  )
-                      : Row(
-                    children: [
-                      Expanded(
-                        flex: 3,
-                        child: TextFormField(
-                          controller: _captchaController,
-                          focusNode: _captchaFocusNode,
-                          keyboardType: TextInputType.number,
-                          autofillHints: [AutofillHints.oneTimeCode],
-                          decoration: InputDecoration(
-                            labelText: '验证码',
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                              borderSide: BorderSide(
-                                color: Theme.of(context).colorScheme.primary,
-                                width: 2,
-                              ),
-                            ),
-                          ),
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return '请输入验证码';
-                            }
-                            return null;
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        flex: 2,
-                        child: ElevatedButton(
-                          onPressed: () {
-                            if (_countdownSeconds == 0 && !_isLoading) {
-                              _sendCaptcha();
-                              FocusScope.of(context).requestFocus(_captchaFocusNode);
-                            }
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _countdownSeconds > 0 ?
-                            Colors.grey : Theme.of(context).colorScheme.primary,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                          ),
-                          child: Text(
-                            _countdownSeconds > 0 ?
-                            '${_countdownSeconds}s' : '获取验证码',
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                _isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : Container(
-                  height: 50,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: ElevatedButton(
-                    onPressed: _isLoading
-                        ? null
-                        : _currentLoginType == '3'
-                        ? _showQRCodeLogin
-                        : _login,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Theme.of(context).colorScheme.primary,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      //padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                    child: Text(
-                      _currentLoginType == '1'
-                          ? '登录'
-                          : _currentLoginType == '2'
-                          ? '验证码登录'
-                          : '二维码登录',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ),
+                if (field.hasError) _buildFieldError(field.errorText!, colors),
               ],
             ),
           ),
         ),
+        const SizedBox(width: 12),
+        Expanded(
+          flex: 2,
+          child: MiuixButton(
+            // 倒计时中 / 加载中都点不动。传 `null` 让 `MiuixButton` 自己走
+            // 禁用态配色（`disabledPrimaryButton` / `disabledOnPrimaryButton`），
+            // 比原来手写「颜色变灰但按钮仍可点」更符合 Miuix 规范。
+            onPressed: canSend
+                ? () {
+                    _sendCaptcha();
+                    FocusScope.of(context).requestFocus(_captchaFocusNode);
+                  }
+                : null,
+            colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+            child: MiuixText(
+              _countdownSeconds > 0 ? '${_countdownSeconds}s' : '获取验证码',
+              fontSize: 14,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = MiuixTheme.of(context).colors;
+    final title = _currentLoginType == '1'
+        ? '密码登录'
+        : _currentLoginType == '2'
+        ? '验证码登录'
+        : '二维码登录';
+
+    return MiuixScaffold(
+      topBar: MiuixTopAppBar(
+        title: title,
+        largeTitle: title,
+        blurred: true,
+        scrollBehavior: _topBarBehavior,
+        // ⚠️ `MiuixTopAppBar` **没有** `onBack`，返回键要用 `navigationIcon`。
+        // 原来的 Material `AppBar` 靠 `automaticallyImplyLeading` 自动加返回键。
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
       ),
+      snackbarHost: MiuixSnackbarHost(
+        state: _snackbarHost,
+        blurSigma: 30,
+        blurBackgroundAlpha: 0.55,
+      ),
+      content: (contentPadding) {
+        // 只记最大高度，不跟随折叠回缩 —— 原因见 `_topBarInset` 的注释
+        if (contentPadding.top > _topBarInset) {
+          _topBarInset = contentPadding.top;
+        }
+        return MiuixScrollBehaviorListener(
+          behavior: _topBarBehavior,
+          child: SingleChildScrollView(
+            // 顶部让开顶栏、底部让开安全区，都由脚手架算好
+            padding: EdgeInsets.fromLTRB(
+              24,
+              _topBarInset + 16,
+              24,
+              contentPadding.bottom + 24,
+            ),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildAccountField(colors),
+                  const SizedBox(height: 16),
+                  if (_currentLoginType == '1')
+                    _buildPasswordField(colors)
+                  else
+                    _buildCaptchaRow(colors),
+                  const SizedBox(height: 24),
+                  if (_isLoading)
+                    const Center(child: MiuixCircularProgressIndicator())
+                  else
+                    SizedBox(
+                      height: 50,
+                      child: MiuixButton(
+                        // 原来的 `ElevatedButton` 是主色底，`MiuixButton` 默认
+                        // 走次级色，所以这里必须显式给 `buttonColorsPrimary`
+                        colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                        onPressed: _currentLoginType == '3'
+                            ? _showQRCodeLogin
+                            : _login,
+                        child: MiuixText(
+                          _currentLoginType == '1'
+                              ? '登录'
+                              : _currentLoginType == '2'
+                              ? '验证码登录'
+                              : '二维码登录',
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
