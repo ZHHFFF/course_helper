@@ -13,8 +13,8 @@ import '../../models/course.dart';
 import '../../models/active.dart';
 import '../widget/scan.dart';
 import '../widget/avatar.dart';
-// [新增] 悬浮玻璃底栏的底部留白高度
-import '../widget/liquid_glass_nav_bar.dart';
+// [新增] 悬浮玻璃底栏的底部占位高度（几何常量模块）
+import '../widget/miuix_nav_metrics.dart';
 // [新增] 底栏「悬浮 / 贴边」形态（脚手架要按它算底部占位）
 import '../../setting/navbar_setting.dart';
 import '../actives/sign_in/sign_in.dart';

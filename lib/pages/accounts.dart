@@ -16,8 +16,8 @@ import 'settings/appearance.dart';
 import 'widget/log_viewer.dart';
 import 'widget/cache_manager.dart';
 import 'widget/keep_alive_checker.dart';
-// [新增] 悬浮玻璃底栏的底部留白高度
-import 'widget/liquid_glass_nav_bar.dart';
+// [新增] 悬浮玻璃底栏的底部占位高度（几何常量模块）
+import 'widget/miuix_nav_metrics.dart';
 import '../setting/navbar_setting.dart';
 import 'login.dart';
 

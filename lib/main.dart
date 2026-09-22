@@ -12,10 +12,10 @@ import'package:dio/dio.dart';
 import'./pages/accounts.dart';
 import'./pages/courses/list.dart';
 import'./pages/login.dart';
-// [新增] 液态玻璃底栏（方案 A：悬浮胶囊 + 真实模糊）
-// 注：该文件仍被 accounts.dart / courses/list.dart 的 glassNavBarClearance() 使用，
-// 待全页面迁移到 Miuix 后再整体清理。
-import'./pages/widget/liquid_glass_nav_bar.dart';
+// [新增] Miuix 玻璃底栏的几何契约（占位高度 / 页面留白）
+// 注：底栏本体就在本文件（`MiuixGlassNavigationBar`），这里只是把「它占掉多少
+// 高度」这个跨文件共享的数据引进来。原先同名的自研底栏组件已整体删除。
+import'./pages/widget/miuix_nav_metrics.dart';
 // [新增] 底栏外观设置（悬浮 / 贴边）
 import'./setting/navbar_setting.dart';
 import'./api/api_service.dart';
@@ -129,7 +129,7 @@ class MyApp extends StatelessWidget {
       // ⚠️⚠️ 这段补偿**只能在 `MyHomePage` 里做**，绝不能放在 `builder` 里全局生效。
       // 曾经就是放在这里（MaterialApp.builder 会包住整个 Navigator），
       // 后果是**每一个二级页**（登录页 / 日志页 / 各设置页……）的
-      // `MediaQuery.padding.bottom` 都被凭空加了 `glassNavBarOccupiedHeight`。
+      // `MediaQuery.padding.bottom` 都被凭空加了 `miuixNavBarOccupiedHeight`。
       // 而那些页面根本没有底栏（push 出来的路由会盖住它），于是：
       //   - 它们自己的 `SafeArea` 底部会多出 ~76dp 空白
       //   - 它们底部的 SnackBar 会凭空悬高 76dp
@@ -141,7 +141,7 @@ class MyApp extends StatelessWidget {
       // ⚠️⚠️ 底栏补偿**只能挂在 `home:` 上**，绝不能放进 `builder:` 里全局生效。
       //
       // `_GlassNavInsets` 给 `MediaQuery.padding.bottom` 加
-      // `glassNavBarOccupiedHeight`，目的是让首页 Scaffold 渲染的 SnackBar
+      // `miuixNavBarOccupiedHeight`，目的是让首页 Scaffold 渲染的 SnackBar
       // 不被悬浮玻璃底栏盖住。但 `MaterialApp.builder` 包住的是**整个 Navigator**，
       // 放在那里会连所有 push 出来的二级页（登录页 / 日志页 / 各设置页……）
       // 一起污染。而那些页面根本没有底栏（push 出来的路由会盖住它），于是：
@@ -273,7 +273,7 @@ class _MiuixScope extends StatelessWidget {
 ///
 /// ⚠️⚠️ **绝对不要同时修改 `viewPadding`**（踩过大坑，务必记住）
 ///
-/// v4.6.1 时这里把 `viewPadding.bottom` 也一起加了 `glassNavBarOccupiedHeight`，
+/// v4.6.1 时这里把 `viewPadding.bottom` 也一起加了 `miuixNavBarOccupiedHeight`，
 /// 当时看起来无害。但 `MiuixFloatingNavigationBar` 恰恰是**读 `viewPadding`
 /// 来算自己离屏幕底的距离**的：
 ///
@@ -306,7 +306,7 @@ class _GlassNavInsets extends StatelessWidget {
     return MediaQuery(
       data: mq.copyWith(
         padding: mq.padding.copyWith(
-          bottom: mq.padding.bottom + glassNavBarOccupiedHeight,
+          bottom: mq.padding.bottom + miuixNavBarOccupiedHeight,
         ),
       ),
       child: child ?? const SizedBox.shrink(),
