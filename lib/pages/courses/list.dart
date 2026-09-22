@@ -17,6 +17,7 @@ import '../widget/avatar.dart';
 import '../widget/miuix_nav_metrics.dart';
 // [新增] 开发期压测假数据（--dart-define=SEED_TEST_DATA=N 时才有内容）
 import '../../utils/test_data_seeder.dart';
+import '../../utils/app_logger.dart';
 import '../actives/sign_in/sign_in.dart';
 import '../actives/topic_discuss.dart';
 import '../actives/quiz.dart';
@@ -180,7 +181,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
 
   /// 使用在线课堂数据更新课程列表
   void updateWithOnLessonCourses(List<Map<String, dynamic>>? onLessonCourses) {
-    _loadCourses(onLessonCourses);
+    _loadCourses(onLessonCourses: onLessonCourses, silent: true);
   }
 
   @override
@@ -222,7 +223,8 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         if (onLessonCourses != null && mounted) {
           if (!const DeepCollectionEquality().equals(_lastOnLessonCourses, onLessonCourses)) {
             _lastOnLessonCourses = onLessonCourses;
-            _loadCourses(onLessonCourses);
+            // 静默刷新：轮询不能把列表切回 loading，否则每 3 秒「重载」一次。
+            _loadCourses(onLessonCourses: onLessonCourses, silent: true);
           }
         }
       } catch (e) {
@@ -231,12 +233,31 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _loadCourses([List<dynamic>? onLessonCourses]) async {
-    setState(() {
-      _isLoading = true;
-    });
+  /// 加载课程列表。
+  ///
+  /// [silent] = true 表示「后台静默刷新」：**不置 loading**、不清空已有列表。
+  ///
+  /// ⚠️ 为什么必须有这个开关（真机表现为「页面反复重载」）：
+  /// 本页有一个 **3 秒**的 `Timer.periodic` 在轮询 `getOnLesson()`，只要在线课堂
+  /// 数据发生变化就会调进来刷新。而旧实现**无条件**先
+  /// `setState(() { _isLoading = true; })`，于是每 3 秒就可能把整个列表切到
+  /// loading 态、再切回来 —— 用户看到的就是「页面在不停地重载 / 闪」。
+  /// 更糟的是 `_loadCourses` 会连**全部课程**重新请求一遍，代价完全没必要。
+  ///
+  /// 所以：只有「首次加载 / 账号切换 / 用户手动下拉」才显示 loading，
+  /// 轮询触发的刷新一律静默，拿到数据后直接替换。
+  Future<void> _loadCourses({
+    List<dynamic>? onLessonCourses,
+    bool silent = false,
+  }) async {
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+      });
+    }
 
     if (!AccountManager.hasActiveSession()) {
+      if (!mounted) return;
       setState(() {
         _courses = [];
         _isLoading = false;
@@ -247,6 +268,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     // 开发期压测：短路掉网络请求，直接给一长串假课程（详见 test_data_seeder.dart）。
     // 未传 --dart-define=SEED_TEST_DATA 时这里是编译期常量 false，会被 tree-shake。
     if (TestDataSeeder.enabled) {
+      if (!mounted) return;
       setState(() {
         _courses = TestDataSeeder.buildFakeCourses(TestDataSeeder.count);
         _isLoading = false;
@@ -267,24 +289,46 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
       // 平时很难触发，但进程退出/热重载时仍会撞上。
       if (!mounted) return;
 
-      if (coursesData != null && coursesData.isNotEmpty) {
-        setState(() {
-          _courses = coursesData!;
-          _isLoading = false;
-        });
-      } else {
-        setState(() {
-          _courses = [];
-          _isLoading = false;
-        });
+      final next = (coursesData != null && coursesData.isNotEmpty)
+          ? coursesData
+          : <Course>[];
+
+      // 静默刷新时：数据没变就**一个字节都不动**，避免无谓重建。
+      //
+      // ⚠️ 必须用 `sameShallowAs` 而不是 `==`：`Course` 没覆写 `operator ==`，
+      // 每次接口返回的都是新对象，用 `==` 永远为 false → 优化等于没写。
+      // （顺带也解释了旧代码为什么看起来「一直在重载」：数据其实没变，
+      //   但每次都判定成变了。）
+      if (silent && _sameCourseList(_courses, next)) {
+        return;
       }
+
+      setState(() {
+        _courses = next;
+        _isLoading = false;
+      });
     } catch (e) {
       if (!mounted) return;
+      // 静默刷新失败时保留旧列表：网络抖一下就把用户正在看的课程清空，
+      // 比「显示一次错误」体验更差。
+      if (silent && _courses.isNotEmpty) {
+        AppLogger.w('课程页', '静默刷新失败，保留现有列表：$e');
+        return;
+      }
       setState(() {
         _courses = [];
         _isLoading = false;
       });
     }
+  }
+
+  /// 逐项浅比较两个课程列表（按影响界面的字段，见 `Course.sameShallowAs`）。
+  static bool _sameCourseList(List<Course> a, List<Course> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!a[i].sameShallowAs(b[i])) return false;
+    }
+    return true;
   }
 
   Future<void> handleScanContent(String result) async {

@@ -79,18 +79,43 @@
 
 ## 开发 / 接手须知（本 fork）
 
-> 完整版见工作区 `D:\CourseHelper\README.md`。这里只放最容易踩的几条。
-
-**构建**（校园网环境，必须走国内镜像）：
+**构建**：不要本地出包，交给 CI。
 
 ```bash
-bash /d/CourseHelper/build-apk.sh all      # pub get + analyze + test + build
+git push origin HEAD:master        # 推到 master 即触发 CI 自动构建 APK
 ```
 
-**推送**：远端用 `gh`（`https://github.com:443/ZHHFFF/course_helper.git`，注意那个 `:443`）。
-`origin` 指向只读镜像 `ghfast.top`，**只能拉不能推**（推会报
-`Password authentication is not supported`）。
-CI 只在 push 到 `master` / `main` 时触发，推 `feat/*` 需要本地出包。
+CI 产物在 Actions 的 run 页面里（artifact 名形如
+`course-helper-<版本>-<tag>-arm64.apk`），下载后直接装即可。
+
+> ⚠️ 版本号是**自动**的：`BUILD_NUMBER` 取 `${{ github.run_number }}`，
+> 保证只增不减，新包才能覆盖安装旧包。本地手打版本号很容易打低，
+> 装的时候会被系统拒（「应用未安装」）。
+>
+> 一个实测坑：`--split-per-abi` 会给 arm64 的 `versionCode` **多加 2000**，
+> 所以 CI 里的 `--build-number=43` 在真机上读出来是 `2043`。
+> 想确认某个包的真实 versionCode，用
+> `aapt2 dump badging app.apk | grep versionCode`，别按 build-number 猜。
+
+**远端**：
+
+| remote | 仓库 | 用途 |
+|--------|------|------|
+| `origin` | `ZHHFFF/course_helper` | 同学的仓库，CI 跑在这里 |
+| `userfork` | `makisekurse/course_helper` | 自己的 fork |
+
+两个远端都能推（凭据走 Windows 凭据管理器里的 `git:https://github.com`）。
+
+**CI 触发条件**：push 到 `master` / `main` / `makisekurisu` 三个分支，
+或手动 `workflow_dispatch`。所以开发可以直接推 `makisekurisu` 分支出测试包，
+**不需要**本地构建。
+
+**本地验证**（改完代码自查，比等 CI 快）：
+
+```bash
+flutter analyze
+flutter test
+```
 
 ---
 
@@ -193,11 +218,29 @@ ppt_cache/lessons/<safeName(lessonId)>/
    - 数像素验小白条（真实 y 2724–2780 应是模糊背景，不再恒定 `#000000`）
    - 课件页三层（课程 → 课件列表 → 离线浏览）+ 逐份删除
    - 设置页各入口 + 深浅色切换
-2. `lib/pages/presentation.dart`（111KB，最后动）
-3. 底栏折射（方案 D）：`ImageFilter.shader`，**仅 Impeller 可用**
-4. 应用被锁 60Hz（`frameRateOverride uid=10196`），需 Android 侧
+2. ⚠️ **文字对齐异常**（真机反馈）：多个页面的文字看起来没对齐。代码侧查过
+   `Row`/`Column` 的 `crossAxisAlignment` 都是对的，怀疑来自
+   **`MiuixText` 与 Material `Text` 混用** —— 两者的字号/行高体系不同
+   （`MiuixText` 基础样式是 `textStyles.main` = 17sp 且**不设 `height`**，
+   覆盖 `fontSize` 后行高按字体默认比例走；Material `Text` 走 `DefaultTextStyle`）。
+   混用最严重的是 `pages/courses/list.dart`（`MiuixText` 6 处 / `Text` 23 处）。
+   **需要一张真机截图定位到具体页面/元素**再改，别盲改排版。
+3. `lib/pages/presentation.dart`（111KB，最后动）
+4. 底栏折射（方案 D）：`ImageFilter.shader`，**仅 Impeller 可用**
+5. 应用被锁 60Hz（`frameRateOverride uid=10196`），需 Android 侧
    `Surface.setFrameRate` / `preferredDisplayModeId` 或 ColorOS 白名单
-5. 老缓存的课程名回填（进一次那门课即可，见上）
+6. 老缓存的课程名回填（进一次那门课即可，见上）
+
+### 已修（本轮，commit 见 git log）
+
+- **课件页点开课程看不到课件**：关联逻辑只认 `meta.json` 的 courseId，
+  而它 v4.8.8 才引入 → 老缓存全关联不上。改为「meta.json + 按缓存目录名兜底」。
+- **页面反复重载**：课程页 3 秒轮询每次刷新都无条件 `setState(_isLoading = true)`，
+  整页闪回 loading。改为**静默刷新**（不置 loading、数据未变则完全不动）。
+  配套：`Course.sameShallowAs`（`Course` 没覆写 `==`，用 `==` 判定永远为 false）。
+- 更新检查失效（`/releases/latest` 不返回 prerelease → 404 被静默吞）。
+- `courses/list.dart` 补 3 处缺失的 `mounted` 检查。
+- `theme_setting.dart` 的 `debugPrint` 改 `AppLogger`（`debugPrint` 不进日志文件）。
 
 ### 约定
 

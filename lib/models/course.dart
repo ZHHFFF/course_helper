@@ -96,6 +96,31 @@ class Course {
       settings: settings,
     );
   }
+
+  /// 按「会影响界面呈现的字段」判断两门课是否等价。
+  ///
+  /// ⚠️ 这里刻意**不**覆写 `operator ==`：`Course` 被用在 `Set` / `Map` 里按
+  /// 对象身份去重的场景（课程列表、缓存关联），贸然改成值相等会悄悄改变那些
+  /// 地方的语义。所以只在需要「数据变没变」判断的调用点显式调这个函数。
+  ///
+  /// 用途：课程页每 3 秒轮询在线课堂，拿到的新列表若是同一批课程就不该
+  /// `setState` 重建（那不是「数据变了」，只是新 new 了一批等价对象）。
+  ///
+  /// 不参与比较的字段：`settings`（本地配置，由 `withSettings` 单独维护，
+  /// 轮询回来的对象永远没有它，比进去会**每次都判定为不等**）。
+  bool sameShallowAs(Course other) =>
+      courseId == other.courseId &&
+      classId == other.classId &&
+      cpi == other.cpi &&
+      image == other.image &&
+      name == other.name &&
+      teacher == other.teacher &&
+      state == other.state &&
+      note == other.note &&
+      schools == other.schools &&
+      beginDate == other.beginDate &&
+      endDate == other.endDate &&
+      lessonId == other.lessonId;
 }
 
 class CourseLocation {
