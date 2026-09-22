@@ -139,6 +139,32 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
   List<dynamic> _lastOnLessonCourses = [];
   bool _isVisible = false;
 
+  /// 顶栏「滚动折叠」的行为对象。
+  ///
+  /// ⚠️ 必须**只创建一次**（放在 State 字段里，不能在 `build()` 里 new）：
+  /// 它内部持有 `MiuixTopAppBarState`，也就是当前折叠进度。每次重建都换一个
+  /// 新实例的话，折叠进度会被反复重置回「完全展开」，表现为**滚不动 / 一松手
+  /// 就弹回大标题**。
+  late final MiuixExitUntilCollapsedScrollBehavior _topBarBehavior =
+      miuixScrollBehavior();
+
+  /// 列表顶部留白（= 顶栏**展开态**高度），只记最大值、不跟随折叠回缩。
+  ///
+  /// ⚠️ 这里**不能**直接用 `contentPadding.top`。折叠量是滚动位置的纯函数
+  /// （源码注释：`heightOffset = -(pixels - minScrollExtent)`），于是：
+  ///
+  /// ```text
+  /// item 屏上 y = padding.top − scrollOffset
+  /// ```
+  ///
+  /// 若 `padding.top` 也跟着折叠变小，就变成 `(142−s) − s = 142−2s` ——
+  /// 内容会以**两倍速**往栏底钻，跟栏的收缩完全脱节（经典的「双重滚动」）。
+  /// 固定成展开态高度后：`142 − s` 恰好等于栏的底边 → 内容始终贴着栏底走。
+  ///
+  /// 副作用：`MiuixScaffold` 的 `contentPadding` 每帧都在变 → 内容每帧重建。
+  /// 但 ListView 的 padding 是常量，RenderObject 不会真的重排，代价可接受。
+  double _topBarInset = 0;
+
   void refreshCourses() {
     _loadCourses();
   }
@@ -502,15 +528,19 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         // 顶栏换成 Miuix 玻璃顶栏。
         //
         // ⚠️ 模糊能看见的前提是「内容从顶栏底下滚过去」：`MiuixScaffold` 的
-        // body 铺满整屏、栏画在其上，滚动列表再自己吃掉 `contentPadding.top`
+        // body 铺满整屏、栏画在其上，滚动列表再自己吃掉顶部留白
         // —— offset=0 时首项正好在栏下方，一往上滚就钻进栏底，
         // 顶栏里的 `BackdropFilter` 才有东西可糊。
         //
         // 若改用 `Scaffold.appBar` 槽位，body 会被顶到栏下面，两者永不重叠
         // → 糊了个寂寞（这正是之前一直没做顶栏模糊的原因）。
+        //
+        // `scrollBehavior` 让顶栏随滚动从「大标题 142dp」折到「小标题 92dp」。
         topBar: MiuixTopAppBar(
           title: '课程',
+          largeTitle: '课程',
           blurred: true,
+          scrollBehavior: _topBarBehavior,
           actions: [
             MiuixIconButton(
               onPressed: () {
@@ -531,7 +561,15 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         // 「底下有这么高的东西」，contentPadding 与 FAB 就会自动让开，
         // 页面自己不用再算留白。
         bottomBar: SizedBox(height: miuixNavBarOccupied(context)),
-        content: (contentPadding) => RefreshIndicator(
+        // 把顶栏折叠行为挂到滚动通知上（只认 depth==0 的竖向滚动体）
+        content: (contentPadding) {
+          // 只记最大高度，不跟随折叠回缩 —— 原因见 `_topBarInset` 的注释
+          if (contentPadding.top > _topBarInset) {
+            _topBarInset = contentPadding.top;
+          }
+          return MiuixScrollBehaviorListener(
+            behavior: _topBarBehavior,
+            child: RefreshIndicator(
         onRefresh: _loadCourses,
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
@@ -547,7 +585,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                 // 顶部留白吃掉顶栏高度 → 内容才会从顶栏底下滚过（玻璃顶栏的关键）。
                 // 底部留白由脚手架的 bottomBar 占位给出，再加 16dp 余量。
                 padding: EdgeInsets.only(
-                  top: contentPadding.top,
+                  top: _topBarInset,
                   bottom: contentPadding.bottom + 16,
                 ),
                 itemBuilder: (context, index) {
@@ -682,6 +720,8 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                 },
               ),
       ),
+            );
+        },
       ),
     );
   }

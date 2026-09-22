@@ -37,6 +37,17 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   PlatformType _selectedPlatform = PlatformManager().currentPlatform;
   StreamSubscription? _accountChangeSubscription;
 
+  /// 顶栏「滚动折叠」的行为对象。必须**只创建一次**（它持有折叠进度，
+  /// 在 `build()` 里 new 会导致折叠状态每帧被重置）。详见
+  /// `courses/list.dart` 里同名字段的注释。
+  late final MiuixExitUntilCollapsedScrollBehavior _topBarBehavior =
+      miuixScrollBehavior();
+
+  /// 列表顶部留白（= 顶栏**展开态**高度），只记最大值、不跟随折叠回缩。
+  /// 用 `contentPadding.top` 会让内容以两倍速往栏底钻，详见
+  /// `courses/list.dart` 里同名字段的注释。
+  double _topBarInset = 0;
+
   @override
   void initState() {
     super.initState();
@@ -401,7 +412,9 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       // 透明 Material 也能正常渲染）。
       topBar: MiuixTopAppBar(
         title: '账号',
+        largeTitle: '账号',
         blurred: true,
+        scrollBehavior: _topBarBehavior,
         actions: [
           if (_isMultiSelectMode)
             IconButton(
@@ -616,7 +629,15 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
           )
         ],
       ),
-      content: (contentPadding) => _accounts.isEmpty
+      content: (contentPadding) {
+        // 只记最大高度，不跟随折叠回缩 —— 原因见 `_topBarInset` 的注释
+        if (contentPadding.top > _topBarInset) {
+          _topBarInset = contentPadding.top;
+        }
+        // 把顶栏折叠行为挂到滚动通知上（只认 depth==0 的竖向滚动体）
+        return MiuixScrollBehaviorListener(
+          behavior: _topBarBehavior,
+          child: _accounts.isEmpty
           ? const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -631,7 +652,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         itemCount: _accounts.length,
         // 顶部留白吃掉顶栏高度 → 内容从顶栏底下滚过（玻璃顶栏的关键）
         padding: EdgeInsets.only(
-          top: contentPadding.top,
+          top: _topBarInset,
           bottom: contentPadding.bottom + 16,
         ),
         itemBuilder: (context, index) {
@@ -645,6 +666,8 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
           );
         },
       ),
+        );
+      },
       // 底栏是全局叠加的，不在本页脚手架里。这块透明占位一次解决两件事：
       // 1) contentPadding.bottom = 底栏占位 → 列表末项不会被底栏盖住；
       // 2) 脚手架把 FAB 抬到底栏之上（fabOffsetFromBottom =
