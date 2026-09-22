@@ -152,6 +152,10 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
     // ② 远程：全部课程。失败不影响本页可用（只是列表少一些、没有教师名）。
     List<Course> remote = const [];
+    // 在课的课 → lessonId。`getAllCourses()` 刻意不 join「正在上课」，
+    // 所以那边 `Course.lessonId` 恒为 null；只有 `getCoursesList()` 带得出来。
+    // v4.8.8 之前的缓存没有 meta.json，只能靠这个把缓存目录名对上课程。
+    final onLessonIdByCourse = <String, String>{};
     if (AccountManager.hasActiveSession()) {
       try {
         final list = PlatformManager().isChaoxing
@@ -161,6 +165,21 @@ class _CoursewarePageState extends State<CoursewarePage> {
       } catch (e) {
         AppLogger.w(_tag, '读取课程列表失败：$e');
       }
+
+      if (!PlatformManager().isChaoxing) {
+        try {
+          final onLesson = await RCCourseApi.getCoursesList();
+          for (final c in onLesson ?? const <Course>[]) {
+            final lid = c.lessonId?.trim() ?? '';
+            if (c.courseId.isNotEmpty && lid.isNotEmpty) {
+              onLessonIdByCourse[c.courseId] = lid;
+            }
+          }
+        } catch (e) {
+          // 拿不到不影响本页 —— 只是老缓存少一条兜底关联路径
+          AppLogger.w(_tag, '读取在课列表失败（不影响课件列表）：$e');
+        }
+      }
     }
 
     if (!mounted) return;
@@ -169,6 +188,16 @@ class _CoursewarePageState extends State<CoursewarePage> {
     for (final lesson in cached) {
       byCourse.putIfAbsent(lesson.courseId, () => []).add(lesson);
     }
+    final lessonIdsByCourseId = <String, List<String>>{
+      for (final e in byCourse.entries)
+        e.key: [for (final l in e.value) l.lessonId],
+    };
+    // 目录名 → CachedLesson：兜底关联和计数都要用
+    final cachedByDirName = <String, CachedLesson>{
+      for (final l in cached) l.lessonId: l,
+    };
+    // 已经被某门课认领的 lessonId —— 别在第三档「未关联」里再列一遍
+    final absorbed = <String>{};
 
     final entries = <_CourseEntry>[];
     final seen = <String>{};
@@ -176,16 +205,24 @@ class _CoursewarePageState extends State<CoursewarePage> {
     // 远程课程（主）
     for (final course in remote) {
       if (course.courseId.isEmpty || !seen.add(course.courseId)) continue;
-      final lessons = byCourse[course.courseId] ?? const <CachedLesson>[];
+
+      final ids = resolveLessonIdsForCourse(
+        courseId: course.courseId,
+        lessonIdsByCourseId: lessonIdsByCourseId,
+        cachedDirNames: cachedByDirName.keys.toSet(),
+        onLessonId: onLessonIdByCourse[course.courseId],
+      );
+      absorbed.addAll(ids);
+
       entries.add(_CourseEntry(
         courseId: course.courseId,
         name: course.name,
         teacher: course.teacher,
         classId: course.classId,
         cpi: course.cpi ?? '',
-        lessonIds: [for (final l in lessons) l.lessonId],
-        presentationCount:
-            lessons.fold(0, (sum, l) => sum + l.presentationCount),
+        lessonIds: ids.toList(),
+        presentationCount: ids.fold(
+            0, (sum, id) => sum + (cachedByDirName[id]?.presentationCount ?? 0)),
         fromCache: false,
       ));
     }
@@ -195,6 +232,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
       if (lesson.courseId.isEmpty || seen.contains(lesson.courseId)) continue;
       seen.add(lesson.courseId);
       final lessons = byCourse[lesson.courseId]!;
+      absorbed.addAll(lessons.map((l) => l.lessonId));
       entries.add(_CourseEntry(
         courseId: lesson.courseId,
         name: lesson.name,
@@ -207,13 +245,15 @@ class _CoursewarePageState extends State<CoursewarePage> {
     }
 
     // 没有 courseId 的旧版缓存（meta.json 是 v4.8.8 才有的）：单独列出来，
-    // 用 lessonId 当身份，至少能看、能删。下次进那门课时会被回填。
+    // 用 lessonId 当身份，至少能看、能删。
+    // ⚠️ 已经被上面按「在课 lessonId」认领走的不再列一遍，否则同一份课件会出现两次。
     for (final lesson in cached) {
       if (lesson.courseId.isNotEmpty) continue;
+      if (absorbed.contains(lesson.lessonId)) continue;
       entries.add(_CourseEntry(
         courseId: '',
         name: lesson.name,
-        teacher: '旧版缓存 · 未关联课程',
+        teacher: '未关联课程 · 进一次这门课即可自动关联',
         lessonIds: [lesson.lessonId],
         presentationCount: lesson.presentationCount,
         fromCache: true,

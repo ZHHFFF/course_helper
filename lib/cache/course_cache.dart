@@ -696,6 +696,7 @@ class CourseCache {
   }
 
   /// 读一个 JSON 文件（不存在或解析失败都返回 null）
+
   static Future<Map<String, dynamic>?> readJson(File file) async {
     try {
       if (!await file.exists()) return null;
@@ -737,4 +738,39 @@ class CourseCache {
       }
     }
   }
+}
+
+/// 某门课该关联哪些 lessonId 的缓存目录（纯函数，可单测）
+///
+/// 两条来源：
+/// 1. **`meta.json` 里 courseId 对上的**（v4.8.8 起每次进课堂才会写）
+/// 2. **兜底 —— 按目录名对**：缓存目录名就是 `safeName(lessonId)`，
+///    而在课的课能从接口拿到 `lessonId`（`getAllCourses()` 刻意不 join，
+///    所以那边恒为 null；`getCoursesList()` 才有）。
+///
+/// 为什么必须有第 2 条：v4.8.8 之前的版本**从来没写过 meta.json**，
+/// 用户手里已有的缓存全都是「无 courseId」的。没有兜底的话，
+/// 课件页会列出所有课程、但点进去每门课都是「还没有缓存课件」——
+/// 而缓存其实好好地躺在「未关联课程」那一档里。
+///
+/// [cachedDirNames] 传的是缓存目录名集合（= `listLessons()` 里的 lessonId）。
+Set<String> resolveLessonIdsForCourse({
+  required String courseId,
+  required Map<String, List<String>> lessonIdsByCourseId,
+  required Set<String> cachedDirNames,
+  String? onLessonId,
+}) {
+  // 空 courseId 是「没有 meta.json 的旧缓存」在 byCourse 里的那个桶，
+  // 不是一门真实的课 —— 绝不能把它当课程去认领缓存。
+  if (courseId.trim().isEmpty) return <String>{};
+
+  final ids = <String>{...?lessonIdsByCourseId[courseId]};
+
+  final raw = onLessonId?.trim() ?? '';
+  if (raw.isNotEmpty) {
+    final dir = CourseCache.safeName(raw);
+    if (cachedDirNames.contains(dir)) ids.add(dir);
+  }
+
+  return ids;
 }
