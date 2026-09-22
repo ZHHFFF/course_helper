@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 // [新增] Miuix：顶栏 / 脚手架按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
+import 'widget/miuix_glass_spec.dart';
 import 'dart:async';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -818,6 +819,11 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         title: '账号',
         largeTitle: '账号',
         blurred: true,
+        // KernelSU `BlurredBar` 口径（见 widget/miuix_glass_spec.dart）：
+        // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
+        // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
+        blurRadius: MiuixGlassSpec.topBarBlurRadius,
+        blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
         scrollBehavior: _topBarBehavior,
         actions: [
           // 注：这里的动作按钮直接用 `MiuixIconButton`（自带手势）。

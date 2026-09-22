@@ -14,6 +14,9 @@ import'./pages/courses/list.dart';
 import'./pages/login.dart';
 // [新增] Miuix 玻璃底栏的几何契约（占位高度 / 页面留白）
 import'./pages/widget/miuix_nav_metrics.dart';
+// [新增] KernelSU 对齐的玻璃规格（模糊半径 / 色调 / vibrancy / 按压 / 几何）。
+// 顶栏与底栏都从这里取值，保证「两栏是同一种玻璃、只是参数不同」。
+import'./pages/widget/miuix_glass_spec.dart';
 // [新增] 液态玻璃底栏本体。
 // 为什么不用包里的 `MiuixGlassNavigationBar`：它的玻璃是「录图层快照 → 喂 shader」，
 // 采样由 `paint()` 驱动，而 `ListView` 的 viewport 自己是重绘边界，滚动时上面的
@@ -362,12 +365,17 @@ class _MainPageState extends State<MainPage> {
   /// 悬浮底栏离「手势条安全区上沿」的额外间距（实测 28 - 16 = 12）
   static const double _kNavBottomGap = 12;
 
-  /// 底栏内容高度（实测参照物 64dp）
-  static const double _kNavBarHeight = 64;
+  /// 底栏内容高度（实测参照物 64dp，与 KernelSU `FloatingBottomBar` 的
+  /// `height(64.dp)` 一致 → 见 [MiuixGlassSpec.navShellHeight]）
+  static const double _kNavBarHeight = MiuixGlassSpec.navShellHeight;
 
-  /// 底栏玻璃的模糊半径（dp）。20 与 Miuix 玻璃材质 `puredThinGlass` 一致，
-  /// 实际 sigma = 20 × 0.45 = 9.0（换算系数与顶栏相同）。
-  static const double _kNavBlurRadius = 20;
+  /// 底栏玻璃的模糊半径（dp）。
+  ///
+  /// 2026-09-22 起按 KernelSU 的 `FloatingBottomBar` 取
+  /// [MiuixGlassSpec.navBlurRadius] = 14 → sigma 6.3，约顶栏（25 → 11.25）的一半
+  /// —— KernelSU 的悬浮胶囊是「轻霜」而不是重磨砂。
+  /// （改之前是 20 → sigma 9.0，与 Miuix 玻璃材质 `puredThinGlass` 一致。）
+  static const double _kNavBlurRadius = MiuixGlassSpec.navBlurRadius;
 
   @override
   void initState() {
@@ -576,11 +584,12 @@ class _MainPageState extends State<MainPage> {
       onSelect: _onNavTap,
       height: _kNavBarHeight,
       blurRadius: _kNavBlurRadius,
-      // 悬浮态：胶囊形（默认 cornerRadius 999）+ floating 阴影
+      // 悬浮态：胶囊形（默认 cornerRadius 999）+ KernelSU 口径的外阴影
+      //         （`dropShadow(radius = 10, Black @ .1/.2)`，传 null 即用默认值）
       // 贴边态：直角 + 去掉阴影，通栏贴底
       shape: floating ? null : const MiuixGlassShape(cornerRadius: 0),
       shadow: floating
-          ? MiuixGlassShadows.floating
+          ? null
           : const MiuixGlassShadow(radius: 0, color: Color(0x00000000)),
     );
 

@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 // [新增] Miuix：整页按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
+import 'miuix_glass_spec.dart';
 
 import '../../utils/app_logger.dart';
 
@@ -146,6 +147,11 @@ class _LogViewerPageState extends State<LogViewerPage> {
         title: '运行日志',
         largeTitle: '运行日志',
         blurred: true,
+        // KernelSU `BlurredBar` 口径（见 miuix_glass_spec.dart）：
+        // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
+        // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
+        blurRadius: MiuixGlassSpec.topBarBlurRadius,
+        blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
         scrollBehavior: _topBarBehavior,
         // ⚠️ `MiuixTopAppBar` **没有** `onBack`，返回键要用 `navigationIcon`
         navigationIcon: MiuixIconButton(

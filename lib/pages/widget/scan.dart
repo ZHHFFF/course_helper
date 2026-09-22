@@ -1,8 +1,29 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+
+/// 全屏相机页覆盖控件的底色。
+///
+/// ⚠️ 这里**刻意不用真玻璃**（不给 `MiuixGlassIconButton` 传 `backdrop`）：
+/// 相机预览是 `MobileScanner` 的**外部纹理**（`Texture` 层），
+/// 玻璃的两条路都不适用 ——
+///   - 包里的 `MiuixGlassPanel` 走「录图层快照 → 喂 shader」，采的是 Dart 侧
+///     重绘边界内的位图，纹理层不在其中；
+///   - 我们顶栏/底栏用的 `BackdropFilter` 虽由合成器求值，但对着外部纹理
+///     采样在 Android 上行为不稳定。
+/// 相机 UI 的行业惯例本来也是「半透明实心圆钮」，所以直接用实心填充，
+/// 形状 / 尺寸 / 按压缩放弹簧仍全部由 Miuix 组件提供。
+const _kOverlayFill = Color(0x8C000000);
+
+/// 取景框外围的白色加载圈（相机页固定黑底，不跟随主题）。
+const _kWhiteSpinner = MiuixProgressIndicatorColors(
+  foregroundColor: Colors.white,
+  disabledForegroundColor: Colors.white38,
+  backgroundColor: Colors.white24,
+);
 
 class ScanPage extends StatefulWidget {
   final Function(String)? onScanResult;
@@ -234,11 +255,21 @@ class _ScanPageState extends State<ScanPage>
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.black,
-      child: LayoutBuilder(builder: (context, constraints) {
+    // [改动] 本页迁移到 Miuix：**只迁外壳与覆盖控件**，相机预览 / 识别 /
+    // 缩放 / 生命周期逻辑一行没动（Miuix 没有相机组件）。
+    //
+    // ⚠️ `containerColor: Colors.black` 而不是让 `MiuixScaffold` 用默认底色：
+    // 相机页必须永远是黑的（浅色主题下默认底色是 #FFFFFF，取景框外围会变白边）。
+    // ⚠️ `contentWindowInsets: EdgeInsets.zero`：本页的返回键与底部工具条都按
+    // `MediaQuery.padding` 手动定位，脚手架若再补一次内边距会重复累加。
+    return MiuixScaffold(
+      containerColor: Colors.black,
+      contentWindowInsets: EdgeInsets.zero,
+      content: (_) => LayoutBuilder(builder: (context, constraints) {
         final mediaQuery = MediaQuery.of(context);
         final qrScanSize = constraints.maxWidth * 0.7;
+        // 扫描线的颜色改用 Miuix 主色（原来是 Material 的 `colorScheme.primary`）。
+        final scanLineColor = MiuixTheme.of(context).colors.primary;
 
         final scanWindow = Rect.fromCenter(
           center: Offset(
@@ -263,7 +294,7 @@ class _ScanPageState extends State<ScanPage>
                   tapToFocus: true,
                   onDetect: _onDetect,
                   placeholderBuilder: (context) => const Center(
-                    child: CircularProgressIndicator(color: Colors.white),
+                    child: MiuixCircularProgressIndicator(colors: _kWhiteSpinner),
                   ),
                   errorBuilder: (context, error) => Center(
                     child: Padding(
@@ -277,9 +308,9 @@ class _ScanPageState extends State<ScanPage>
                             size: 48,
                           ),
                           const SizedBox(height: 12),
-                          Text(
+                          MiuixText(
                             '相机启动失败：${error.errorCode}',
-                            style: const TextStyle(color: Colors.white),
+                            color: Colors.white,
                             textAlign: TextAlign.center,
                           ),
                         ],
@@ -296,8 +327,7 @@ class _ScanPageState extends State<ScanPage>
                           builder: (context, child) {
                             return CustomPaint(
                               painter: QrScanBoxPainter(
-                                boxLineColor:
-                                Theme.of(context).colorScheme.primary,
+                                boxLineColor: scanLineColor,
                                 animationValue: _animationController.value,
                                 isForward: _animationController.status ==
                                     AnimationStatus.forward,
@@ -316,21 +346,29 @@ class _ScanPageState extends State<ScanPage>
 
             if (_isInitializing)
               const Center(
-                child: CircularProgressIndicator(color: Colors.white),
+                child: MiuixCircularProgressIndicator(colors: _kWhiteSpinner),
               ),
 
+            // 返回键：`IconButton` → `MiuixGlassIconButton`（圆形 + 按压缩放弹簧）。
+            // ⚠️ 图标必须显式给 `color` —— 组件内部会用
+            // `IconTheme.merge(color: colors.onSurface)` 包一层，
+            // 浅色主题下 `onSurface` 是深色，压在黑底相机上就看不见了。
             Positioned(
               left: 8,
               top: mediaQuery.padding.top + 8,
-              child: IconButton(
+              child: MiuixGlassIconButton(
                 onPressed: () {
                   stop();
                   Navigator.of(context).pop();
                 },
-                icon: const Icon(
+                size: 44,
+                fill: _kOverlayFill,
+                shadow: null,
+                semanticLabel: '返回',
+                child: const Icon(
                   Icons.arrow_back,
                   color: Colors.white,
-                  size: 28,
+                  size: 24,
                 ),
               ),
             ),
@@ -345,25 +383,33 @@ class _ScanPageState extends State<ScanPage>
                 crossAxisAlignment: CrossAxisAlignment.center,
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  IconButton(
+                  MiuixGlassIconButton(
                     onPressed: () async {
                       final XFile? image = await ImagePicker()
                           .pickImage(source: ImageSource.gallery);
                       if (image == null) return;
                       scanImage(image.path);
                     },
-                    icon: const Icon(
+                    size: 56,
+                    fill: _kOverlayFill,
+                    shadow: null,
+                    semanticLabel: '从相册选择二维码',
+                    child: const Icon(
                       Icons.photo_library,
                       color: Colors.white,
-                      size: 35,
+                      size: 28,
                     ),
                   ),
-                  IconButton(
+                  MiuixGlassIconButton(
                     onPressed: toggleTorch,
-                    icon: Icon(
+                    size: 56,
+                    fill: _kOverlayFill,
+                    shadow: null,
+                    semanticLabel: _torchOn ? '关闭手电筒' : '打开手电筒',
+                    child: Icon(
                       _torchOn ? Icons.flashlight_on : Icons.flashlight_off,
                       color: _torchOn ? Colors.yellow : Colors.white,
-                      size: 35,
+                      size: 28,
                     ),
                   ),
                 ],

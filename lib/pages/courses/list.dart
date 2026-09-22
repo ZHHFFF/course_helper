@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:collection/collection.dart';
 // [新增] Miuix：顶栏 / 脚手架按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
+import '../widget/miuix_glass_spec.dart';
 
 import '../../platform.dart';
 import '../../api/course.dart';
@@ -552,6 +553,11 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
           title: '课程',
           largeTitle: '课程',
           blurred: true,
+          // KernelSU `BlurredBar` 口径（见 ../widget/miuix_glass_spec.dart）：
+          // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
+          // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
+          blurRadius: MiuixGlassSpec.topBarBlurRadius,
+          blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
           scrollBehavior: _topBarBehavior,
           actions: [
             MiuixIconButton(

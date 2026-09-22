@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 // [新增] Miuix：整页按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
+import 'miuix_glass_spec.dart';
 
 import '../../utils/app_logger.dart';
 import '../../utils/keep_alive_service.dart';
@@ -96,6 +97,11 @@ class _KeepAliveCheckerPageState extends State<KeepAliveCheckerPage> {
         title: '前台服务自检',
         largeTitle: '前台服务自检',
         blurred: true,
+        // KernelSU `BlurredBar` 口径（见 miuix_glass_spec.dart）：
+        // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
+        // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
+        blurRadius: MiuixGlassSpec.topBarBlurRadius,
+        blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
         scrollBehavior: _topBarBehavior,
         // ⚠️ `MiuixTopAppBar` **没有** `onBack`，返回键要用 `navigationIcon`
         navigationIcon: MiuixIconButton(

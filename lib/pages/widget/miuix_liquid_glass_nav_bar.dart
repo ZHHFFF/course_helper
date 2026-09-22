@@ -69,18 +69,57 @@
 // `throw UnsupportedError`），且 GLES 后端要手动翻 y 轴。等确认目标机都走
 // Impeller 再上。
 //
+// 【2026-09-22：按 KernelSU 的 `FloatingBottomBar` 重做观感】
+//
+// 用户指令「顶栏和底栏都按 kernelsu 的来」。KernelSU 的悬浮底栏
+// （`refs/kernelsu/FloatingBottomBar.kt`，Adapted from compose-miuix-ui 官方
+// example `IosLiquidGlassNavigationBar`）用的是 Miuix KMP 的 `LayerBackdrop`，
+// 录的是 `GraphicsLayer`（**绘制指令**），且在 `DrawModifierNode.draw()` 这条
+// 绘制链的必经之路上录制 —— 所以滚动时每帧都重录，**不会被重绘边界截断**。
+// Flutter 侧没有等价物（只有 `toImageSync()` 位图，见上），所以：
+//
+//   → **机制继续用 `BackdropFilter`**（合成器求值、与重绘边界无关、零延迟），
+//     只把 KernelSU 的**参数与设计**搬过来。
+//
+// 搬过来的（常量全部集中在 `miuix_glass_spec.dart`）：
+//   1. **双层几何**：外壳 64dp + 内容层 56dp + 上下 inset 4dp；
+//   2. **vibrancy()**：`saturation = 1.5`，用 `ImageFilter.compose` 叠在模糊外层
+//      （`ColorFilter implements ImageFilter`，可直接塞进 `BackdropFilter`）；
+//   3. **色调**：`containerColor = surfaceContainer @ .4`（不是顶栏的 `surface @ .87`）
+//      —— 只挡 40%，所以能透出 60% 背景，vibrancy 在这里才看得出来；
+//   4. **模糊更轻**：KernelSU 是 `blur(4.dp)`（像素），dpr 3.5 → sigma 6.3，
+//      约顶栏（11.25）的一半；
+//   5. **按压反馈**：外壳 `lerp(1, 1 + 16px/width, press)` 微微放大，
+//      选中 pill `pressedScale = 78/56 ≈ 1.39` 放大，图标 `lerp(1, 1.2, press)`；
+//   6. **选中 pill 按下变淡**：`黑/白 @ .1 × (1 − press)` + `黑 @ .03 × press`
+//      （⚠️ 与包里 `MiuixGlassNavigationBar` 的「按下变亮」方向相反，按 KernelSU）；
+//   7. **innerShadow**：`radius = 8dp × press`、`Black @ .15`、`alpha = press`；
+//   8. **rubber band**：拖动越界时整条栏平移 `4dp × EaseOut(|fraction|)`，松手弹回；
+//   9. **dropShadow**：`radius 10`、`Black @ .1(浅) / .2(深)`。
+//
+// 搬不过来的（已在注释处标明）：
+//   - `lens()` 折射 + 色差 —— 需要 `ImageFilter.shader`（**仅 Impeller 可用**）；
+//   - 幽灵层（`alpha(0f).layerBackdrop(tabsBackdrop)`）+ `CombinedBackdrop`
+//     —— 需要 `GraphicsLayer` 录制，Flutter 无对应 API。KernelSU 靠它让选中 pill
+//     里透出「放大 + 主色」的图标；这里改用 pill 自己的一次 `BackdropFilter`
+//     作等价补偿（见 [_buildIndicator]）；
+//   - 重力感应高光（`rememberDeviceTilt`）—— 需要加速度计。
+
 // 用到的 Miuix 公开 API：
 //   - `MiuixGlassMotion`   全部弹簧参数 + `pressScale`（按压缩放规范值）
 //   - `MiuixGlassStroke(s)` 玻璃描边（含光照方向的 bloom 色）
 //   - `MiuixGlassShadow(s)` 玻璃阴影预设（`floating` 等）
 //   - `MiuixGlassShape`    圆角
+//   - `MiuixGlassMotion`   全部弹簧参数 + `springOf(damping, response)`
 //   - `miuixGlassNavigationDragTarget` / `miuixGlassNavigationIndicatorBounds`
 //                          跨项拖动几何（跟手拉伸上限 60 物理像素）
 //
 // ⚠️ 包里 `GlassSpringBuilder` 与 `GlassInteractive` 在 `glass/internal/` 下
-// **没有导出**，这里用同样公开的 `SpringDescription` 自己驱动
-// （[_MiuixSpringValue]）与自写 [_NavItemInteractive]，弹簧参数仍取自
-// `MiuixGlassMotion`，手感与 Miuix 其它组件一致。
+// **没有导出**：
+//   - 按压 / 拖动 / rubber band 的弹簧改由本组件的 `AnimationController` +
+//     `SpringSimulation` 直接驱动（见 `_animateTo` / `_setPress`），
+//     弹簧参数仍取自 `MiuixGlassMotion`，手感与 Miuix 其它组件一致；
+//   - 导航项交互用自写的 [_NavItemInteractive]。
 // ============================================================================
 
 import 'dart:async';
@@ -90,6 +129,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter_miuix/miuix.dart';
+
+import 'miuix_glass_spec.dart';
 
 /// 与 `MiuixGlassNavigationBar` 同名的入参类型，直接复用包里的定义。
 typedef MiuixLiquidGlassNavItem = MiuixGlassNavigationItem;
@@ -131,16 +172,23 @@ class MiuixLiquidGlassNavigationBar extends StatefulWidget {
   final bool visible;
   final double height;
 
-  /// 模糊半径（dp）。默认 20，与 Miuix 玻璃材质 `puredThinGlass` 一致。
+  /// 模糊半径（dp）。默认 [MiuixGlassSpec.navBlurRadius] = 14（KernelSU 口径）。
   ///
-  /// 实际 sigma = `blurRadius * 0.45`（顶栏同款换算），所以 20 → 9.0。
+  /// 实际 sigma = `blurRadius * 0.45`（顶栏同款换算），所以 14 → **6.3**，
+  /// 约顶栏（25 → 11.25）的一半 —— KernelSU 的悬浮胶囊就是「轻霜」而不是重磨砂。
   final double blurRadius;
 
-  /// 模糊之上叠加的色调不透明度 [0,1]。默认 .55，与顶栏 `blurTintAlpha` 一致。
+  /// 模糊之上叠加的色调不透明度 [0,1]。
+  /// 默认 [MiuixGlassSpec.navContainerAlpha] = .4（KernelSU `containerColor`）。
   final double blurTintAlpha;
 
   final MiuixGlassShape? shape;
   final MiuixGlassStroke? stroke;
+
+  /// 外阴影。传 `null`（默认）用 KernelSU 口径的
+  /// `dropShadow(radius = 10, Black @ .1/.2)`（见 [MiuixGlassSpec.navShadow]）；
+  /// 传 `MiuixGlassShadow(radius: 0, color: Colors.transparent)` 可彻底关掉
+  /// （贴边态用）。
   final MiuixGlassShadow? shadow;
 
   /// 选中 / 未选中项的图标与文字颜色（不传则用 `colors.onBackground`）。
@@ -154,19 +202,32 @@ class MiuixLiquidGlassNavigationBar extends StatefulWidget {
 class _MiuixLiquidGlassNavigationBarState
     extends State<MiuixLiquidGlassNavigationBar>
     with TickerProviderStateMixin {
+  /// KernelSU `spring(1f, 300f, 0.5f)` 的等价物：阻尼比 1（临界阻尼），
+  /// 刚度 300 → 响应 ≈ 2π/√300 ≈ .36s。用于 rubber band 回弹。
+  static final _panelSpring = MiuixGlassMotion.springOf(1, .36);
+
   late final _show = AnimationController.unbounded(
     vsync: this,
     value: widget.visible ? 1 : 0,
   );
   late final _left = AnimationController.unbounded(vsync: this);
   late final _right = AnimationController.unbounded(vsync: this);
+
+  /// 按压进度 0→1。对应 KernelSU 的 `DampedDragAnimation.pressProgress`，
+  /// 驱动外壳放大 / pill 放大 / 图标放大 / pill 填充淡出 / innerShadow 加深。
+  late final _press = AnimationController.unbounded(vsync: this);
+
+  /// 整条栏的横向偏移（rubber band）。对应 KernelSU 的 `offsetAnimation`：
+  /// 拖动时按 `dragAmount.dx` 累加，松手 `spring(1, 300, .5)` 弹回 0。
+  late final _panel = AnimationController.unbounded(vsync: this);
+
   final _key = GlobalKey();
   final _controllers = <AnimationController>[];
 
   @override
   void initState() {
     super.initState();
-    _controllers.addAll([_show, _left, _right]);
+    _controllers.addAll([_show, _left, _right, _press, _panel]);
   }
 
   Timer? _timer;
@@ -198,7 +259,7 @@ class _MiuixLiquidGlassNavigationBarState
   double get _sigma => widget.blurRadius.clamp(0.0, 150.0) * 0.45;
 
   void _select(int index) {
-    _move(leftOf(index), leftOf(index) + _slot + 10);
+    _move(leftOf(index), leftOf(index) + _slot);
     widget.onSelect(index);
   }
 
@@ -259,6 +320,8 @@ class _MiuixLiquidGlassNavigationBarState
       if (!widget.visible) {
         _pointer = null;
         _pressed = -1;
+        _press.value = 0;
+        _panel.value = 0;
       }
     }
     if (oldWidget.items.length != widget.items.length) {
@@ -269,7 +332,7 @@ class _MiuixLiquidGlassNavigationBarState
     if (oldWidget.selectedIndex != widget.selectedIndex &&
         _pointer == null &&
         _width > 0) {
-      _move(leftOf(_index), leftOf(_index) + _slot + 10);
+      _move(leftOf(_index), leftOf(_index) + _slot);
     }
   }
 
@@ -289,10 +352,11 @@ class _MiuixLiquidGlassNavigationBarState
           .dx;
 
   int _item(double x) {
-    final raw = ((x - 8) / math.max(_slot, .01)).floor().clamp(
-      0,
-      widget.items.length - 1,
-    );
+    final raw =
+        ((x - MiuixGlassSpec.navInset) / math.max(_slot, .01)).floor().clamp(
+          0,
+          widget.items.length - 1,
+        );
     return _rtl ? widget.items.length - 1 - raw : raw;
   }
 
@@ -302,7 +366,21 @@ class _MiuixLiquidGlassNavigationBarState
       _pointer = null;
       _pressed = -1;
     });
-    _move(leftOf(_index), leftOf(_index) + _slot + 10);
+    _setPress(false);
+    // KernelSU：松手后 `offsetAnimation.animateTo(0f, spring(1f, 300f, 0.5f))`
+    // —— 阻尼比 1（临界阻尼）、刚度 300 → 响应 ≈ 2π/√300 ≈ 0.36s。
+    _animateTo(_panel, 0, _panelSpring);
+    _move(leftOf(_index), leftOf(_index) + _slot);
+  }
+
+  /// 按压进度弹簧。KernelSU 用 `DampedDragAnimation` 的 `pressProgress`，
+  /// 这里用 Miuix 自己的 `navPressEnter` / `navPressExit` 驱动。
+  void _setPress(bool down) {
+    _animateTo(
+      _press,
+      down ? 1 : 0,
+      down ? MiuixGlassMotion.navPressEnter : MiuixGlassMotion.navPressExit,
+    );
   }
 
   @override
@@ -313,7 +391,6 @@ class _MiuixLiquidGlassNavigationBarState
     final fontSize = MediaQuery.textScalerOf(context).scale(1) >= 1.6
         ? 16.0
         : 11.0;
-    final pressed = _pressed >= 0;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -326,25 +403,38 @@ class _MiuixLiquidGlassNavigationBarState
             if (!mounted || widget.items.isEmpty) return;
             if (!_positioned) {
               _left.value = leftOf(_index);
-              _right.value = leftOf(_index) + _slot + 10;
+              _right.value = leftOf(_index) + _slot;
               _positioned = true;
             } else {
-              _move(leftOf(_index), leftOf(_index) + _slot + 10);
+              _move(leftOf(_index), leftOf(_index) + _slot);
             }
           });
         }
         return AnimatedBuilder(
-          animation: Listenable.merge([_show, _left, _right]),
+          animation: Listenable.merge([_show, _left, _right, _press, _panel]),
           builder: (context, _) {
             final progress = _show.value.clamp(0.0, 1.0);
             if (!widget.visible && progress < .001) {
               return SizedBox(width: width, height: widget.height);
             }
+            // KernelSU 的 `DampedDragAnimation.pressProgress`（0 → 1）。
+            final press = _press.value.clamp(0.0, 1.0);
+            // KernelSU 的 `panelOffset`（rubber band）：
+            //   fraction = (offset / totalWidth).clamp(-1, 1)
+            //   panelOffset = rubberBandPx * sign * EaseOut.transform(|fraction|)
+            // 效果：拖过头时整条栏跟着挪一点，越界越拖不动，松手弹回。
+            final fraction = width <= 0
+                ? 0.0
+                : (_panel.value / width).clamp(-1.0, 1.0);
+            final panelOffset =
+                MiuixGlassSpec.navRubberBand *
+                (fraction < 0 ? -1.0 : 1.0) *
+                Curves.easeOut.transform(fraction.abs());
             final bounds = miuixGlassNavigationIndicatorBounds(
               _left.value,
               _right.value,
               width,
-              3,
+              MiuixGlassSpec.navInset,
             );
             return IgnorePointer(
               ignoring: !widget.visible,
@@ -369,6 +459,7 @@ class _MiuixLiquidGlassNavigationBarState
                             _pointer = event.pointer;
                             _lastX = _x(event.position);
                             setState(() => _pressed = _item(_lastX));
+                            _setPress(true);
                             _select(_pressed);
                           },
                           onPointerMove: (event) {
@@ -379,8 +470,8 @@ class _MiuixLiquidGlassNavigationBarState
                             final target = miuixGlassNavigationDragTarget(
                               left: changed
                                   ? leftOf(index)
-                                  : x - (_slot + 10) / 2,
-                              width: _slot + 10,
+                                  : x - _slot / 2,
+                              width: _slot,
                               containerWidth: width,
                               delta: x - _lastX,
                               changedItem: changed,
@@ -393,6 +484,14 @@ class _MiuixLiquidGlassNavigationBarState
                               target.right,
                               following: target.following,
                               movingRight: target.movingRight,
+                            );
+                            // KernelSU：`offsetAnimation.snapTo(value + dragAmount.x)`
+                            // —— 整条栏跟着手指平移，越界部分由 [panelOffset] 的
+                            //    rubber band 曲线吃掉。这里夹住累加值，避免越界
+                            //    拖太久导致回弹行程过长。
+                            _panel.value = (_panel.value + (x - _lastX)).clamp(
+                              -width,
+                              width,
                             );
                             _lastX = x;
                             if (changed) {
@@ -409,6 +508,9 @@ class _MiuixLiquidGlassNavigationBarState
                           child: _buildShell(
                             context,
                             dark: dark,
+                            width: width,
+                            press: press,
+                            panelOffset: panelOffset,
                             layers: [
                               // ★ 选中区域：一层独立叠加的玻璃
                               //   （位置与外壳对齐、画在导航项之下；它自己的
@@ -418,12 +520,12 @@ class _MiuixLiquidGlassNavigationBarState
                               Positioned(
                                 left: bounds.dx,
                                 right: math.max(0, width - bounds.dy),
-                                top: 3,
-                                bottom: 3,
+                                top: MiuixGlassSpec.navInset,
+                                bottom: MiuixGlassSpec.navInset,
                                 child: _buildIndicator(
                                   context,
                                   dark: dark,
-                                  pressed: pressed,
+                                  press: press,
                                 ),
                               ),
                               // 导航项（画在最上层）
@@ -434,7 +536,7 @@ class _MiuixLiquidGlassNavigationBarState
                                   ),
                                   child: Padding(
                                     padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
+                                      horizontal: MiuixGlassSpec.navInset,
                                     ),
                                     child: Row(
                                       crossAxisAlignment:
@@ -476,7 +578,16 @@ class _MiuixLiquidGlassNavigationBarState
                                                       item: widget.items[i],
                                                       tint: tint,
                                                       focused: focused,
-                                                      dimmed: _pressed == i,
+                                                      // KernelSU 的
+                                                      // `LocalFloatingBottomBarTabScale`
+                                                      // 是 `lerp(1, 1.2, pressProgress)`，
+                                                      // 作用在「幽灵层」上 —— 只有
+                                                      // 选中 pill 里透出的那套图标会放大。
+                                                      // 我们没有幽灵层，就直接把选中项
+                                                      // 的图标放大，观感等价。
+                                                      press: i == _index
+                                                          ? press
+                                                          : 0,
                                                       fontSize: fontSize,
                                                       primary:
                                                           theme.colors.primary,
@@ -530,62 +641,104 @@ class _MiuixLiquidGlassNavigationBarState
   Widget _buildShell(
     BuildContext context, {
     required bool dark,
+    required double width,
+    required double press,
+    required double panelOffset,
     required List<Widget> layers,
   }) {
     final borderRadius = BorderRadius.circular(_radius);
     final stroke = widget.stroke ?? MiuixGlassStrokes.forTheme(dark);
-    // 色调与顶栏一致：colors.surface @ blurTintAlpha。
-    // 再叠一层极淡的亮面（近似 Miuix 玻璃材质里的 softLight / overlay 层），
-    // 让玻璃不至于在深色背景上显得比原版更闷。
     final theme = MiuixTheme.of(context);
-    final tint = theme.colors.surface.withValues(
+    // 色调：KernelSU 的 `containerColor = surfaceContainer.copy(0.4f)`
+    //   —— 注意底色是 **surfaceContainer** 而不是顶栏的 `surface`，且只有 40%。
+    //   只挡 40% 才透得出 60% 背景，vibrancy（饱和度 1.5）在这里才看得出来。
+    final tint = theme.colors.surfaceContainer.withValues(
       alpha: (widget.blurTintAlpha * widget.alpha).clamp(0.0, 1.0),
     );
     final sheen = Colors.white.withValues(
       alpha: (dark ? .04 : .12) * widget.alpha,
     );
+    // KernelSU 的 `layerBlock`：
+    //   lerp(1f, 1f + 16.dp.toPx() / width, pressProgress)
+    // ⚠️ 16 是**像素**增量，所以放大比例随栏宽变化（313dp 栏宽时约 +5%）。
+    final pressScale =
+        1 +
+        MiuixGlassSpec.navPressShellGrow / math.max(width, 1) *
+            press.clamp(0.0, 1.0);
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: borderRadius,
-        boxShadow: _boxShadows(widget.shadow),
-      ),
-      child: ClipRRect(
-        borderRadius: borderRadius,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: BackdropFilter(
-                filter: ui.ImageFilter.blur(sigmaX: _sigma, sigmaY: _sigma),
+    return Transform.translate(
+      // rubber band：拖动越界时整条栏跟着挪一点，松手弹回（KernelSU `panelOffset`）。
+      offset: Offset(panelOffset, 0),
+      child: Stack(
+        // ⚠️ 必须 `Clip.none`：选中 pill 按压缩放到 `78/56 ≈ 1.39` 倍后会**溢出**外壳
+        // （56dp → 78dp，而外壳只有 64dp），这正是 KernelSU 的「液态鼓起」效果。
+        // 若让它待在外壳的 `ClipRRect` 里，鼓起会被裁成平口 —— 真机实测过：
+        // 按下时 x=200（pill 处）与 x=1000（未按下处）的可见纵向范围完全一样
+        // （都是 y 2452→2688），形变等于白做。
+        clipBehavior: Clip.none,
+        children: [
+          // ① 玻璃外壳（按压时整条微放大 —— KernelSU 的 `layerBlock`）
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Transform.scale(
+                scale: pressScale,
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: tint,
                     borderRadius: borderRadius,
-                    border: Border.all(
-                      color: stroke.color,
-                      width: stroke.width,
-                    ),
+                    boxShadow: _boxShadows(dark),
                   ),
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(color: sheen),
+                  child: ClipRRect(
+                    borderRadius: borderRadius,
+                    child: BackdropFilter(
+                      // ★ KernelSU 的 `vibrancy()` + `blur(4.dp)`：
+                      //   先模糊、再提饱和（`ImageFilter.compose` 是 inner 先 outer 后）。
+                      filter: MiuixGlassSpec.glassFilter(
+                        blurRadius: widget.blurRadius,
+                      ),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: tint,
+                          borderRadius: borderRadius,
+                          border: Border.all(
+                            color: stroke.color,
+                            width: stroke.width,
+                          ),
+                        ),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(color: sheen),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
-            ...layers,
-          ],
-        ),
+          ),
+          // ② 选中 pill、③ 导航项（顺序即绘制顺序，导航项在最上）
+          //
+          // ⚠️ pill 必须与外壳做成**并列兄弟**，不能塞进外壳的 `child` / 内层 `Stack`：
+          //   a. 进了外壳的 `ClipRRect` 就会被裁掉 → 按压缩放溢出看不见（见上）；
+          //   b. `BackdropFilter` 读的是「当前画布上**已绘制**的内容」。① 先画，
+          //      所以 pill 读到的仍是「屏幕内容 + 外壳玻璃」的合成结果；
+          //      一旦嵌进 ① 的 child，它读到的就是 ① 刚建的空图层 → 静默失效。
+          ...layers,
+        ],
       ),
     );
   }
 
-  /// 把 Miuix 的 `MiuixGlassShadow` 翻译成 Flutter 原生 `BoxShadow`。
+  /// 外阴影。
   ///
-  /// 源端 `offsetX/offsetY/radius` 的单位是**源端像素**，绘制时要除以
-  /// `sourceDensity = 3`（见 `miuix_glass_decoration.dart` 的类注释），
-  /// 这里照做，保证悬浮高度与原版观感一致。
-  List<BoxShadow> _boxShadows(MiuixGlassShadow? shadow) {
-    if (shadow == null) return const [];
+  /// - `shadow == null`（默认）→ **KernelSU 口径**：
+  ///   `dropShadow(radius = 10, color = Black, alpha = .2(深) / .1(浅))`。
+  ///   Compose 的 `Shadow.radius` 与 Flutter 的 `BoxShadow.blurRadius` 都近似
+  ///   「高斯 sigma」，所以直接照搬，不走 Miuix 的 `/3`（那是源端像素口径）。
+  /// - 传了 `MiuixGlassShadow` → 按 Miuix 口径翻译：源端 `offsetX/offsetY/radius`
+  ///   的单位是**源端像素**，绘制时要除以 `sourceDensity = 3`
+  ///   （见 `miuix_glass_decoration.dart` 的类注释）。
+  List<BoxShadow> _boxShadows(bool dark) {
+    final shadow = widget.shadow;
+    if (shadow == null) return MiuixGlassSpec.navShadow(dark: dark);
     if (shadow.radius <= 0 && shadow.offsetX == 0 && shadow.offsetY == 0) {
       return const [];
     }
@@ -598,67 +751,72 @@ class _MiuixLiquidGlassNavigationBarState
     ];
   }
 
-  /// 选中区域的玻璃指示器。
+  /// 选中区域的玻璃指示器（= KernelSU 的「选中 pill」）。
   ///
-  /// 三层叠起来：
-  ///   1. 自己的一次 `BackdropFilter` —— 它读到的是「屏幕内容 + 外壳玻璃」的合成
-  ///      结果（因为它与外壳玻璃是 `Stack` 里的并列兄弟，见 [_buildShell]），
-  ///      于是选中区比底栏本体更磨砂；
-  ///   2. 更亮的色调层（深色底用白、浅色底用黑），按下时透明度随弹簧抬升；
-  ///   3. 描边（宽度与亮度都随按压提亮）→ 边缘高光变化。
+  /// 【为什么这里要自己补一次 `BackdropFilter`】
+  /// KernelSU 的 pill 自己**不模糊**：它靠 `combinedBackdrop`
+  /// （外壳 backdrop + 幽灵层 backdrop）做 `lens()` 折射，再用 `onDrawSurface`
+  /// 画一层纯色。折射需要 `ImageFilter.shader`（**仅 Impeller**）、幽灵层需要
+  /// `GraphicsLayer` 录制 —— 两者都搬不过来，所以这里给 pill **补一次自己的
+  /// `BackdropFilter`** 作为等价补偿：它读到的是「屏幕内容 + 外壳玻璃」的合成
+  /// 结果（与外壳玻璃是 `Stack` 里的并列兄弟，见 [_buildShell]），
+  /// 于是选中区比底栏本体更磨砂。
   ///
-  /// 整块用 `MiuixGlassMotion.pressScale` 缩放，由 `navPressEnter` /
-  /// `navPressExit` 两条弹簧驱动，松手平滑回弹。
+  /// 其余逐值对齐 KernelSU：
+  ///   - 填充：`黑/白 @ .1 × (1 − press)`，按下再**额外**叠 `黑 @ .03 × press`
+  ///     （⚠️ 是**按下变淡**，与包里 `MiuixGlassNavigationBar` 的按下变亮相反）；
+  ///   - 缩放：`pressedScale = 78/56 ≈ 1.39`（56 → 78，**放大**不是缩小）；
+  ///   - 内阴影：`radius = 8dp × press`、`Black @ .15`、`alpha = press`，
+  ///     且 `offset = (0, radius)` → 是**顶边偏重**的一圈内暗边；
+  ///   - 描边随按压提亮加粗（[._pressedStroke]）。
   Widget _buildIndicator(
     BuildContext context, {
     required bool dark,
-    required bool pressed,
+    required double press,
   }) {
-    // 指示器高度 = 底栏高 - 上下各 3 的 inset
-    final shorterSide = math.max(widget.height - 6, 1.0);
-    final restScale = MiuixGlassMotion.pressScale(shorterSide);
+    final t = press.clamp(0.0, 1.0);
+    final scale = 1 + (MiuixGlassSpec.navPressScale - 1) * t;
     final baseStroke = widget.stroke ?? MiuixGlassStrokes.forTheme(dark);
-    final borderRadius = BorderRadius.circular(999);
+    final rim = _pressedStroke(baseStroke, t);
+    final radius = _radius;
+    // KernelSU：`if (!isInDark) Color.Black else Color.White`，alpha = .1
+    final neutral = dark ? Colors.white : Colors.black;
 
-    return _MiuixSpringValue(
-      value: pressed ? 1.0 : 0.0,
-      spring: pressed
-          ? MiuixGlassMotion.navPressEnter
-          : MiuixGlassMotion.navPressExit,
-      builder: (context, t) {
-        // 从 1.0 弹簧过渡到 Miuix 规范的按压缩放值
-        final scale = 1.0 + (restScale - 1.0) * t;
-        final rim = _pressedStroke(baseStroke, t);
-        return Transform.scale(
-          scale: scale,
-          child: ClipRRect(
-            borderRadius: borderRadius,
-            child: BackdropFilter(
-              // 它糊的是「已经糊过的外壳」，所以强度只需要外壳的六成
-              filter: ui.ImageFilter.blur(
-                sigmaX: _sigma * .6,
-                sigmaY: _sigma * .6,
-              ),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: borderRadius,
-                  border: Border.all(color: rim.color, width: rim.width),
-                  // 按下高光：深色底用白、浅色底用黑。
-                  // alpha 逐值对齐 Miuix 原版 `MiuixGlassNavigationBar`：
-                  //   neutral.withValues(alpha: dark ? .12 : .06)   ← 静止
-                  //   neutral.withValues(alpha: dark ? .26 : .16)   ← 按下
-                  // 这里写成 base + delta * t 的形式，由弹簧 t 驱动过渡。
-                  color: (dark ? Colors.white : Colors.black).withValues(
-                    alpha:
-                        ((dark ? .12 : .06) + (dark ? .14 : .10) * t) *
-                        widget.alpha,
-                  ),
-                ),
-              ),
-            ),
+    return Transform.scale(
+      scale: scale,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(radius),
+        child: BackdropFilter(
+          // 它糊的是「已经糊过的外壳」，所以强度只需要外壳的六成
+          filter: ui.ImageFilter.blur(
+            sigmaX: _sigma * .6,
+            sigmaY: _sigma * .6,
           ),
-        );
-      },
+          child: CustomPaint(
+            painter: _NavPillPainter(
+              radius: radius,
+              fill: neutral.withValues(
+                alpha:
+                    MiuixGlassSpec.navPillFillAlpha *
+                    (1 - t) *
+                    widget.alpha,
+              ),
+              pressFill: Colors.black.withValues(
+                alpha:
+                    MiuixGlassSpec.navPillPressFillAlpha * t * widget.alpha,
+              ),
+              innerShadow: Colors.black.withValues(
+                alpha:
+                    MiuixGlassSpec.navPillInnerShadowAlpha * t * widget.alpha,
+              ),
+              innerShadowRadius: MiuixGlassSpec.navPillInnerShadowRadius * t,
+              stroke: rim.color,
+              strokeWidth: rim.width,
+            ),
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
     );
   }
 
@@ -691,10 +849,15 @@ class _MiuixLiquidGlassNavigationBarState
     required MiuixLiquidGlassNavItem item,
     required Color tint,
     required bool focused,
-    required bool dimmed,
+    required double press,
     required double fontSize,
     required Color primary,
   }) {
+    // KernelSU 的 `LocalFloatingBottomBarTabScale = lerp(1f, 1.2f, pressProgress)`。
+    final iconScale =
+        1 +
+        (MiuixGlassSpec.navPressIconScale - 1) * press.clamp(0.0, 1.0);
+
     return DecoratedBox(
       decoration: ShapeDecoration(
         shape: StadiumBorder(
@@ -705,13 +868,13 @@ class _MiuixLiquidGlassNavigationBarState
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 3),
-        child: Opacity(
-          opacity: dimmed ? .6 : 1,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              SizedBox.square(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Transform.scale(
+              scale: iconScale,
+              child: SizedBox.square(
                 dimension: 28,
                 child: MiuixContentColor(
                   color: tint,
@@ -721,79 +884,107 @@ class _MiuixLiquidGlassNavigationBarState
                   ),
                 ),
               ),
-              if (item.label != null)
-                Text(
-                  item.label!,
-                  maxLines: 2,
-                  textAlign: TextAlign.center,
-                  overflow: TextOverflow.ellipsis,
-                  textScaler: TextScaler.noScaling,
-                  style: TextStyle(fontSize: fontSize, color: tint, height: 1.2),
-                ),
-            ],
-          ),
+            ),
+            if (item.label != null)
+              Text(
+                item.label!,
+                maxLines: 2,
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+                textScaler: TextScaler.noScaling,
+                style: TextStyle(fontSize: fontSize, color: tint, height: 1.2),
+              ),
+          ],
         ),
       ),
     );
   }
 }
 
-/// 用 Miuix 的弹簧参数驱动一个标量进度。
+/// 画 KernelSU 选中 pill 的填充、按下叠色、描边与内阴影。
 ///
-/// 包里同款是 `GlassSpringBuilder`（`glass/internal/animation.dart`，**未导出**），
-/// 这里用同样公开的 `SpringDescription` 自己驱动；弹簧本身仍取自
-/// [MiuixGlassMotion]，所以手感和 Miuix 其它组件一致。
-class _MiuixSpringValue extends StatefulWidget {
-  const _MiuixSpringValue({
-    required this.value,
-    required this.spring,
-    required this.builder,
+/// KernelSU 里这是两段独立的绘制：
+/// ```kotlin
+/// onDrawSurface = {
+///     drawRect(color = 黑/白, alpha = 0.1f * (1f - pressProgress))
+///     drawRect(Color.Black.copy(alpha = 0.03f * pressProgress))
+/// }
+/// .innerShadow(shape = pillShape) {
+///     InnerShadow(radius = 8.dp * pressProgress,
+///                 color = Color.Black.copy(alpha = 0.15f),
+///                 alpha = pressProgress)
+/// }
+/// ```
+///
+/// 内阴影的几何：`InnerShadow` 的默认 `offset = (0, radius)`，实现是
+/// 「圆角矩形 − 下移 radius 的圆角矩形」= **顶边一条月牙**，再按 radius 模糊、
+/// 最后裁回形状内。这里用 `PathFillType.evenOdd` 同时加两个圆角矩形取 XOR
+/// 得到同一条月牙（比 `Path.combine` 便宜），底部那半会被 `clipRRect` 裁掉。
+///
+/// ⚠️ Flutter 没有 CSS 的 `inset box-shadow`，内阴影只能自己描边加模糊
+/// （项目里同类坑见 MEMORY「其它技术坑」）。
+class _NavPillPainter extends CustomPainter {
+  const _NavPillPainter({
+    required this.radius,
+    required this.fill,
+    required this.pressFill,
+    required this.innerShadow,
+    required this.innerShadowRadius,
+    required this.stroke,
+    required this.strokeWidth,
   });
 
-  final double value;
-  final SpringDescription spring;
-  final Widget Function(BuildContext context, double value) builder;
+  final double radius, innerShadowRadius, strokeWidth;
+  final Color fill, pressFill, innerShadow, stroke;
 
   @override
-  State<_MiuixSpringValue> createState() => _MiuixSpringValueState();
-}
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final r = math.min(radius, size.shortestSide / 2);
+    final rrect = RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(r));
 
-class _MiuixSpringValueState extends State<_MiuixSpringValue>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController.unbounded(
-    vsync: this,
-    value: widget.value,
-  );
-
-  @override
-  void didUpdateWidget(_MiuixSpringValue oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.value == oldWidget.value) return;
-    if (MediaQuery.maybeOf(context)?.disableAnimations ?? false) {
-      _controller.value = widget.value;
-      return;
+    if (fill.a > 0) canvas.drawRRect(rrect, Paint()..color = fill);
+    if (pressFill.a > 0) {
+      canvas.drawRRect(rrect, Paint()..color = pressFill);
     }
-    _controller.animateWith(
-      SpringSimulation(
-        widget.spring,
-        _controller.value,
-        widget.value,
-        _controller.velocity,
-      ),
-    );
+    if (strokeWidth > 0 && stroke.a > 0) {
+      canvas.drawRRect(
+        rrect.deflate(strokeWidth / 2),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = strokeWidth
+          ..color = stroke,
+      );
+    }
+    if (innerShadowRadius > 0 && innerShadow.a > 0) {
+      final crescent = Path()
+        ..fillType = PathFillType.evenOdd
+        ..addRRect(rrect)
+        ..addRRect(rrect.shift(Offset(0, innerShadowRadius)));
+      canvas.save();
+      canvas.clipRRect(rrect);
+      canvas.drawPath(
+        crescent,
+        Paint()
+          ..color = innerShadow
+          ..maskFilter = MaskFilter.blur(
+            BlurStyle.normal,
+            innerShadowRadius * .5,
+          ),
+      );
+      canvas.restore();
+    }
   }
 
   @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _controller,
-    builder: (context, _) => widget.builder(context, _controller.value),
-  );
+  bool shouldRepaint(_NavPillPainter old) =>
+      radius != old.radius ||
+      fill != old.fill ||
+      pressFill != old.pressFill ||
+      innerShadow != old.innerShadow ||
+      innerShadowRadius != old.innerShadowRadius ||
+      stroke != old.stroke ||
+      strokeWidth != old.strokeWidth;
 }
 
 /// 单个导航项的按压 / 焦点包装。

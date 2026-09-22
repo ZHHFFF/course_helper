@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_miuix/miuix.dart';
+import '../widget/miuix_glass_spec.dart';
 
 import '../../setting/navbar_setting.dart';
 
@@ -24,6 +25,12 @@ class AppearanceSettingsPage extends StatelessWidget {
         title: '外观设置',
         // ⚠️ `MiuixTopAppBar` **没有** `onBack` 参数（踩过：写 `onBack:` 直接编译不过）。
         // 返回键要自己塞进 `navigationIcon`。
+        blurred: true,
+        // KernelSU `BlurredBar` 口径（见 ../widget/miuix_glass_spec.dart）：
+        // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
+        // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
+        blurRadius: MiuixGlassSpec.topBarBlurRadius,
+        blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
         navigationIcon: MiuixIconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           child: const Icon(Icons.arrow_back_ios_new, size: 20),
