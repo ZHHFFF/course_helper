@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../utils/app_logger.dart';
 import '../utils/storage.dart';
 
 /// 深浅色外观设置
@@ -35,7 +36,9 @@ class ThemeSetting {
       mode.value = _decode(StorageManager.prefs.getString(_keyMode));
       _loaded = true;
     } catch (e) {
-      debugPrint('读取外观设置失败：$e');
+      // 用 AppLogger 而不是 debugPrint —— debugPrint 不进日志文件，
+      // 用户导出日志排查时完全看不到（这个坑项目里踩过）。
+      AppLogger.w('外观设置', '读取外观设置失败：$e');
     }
   }
 
@@ -44,7 +47,7 @@ class ThemeSetting {
     try {
       await StorageManager.prefs.setString(_keyMode, value.name);
     } catch (e) {
-      debugPrint('保存外观设置失败：$e');
+      AppLogger.w('外观设置', '保存外观设置失败：$e');
     }
   }
 

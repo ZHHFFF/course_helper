@@ -262,6 +262,11 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         coursesData = await RCCourseApi.getCoursesList(onLessonCourses);
       }
 
+      // 请求回来时页面可能已经被销毁 —— 不查 mounted 直接 setState 会抛
+      // `setState() called after dispose()`。课程页现在是 Offstage 常驻、
+      // 平时很难触发，但进程退出/热重载时仍会撞上。
+      if (!mounted) return;
+
       if (coursesData != null && coursesData.isNotEmpty) {
         setState(() {
           _courses = coursesData!;
@@ -274,6 +279,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _courses = [];
         _isLoading = false;

@@ -427,28 +427,75 @@ class _MainPageState extends State<MainPage> {
       final currentVersion = packageInfo.version;
 
       final dio = Dio();
-      final response = await dio.get('https://api.github.com/repos/makisekurse/course_helper/releases/latest');
-      final data = response.data;
-      final latestVersion = data['tag_name']?.toString().replaceAll('v', '') ?? '';
+      // ⚠️ 不能用 `/releases/latest`：这个接口**不返回 prerelease**，
+      // 而本项目的测试包全部是 prerelease → 实测它直接返回 404，
+      // 异常又被下面的 catch 吞掉 → 更新检查永远是死的（真机上从不提示更新）。
+      // 改成拉列表，自己挑第一个非 draft 的。
+      final response = await dio.get(
+        'https://api.github.com/repos/makisekurse/course_helper/releases',
+        queryParameters: {'per_page': 10},
+      );
 
-      if (_isNewerVersion(latestVersion, currentVersion)) {
+      final list = response.data;
+      if (list is! List || list.isEmpty) {
+        AppLogger.i('更新检查', '线上没有可用的 release');
+        return;
+      }
+      final data = list.firstWhere(
+        (r) => r is Map && r['draft'] != true,
+        orElse: () => null,
+      );
+      if (data is! Map) {
+        AppLogger.i('更新检查', '线上没有非 draft 的 release');
+        return;
+      }
+
+      // tag 可能长成 `v1.2.24` / `test-apk-1.2.3-r5`，不能直接 int.parse，
+      // 统一先抠出第一段 `数字.数字`。
+      final tag = (data['tag_name'] ?? '').toString();
+      final latestVersion = _versionOf(tag);
+      final mine = _versionOf(currentVersion);
+      if (latestVersion == null || mine == null) {
+        AppLogger.w('更新检查', '解析不出版本号（tag「$tag」/ 当前「$currentVersion」），跳过');
+        return;
+      }
+
+      if (_isNewerVersion(latestVersion, mine)) {
         _showUpdateDialog(
           latestVersion: latestVersion,
-          releaseNotes: data['body'] ?? '暂无更新说明',
-          downloadUrl: data['html_url'] ?? 'https://github.com/makisekurse/course_helper/releases/latest',
+          releaseNotes: (data['body'] ?? '暂无更新说明').toString(),
+          downloadUrl: (data['html_url'] ??
+                  'https://github.com/makisekurse/course_helper/releases')
+              .toString(),
         );
+      } else {
+        AppLogger.i('更新检查', '已是最新（当前 $currentVersion，线上 $tag）');
       }
     } catch (e) {
-      // 忽略更新检查错误
+      // 更新检查失败不该影响启动，但**要留下痕迹** ——
+      // 以前这里静默吞异常，导致「更新检查坏了」一直没人发现。
+      AppLogger.w('更新检查', '检查更新失败：$e');
     }
   }
+
+  /// 从任意 tag / versionName 里抠出第一段版本号。
+  ///
+  /// `v1.2.24` → `1.2.24`；`test-apk-1.2.3-r5` → `1.2.3`；`1.2.3-test43` → `1.2.3`
+  static final RegExp _versionPattern = RegExp(r'\d+(?:\.\d+)*');
+
+  static String? _versionOf(String raw) =>
+      _versionPattern.firstMatch(raw)?.group(0);
 
   bool _isNewerVersion(String latest, String current) {
     try {
       final latestParts = latest.split('.').map(int.parse).toList();
       final currentParts = current.split('.').map(int.parse).toList();
       
-      for (int i = 0; i < 3; i++) {
+      // 不写死 3 段：`1.2` 与 `1.2.3.1` 都要能比
+      final len = latestParts.length > currentParts.length
+          ? latestParts.length
+          : currentParts.length;
+      for (int i = 0; i < len; i++) {
         final latestNum = i < latestParts.length ? latestParts[i] : 0;
         final currentNum = i < currentParts.length ? currentParts[i] : 0;
         
