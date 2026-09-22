@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_speed_dial/flutter_speed_dial.dart';
+// [新增] Miuix：顶栏 / 脚手架按「所有规范都按 miuix」迁移
+import 'package:flutter_miuix/miuix.dart';
 import 'dart:async';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -387,11 +389,19 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   }
 
   Widget _buildScaffold(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('账号'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return MiuixScaffold(
+      // 顶栏换成 Miuix 玻璃顶栏。
+      //
+      // 理由见 courses/list.dart 的同名注释：玻璃顶栏要「有东西可糊」，
+      // 内容就必须能从栏底下滚过去，所以得用 MiuixScaffold（body 铺满整屏、
+      // 栏画在其上），而不是 Material 的 `Scaffold.appBar` 槽位。
+      //
+      // 注：`actions` 里目前还是 Material 的 IconButton / PopupMenuButton，
+      // 等页面主体整体迁移 Miuix 时一并换掉（现在靠 main.dart 补的那层
+      // 透明 Material 也能正常渲染）。
+      topBar: MiuixTopAppBar(
+        title: '账号',
+        blurred: true,
         actions: [
           if (_isMultiSelectMode)
             IconButton(
@@ -606,7 +616,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
           )
         ],
       ),
-      body: _accounts.isEmpty
+      content: (contentPadding) => _accounts.isEmpty
           ? const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -619,8 +629,11 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       )
           : ListView.builder(
         itemCount: _accounts.length,
-        // [改动] 底部留白改跟随 Miuix 底栏形态（悬浮 / 贴边高度不同）
-        padding: EdgeInsets.only(bottom: miuixNavBarClearance(context)),
+        // 顶部留白吃掉顶栏高度 → 内容从顶栏底下滚过（玻璃顶栏的关键）
+        padding: EdgeInsets.only(
+          top: contentPadding.top,
+          bottom: contentPadding.bottom + 16,
+        ),
         itemBuilder: (context, index) {
           final user = _accounts[index];
           final isSelected = _selectedAccounts.contains(user.uid);
@@ -632,14 +645,12 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
           );
         },
       ),
-      // [改动] 底栏是叠加的，会盖住默认位置的浮动按钮。
-      // SpeedDial 用的是 Scaffold.floatingActionButton，默认贴屏幕底部右下角，
-      // 必须用 floatingActionButtonLocation 把它抬到底栏之上。
-      // 底栏换成 Miuix 后高度规范变了，故改用 miuixNavFabLocation。
-      floatingActionButtonLocation: miuixNavFabLocation(
-        context,
-        floating: NavBarSetting.floating.value,
-      ),
+      // 底栏是全局叠加的，不在本页脚手架里。这块透明占位一次解决两件事：
+      // 1) contentPadding.bottom = 底栏占位 → 列表末项不会被底栏盖住；
+      // 2) 脚手架把 FAB 抬到底栏之上（fabOffsetFromBottom =
+      //    bottomBarHeight + fabSize + 12）→ 不再需要手写
+      //    floatingActionButtonLocation。
+      bottomBar: SizedBox(height: miuixNavBarOccupied(context)),
       floatingActionButton: SpeedDial(
         icon: Icons.add,
         activeIcon: Icons.close,

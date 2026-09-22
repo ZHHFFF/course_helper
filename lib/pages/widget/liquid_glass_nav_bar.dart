@@ -57,20 +57,20 @@ Future<void> _ensureGlassShaderLoaded() {
 
 /// 底栏**内容区**的高度（不含底部抬起与系统安全区）。
 ///
-/// 52 是参照 iOS 26 Liquid Glass 标签栏的紧凑比例定的：
-/// 图标 22 + 上下各 15 内边距 ≈ 52，比 Material 默认的 80 矮一大截。
-/// 想再紧凑可以改这里，`glassNavBarOccupiedHeight` 会自动跟着变。
-const double glassNavBarContentHeight = 52;
+/// v4.7 起改为 **64**：实测同为一加 13 上的 LSPosed 管理器（Miuix 应用），
+/// 其底栏胶囊 `[86,2458][1178,2682]` → 高 224px ÷ 3.5 = **64.0dp**。
+/// （旧值 52 是早期照 iOS 26 标签栏比例自定的，与 Miuix 参照物不符。）
+const double glassNavBarContentHeight = 64;
 
 /// 底栏离屏幕底边的抬起距离（不含系统安全区）。
 ///
-/// Liquid Glass 的悬浮感来自「薄薄一层飘在内容之上」，
-/// 抬起量要给得很克制 —— 8 刚好让它与屏幕边缘脱开，又不显臃肿。
-const double glassNavBarLift = 8;
+/// v4.7 起改为 **12**：LSPosed 底栏胶囊离屏底 98px = 28dp，其中 56px = 16dp
+/// 是手势条安全区，故额外抬起 = 28 - 16 = **12dp**。
+const double glassNavBarLift = 12;
 
 /// 悬浮底栏**自身**占用的高度（不含系统安全区）。
 ///
-/// 组成：底部抬起 8 + 底栏高 52。
+/// 组成：底部抬起 12 + 底栏高 64 = **76**。
 /// 用于给全局 `MediaQuery.padding.bottom` 加值，让 SnackBar / BottomSheet
 /// 等贴底元素自动抬到底栏之上（见 main.dart 的 `_GlassNavInsets`）。
 const double glassNavBarOccupiedHeight =
@@ -103,34 +103,46 @@ double glassNavBarClearance(BuildContext context) {
 /// )
 /// ```
 FloatingActionButtonLocation glassNavFabLocation(BuildContext context) {
-  // 底栏整体占位 = 底部抬起 + 底栏高 + 安全区
-  final barOccupied =
-      glassNavBarOccupiedHeight + MediaQuery.of(context).padding.bottom;
-  return _GlassNavFabLocation(barOccupied);
+  // 底栏顶边 = 底部抬起 + 底栏高 + 安全区；再往上留 16dp 呼吸间距
+  final barTop =
+      glassNavBarOccupiedHeight + MediaQuery.viewPaddingOf(context).bottom;
+  return _GlassNavFabLocation(barTop + 16);
 }
 
-/// Miuix 底栏的实测占位高度（逻辑像素 dp，**已扣除底部安全区**）。
+/// 底栏「顶边」距屏幕底边的距离（含系统安全区）。
 ///
-/// **实测方法**（一加 13 / Android 15 / density 3.5）：
-/// `uiautomator dump` 读底栏按钮的像素 bounds，配合
-/// `dumpsys window` 的 `navigationBars frame` 拿安全区，再统一除以 density。
+/// 这是页面留白与 FAB 抬高的唯一基准 —— 只要求出底栏顶边在哪，
+/// 再往上叠一点余量即可，不必去猜组件内部的 padding。
 ///
-/// 实测原始数据：
+/// 几何来源（v4.7，一加 13 / Android 15 / density 3.5，LSPosed 实测）：
 /// - 安全区 `navigationBars frame=[0,2724][1264,2780]` → 56px = **16dp**
-/// - 悬浮态按钮 `[443,2248][611,2416]`，顶边 2248
-///   → 底栏顶边到屏底 `(2780-2248)/3.5 ≈ 152dp`，减 16dp 安全区 = **136dp**
-/// - 贴边态按钮 `[0,2290][1264,2514]`，顶边 2290
-///   → 底栏顶边到屏底 `(2780-2290)/3.5 = 140dp`，减 16dp 安全区 = **124dp**
-///   （内容区高 `(2514-2290)/3.5 = 64dp`，与源码 itemHeight 吻合；
-///     多出来的 60dp 是组件内的底部 padding）
+/// - 悬浮：抬起 12 + 栏高 64 → 安全区之上 76dp，合计 **92dp**
+/// - 贴边：栏高 64（下方 16dp 安全区由 `main.dart` 用 surface 纯色补上）
+///   → 合计 **80dp**
 ///
-/// ⚠️ 两个值都**远大于**只按源码常量算出的高度——源码里的
-/// `bottomPadding` / `itemHeight` 并不等于组件在屏上实际占的位。
-/// 所以不能照搬源码常量，必须用实测值。
+/// ⚠️ 必须用 `viewPaddingOf` 而不是 `MediaQuery.of().padding`：
+/// 上层 `_GlassNavInsets` 为了给 SnackBar 让位，已经把 `padding.bottom`
+/// 撑大了 `glassNavBarOccupiedHeight`（76dp）。若这里用 `padding`，
+/// 会**再加一遍 76**，留白直接虚胖到两倍多 —— 这正是「列表滚到底
+/// 空一大截」的成因（验证滚动留白务必滚到底再截图，别只看中间状态）。
+double _miuixBarTopFromBottom(BuildContext context, bool floating) {
+  final safeBottom = MediaQuery.viewPaddingOf(context).bottom;
+  return floating
+      ? safeBottom + glassNavBarLift + glassNavBarContentHeight
+      : safeBottom + glassNavBarContentHeight;
+}
+
+/// 底栏从屏幕底边往上**占掉**的高度（= 底栏顶边距屏幕底边的距离）。
 ///
-/// 调用处会再叠加 `MediaQuery.padding.bottom`（即那 16dp 安全区）。
-const double _miuixFloatingBarOccupied = 136;
-const double _miuixEdgeBarOccupied = 124;
+/// 用途：页面改用 `MiuixScaffold` 后，可以把这块高度塞进它的 `bottomBar` 槽位
+/// （一块透明的 `SizedBox`），脚手架就会：
+/// 1. 把 `contentPadding.bottom` 设成这个值 → 列表底部留白自动正确；
+/// 2. 把 FAB 抬到底栏之上（`fabOffsetFromBottom = bottomBarHeight + fabSize + 12`）
+///    → 不再需要 `miuixNavFabLocation`。
+///
+/// 这比「页面自己算留白 + 自己定位 FAB」可靠得多，因为它只有一个数据来源。
+double miuixNavBarOccupied(BuildContext context) =>
+    _miuixBarTopFromBottom(context, NavBarSetting.floating.value);
 
 /// Miuix 底栏在滚动列表底部需要预留的留白高度。
 ///
@@ -140,45 +152,39 @@ const double _miuixEdgeBarOccupied = 124;
 /// 这里读全局 [NavBarSetting.floating]，与底栏渲染用的是同一个来源，
 /// 保证「底栏换了形态但页面留白没跟上」这种错位不会发生。
 double miuixNavBarClearance(BuildContext context) {
-  final safeBottom = MediaQuery.of(context).padding.bottom;
-  final floating = NavBarSetting.floating.value;
-  final barOccupied =
-      floating ? _miuixFloatingBarOccupied : _miuixEdgeBarOccupied;
-  // 另加 16dp 余量，避免最后一张卡片紧贴底栏上沿
-  return barOccupied + safeBottom + 16;
+  // 再留 16dp 余量，避免最后一张卡片紧贴底栏上沿
+  return miuixNavBarOccupied(context) + 16;
 }
 
 /// Miuix 底栏专用的 FAB 定位（悬浮 / 贴边两种形态各算一次）。
 ///
 /// 与 [glassNavFabLocation] 的区别：Miuix 底栏的尺寸规范与自研底栏不同，
 /// 用旧常量算出来的 FAB 会压在底栏上（真机实测贴边态尤其明显）。
-/// 高度取 [_miuixFloatingBarOccupied] / [_miuixEdgeBarOccupied] 的实测值。
 FloatingActionButtonLocation miuixNavFabLocation(
   BuildContext context, {
   required bool floating,
 }) {
-  final safeBottom = MediaQuery.of(context).padding.bottom;
-  final barOccupied =
-      floating ? _miuixFloatingBarOccupied : _miuixEdgeBarOccupied;
-  return _GlassNavFabLocation(barOccupied + safeBottom + 12);
+  // FAB 底边落在「底栏顶边之上 12dp」
+  return _GlassNavFabLocation(_miuixBarTopFromBottom(context, floating) + 12);
 }
 
 class _GlassNavFabLocation extends StandardFabLocation
     with FabEndOffsetX, FabFloatOffsetY {
-  const _GlassNavFabLocation(this.barOccupied);
+  const _GlassNavFabLocation(this.bottomInset);
 
-  /// 底栏占掉的底部高度
-  final double barOccupied;
+  /// FAB **底边**距 Scaffold 底边的距离。
+  ///
+  /// 注意语义：是「FAB 底边」，不是「FAB 顶边」。
+  /// 各调用方先把「底栏顶边在哪」算出来，再加自己想留的呼吸间距。
+  final double bottomInset;
 
   @override
   double getOffsetY(
     ScaffoldPrelayoutGeometry scaffoldGeometry,
     double adjustment,
   ) {
-    // 悬浮底栏之上，再留 16px 呼吸间距
     return scaffoldGeometry.scaffoldSize.height -
-        barOccupied -
-        16 -
+        bottomInset -
         scaffoldGeometry.floatingActionButtonSize.height +
         adjustment;
   }

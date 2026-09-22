@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:collection/collection.dart';
+// [新增] Miuix：顶栏 / 脚手架按「所有规范都按 miuix」迁移
+import 'package:flutter_miuix/miuix.dart';
 
 import '../../platform.dart';
 import '../../api/course.dart';
@@ -13,6 +15,8 @@ import '../widget/scan.dart';
 import '../widget/avatar.dart';
 // [新增] 悬浮玻璃底栏的底部留白高度
 import '../widget/liquid_glass_nav_bar.dart';
+// [新增] 底栏「悬浮 / 贴边」形态（脚手架要按它算底部占位）
+import '../../setting/navbar_setting.dart';
 import '../actives/sign_in/sign_in.dart';
 import '../actives/topic_discuss.dart';
 import '../actives/quiz.dart';
@@ -491,28 +495,43 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('课程'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.qr_code_scanner),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => ScanPage(
-                    onScanResult: handleScanContent,
+    // 底栏形态一变，底栏占位高度就得跟着变，所以整个脚手架包在监听里
+    return ValueListenableBuilder<bool>(
+      valueListenable: NavBarSetting.floating,
+      builder: (context, _, _) => MiuixScaffold(
+        // 顶栏换成 Miuix 玻璃顶栏。
+        //
+        // ⚠️ 模糊能看见的前提是「内容从顶栏底下滚过去」：`MiuixScaffold` 的
+        // body 铺满整屏、栏画在其上，滚动列表再自己吃掉 `contentPadding.top`
+        // —— offset=0 时首项正好在栏下方，一往上滚就钻进栏底，
+        // 顶栏里的 `BackdropFilter` 才有东西可糊。
+        //
+        // 若改用 `Scaffold.appBar` 槽位，body 会被顶到栏下面，两者永不重叠
+        // → 糊了个寂寞（这正是之前一直没做顶栏模糊的原因）。
+        topBar: MiuixTopAppBar(
+          title: '课程',
+          blurred: true,
+          actions: [
+            MiuixIconButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ScanPage(
+                      onScanResult: handleScanContent,
+                    ),
                   ),
-                ),
-              );
-            },
-          ),
-        ],
-      ),
-      body: RefreshIndicator(
+                );
+              },
+              child: const Icon(Icons.qr_code_scanner),
+            ),
+          ],
+        ),
+        // 底栏是全局叠加的，不在本页脚手架里。用一块透明占位告诉脚手架
+        // 「底下有这么高的东西」，contentPadding 与 FAB 就会自动让开，
+        // 页面自己不用再算留白。
+        bottomBar: SizedBox(height: miuixNavBarOccupied(context)),
+        content: (contentPadding) => RefreshIndicator(
         onRefresh: _loadCourses,
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
@@ -525,8 +544,12 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
               )
             : ListView.builder(
                 itemCount: _courses.length,
-                // [改动] 底部留白改跟随 Miuix 底栏形态（悬浮 / 贴边高度不同）
-                padding: EdgeInsets.only(bottom: miuixNavBarClearance(context)),
+                // 顶部留白吃掉顶栏高度 → 内容才会从顶栏底下滚过（玻璃顶栏的关键）。
+                // 底部留白由脚手架的 bottomBar 占位给出，再加 16dp 余量。
+                padding: EdgeInsets.only(
+                  top: contentPadding.top,
+                  bottom: contentPadding.bottom + 16,
+                ),
                 itemBuilder: (context, index) {
                   var course = _courses[index];
                   return Card(
@@ -658,6 +681,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                   );
                 },
               ),
+      ),
       ),
     );
   }
