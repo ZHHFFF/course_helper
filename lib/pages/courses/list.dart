@@ -15,6 +15,8 @@ import '../widget/scan.dart';
 import '../widget/avatar.dart';
 // [新增] 悬浮玻璃底栏的底部占位高度（几何常量模块）
 import '../widget/miuix_nav_metrics.dart';
+// [新增] 开发期压测假数据（--dart-define=SEED_TEST_DATA=N 时才有内容）
+import '../../utils/test_data_seeder.dart';
 // [新增] 底栏「悬浮 / 贴边」形态（脚手架要按它算底部占位）
 import '../../setting/navbar_setting.dart';
 import '../actives/sign_in/sign_in.dart';
@@ -239,6 +241,16 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     if (!AccountManager.hasActiveSession()) {
       setState(() {
         _courses = [];
+        _isLoading = false;
+      });
+      return;
+    }
+
+    // 开发期压测：短路掉网络请求，直接给一长串假课程（详见 test_data_seeder.dart）。
+    // 未传 --dart-define=SEED_TEST_DATA 时这里是编译期常量 false，会被 tree-shake。
+    if (TestDataSeeder.enabled) {
+      setState(() {
+        _courses = TestDataSeeder.buildFakeCourses(TestDataSeeder.count);
         _isLoading = false;
       });
       return;

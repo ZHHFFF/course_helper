@@ -2,10 +2,12 @@
 // Miuix 玻璃底栏的几何契约
 // ============================================================================
 //
-// 底栏本体在 `main.dart`（`MiuixGlassNavigationBar` + `MiuixLayerBackdropCapture`），
-// 但它是用 `Stack` + `Positioned` **悬浮叠加**在页面之上的，**不占** Scaffold 的
-// `bottomNavigationBar` 槽位。于是「底栏到底占掉多少高度」就成了一个必须跨文件
-// 共享的数据 —— 就是本文件。
+// 底栏本体是 `widget/miuix_liquid_glass_nav_bar.dart`
+// （`BackdropFilter` 版液态玻璃底栏，v4.8.6 起；之前是包里的
+// `MiuixGlassNavigationBar` + `MiuixLayerBackdropCapture` 那套快照采样），
+// 由 `main.dart` 用 `Stack` + `Positioned` **悬浮叠加**在页面之上，
+// **不占** Scaffold 的 `bottomNavigationBar` 槽位。
+// 于是「底栏到底占掉多少高度」就成了一个必须跨文件共享的数据 —— 就是本文件。
 //
 // 依赖它的地方：
 //   1. 页面滚动内容底部留白（避免最后一项被盖）        → miuixNavBarClearance
@@ -18,8 +20,7 @@
 //
 // 历史：这些常量原先住在 `widget/liquid_glass_nav_bar.dart` 里，与自研玻璃底栏
 // （`GlassNavBar` / 4 方案预览页 / `shaders/liquid_glass.frag`）混在一个 1378 行的
-// 文件里。底栏换成 Miuix 的 `MiuixGlassNavigationBar` 后，那套自研组件已整体删除，
-// 只剩这几个仍被引用的几何常量，抽出来单独成文件。
+// 文件里。那套自研组件整体删除后，只剩这几个仍被引用的几何常量，抽出来单独成文件。
 // ============================================================================
 
 import 'package:flutter/widgets.dart';
@@ -32,8 +33,9 @@ import '../../setting/navbar_setting.dart';
 /// 其底栏胶囊 `[86,2458][1178,2682]` → 高 224px ÷ 3.5 = **64.0dp**。
 ///
 /// ⚠️ `main.dart` 以 `_kNavBarHeight` 把它传给
-/// `MiuixGlassNavigationBar(height:)`。库自身默认值是 `54.0`（不一致，故显式传），
-/// **两处必须同步改**，否则「底栏实际高度」与「页面留白」会各说各话。
+/// `MiuixLiquidGlassNavigationBar(height:)`。Miuix 库里对应的默认值是 `54.0`
+/// （不一致，故显式传），**两处必须同步改**，否则「底栏实际高度」与「页面留白」
+/// 会各说各话。
 const double miuixNavBarContentHeight = 64;
 
 /// 底栏离「手势条安全区上沿」的额外抬起距离（不含系统安全区）。

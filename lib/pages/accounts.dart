@@ -18,6 +18,8 @@ import 'widget/cache_manager.dart';
 import 'widget/keep_alive_checker.dart';
 // [新增] 悬浮玻璃底栏的底部占位高度（几何常量模块）
 import 'widget/miuix_nav_metrics.dart';
+// [新增] 开发期压测假数据（--dart-define=SEED_TEST_DATA=N 时才有内容）
+import '../utils/test_data_seeder.dart';
 import '../setting/navbar_setting.dart';
 import 'login.dart';
 
@@ -336,7 +338,17 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
 
   Future<void> _loadAccounts() async {
     setState(() {
-      _accounts = AccountManager.allAccounts;
+      // 压测用假账号只追加到本页的本地列表，**不写 SharedPreferences**，
+      // 因此不会污染用户真实的账号列表（详见 test_data_seeder.dart）。
+      _accounts = TestDataSeeder.enabled
+          ? <User>[
+              ...AccountManager.allAccounts,
+              ...TestDataSeeder.buildFakeAccounts(
+                TestDataSeeder.count,
+                AccountManager.allAccounts,
+              ),
+            ]
+          : AccountManager.allAccounts;
       _currentAccountId = AccountManager.currentSessionId;
     });
   }

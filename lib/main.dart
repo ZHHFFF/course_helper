@@ -13,9 +13,13 @@ import'./pages/accounts.dart';
 import'./pages/courses/list.dart';
 import'./pages/login.dart';
 // [新增] Miuix 玻璃底栏的几何契约（占位高度 / 页面留白）
-// 注：底栏本体就在本文件（`MiuixGlassNavigationBar`），这里只是把「它占掉多少
-// 高度」这个跨文件共享的数据引进来。原先同名的自研底栏组件已整体删除。
 import'./pages/widget/miuix_nav_metrics.dart';
+// [新增] 液态玻璃底栏本体。
+// 为什么不用包里的 `MiuixGlassNavigationBar`：它的玻璃是「录图层快照 → 喂 shader」，
+// 采样由 `paint()` 驱动，而 `ListView` 的 viewport 自己是重绘边界，滚动时上面的
+// 捕获节点收不到 `paint()` → 快照冻住（实测只有 ~19 次/秒）→ 表现为「一卡一卡」。
+// 本文件改用与顶栏完全相同的 `BackdropFilter` 机制，详见组件文件头。
+import'./pages/widget/miuix_liquid_glass_nav_bar.dart';
 // [新增] 底栏外观设置（悬浮 / 贴边）
 import'./setting/navbar_setting.dart';
 import'./api/api_service.dart';
@@ -290,7 +294,8 @@ class _MiuixScope extends StatelessWidget {
 ///
 /// 结论：SnackBar 需要的是 `padding`，改 `padding` 就够，`viewPadding` 必须保持原值。
 ///
-/// v4.7 补充：底栏已换成 `MiuixGlassNavigationBar`，它自己**不读** `viewPadding`
+/// v4.7 补充：底栏已换成 `MiuixGlassNavigationBar`（v4.8.6 起进一步换成自研的
+/// `MiuixLiquidGlassNavigationBar`），它自己**不读** `viewPadding`
 /// （改用 `LayoutBuilder` 拿外部约束，间距由 `main.dart` 的 `Positioned` 控制），
 /// 所以上面那个「间距算两遍」的具体路径已经不存在了。但这条规则**依然成立**：
 /// `main.dart` 里算底栏离屏底距离用的就是 `viewPaddingOf(context).bottom`，
@@ -360,24 +365,9 @@ class _MainPageState extends State<MainPage> {
   /// 底栏内容高度（实测参照物 64dp）
   static const double _kNavBarHeight = 64;
 
-  /// 玻璃底栏采样用的背景快照。
-  ///
-  /// Miuix 的玻璃是**采样背景快照**实现的（不是 `BackdropFilter` 那种「自动模糊身后」）：
-  /// 用 `MiuixLayerBackdropCapture` 包住内容层，每帧把内容录成一张 `ui.Image`，
-  /// 玻璃面板再按偏移取样 + 模糊 + 折射。等价于 iOS / Compose 的 layer backdrop。
-  ///
-  /// ⚠️⚠️ **不传 backdrop 时玻璃会静默消失**。`miuix_glass.dart` 源码注释原话：
-  /// 「无 backdrop 或 shader 不可用时保留纯色轮廓、阴影及可绘制的高光，
-  /// 不伪装成折射效果」—— 也就是说它会**退化成纯色块且不报任何错**。
-  /// 我第一版就是因为没接 backdrop，做出个实心块还以为"换组件就有玻璃"。
-  final MiuixLayerBackdrop _navBackdrop = MiuixLayerBackdrop();
-
-  @override
-  void dispose() {
-    // backdrop 持有 ui.Image 快照，必须显式释放
-    _navBackdrop.dispose();
-    super.dispose();
-  }
+  /// 底栏玻璃的模糊半径（dp）。20 与 Miuix 玻璃材质 `puredThinGlass` 一致，
+  /// 实际 sigma = 20 × 0.45 = 9.0（换算系数与顶栏相同）。
+  static const double _kNavBlurRadius = 20;
 
   @override
   void initState() {
@@ -496,29 +486,30 @@ class _MainPageState extends State<MainPage> {
       // 底栏由 Stack 叠加（弃用 Scaffold.bottomNavigationBar，因为它无法悬浮）
       body: Stack(
         children: [
-          // [关键] 内容层必须被 MiuixLayerBackdropCapture 包住，
-          // 玻璃底栏才有「背景」可采样。不加这层 → 玻璃静默退化成纯色。
+          // 内容层：直接铺满即可。
+          //
+          // 为什么不再需要「捕获组件包住内容层」：底栏已改用 `BackdropFilter`
+          // （与顶栏同一机制），它在合成时**实时**读正下方像素，
+          // 不需要预先录制任何快照。旧的 `MiuixSampledBackdropCapture` +
+          // 滚动唤醒那套已随方案 B 一并移除（组件文件保留备查）。
           Positioned.fill(
-            child: MiuixLayerBackdropCapture(
-              backdrop: _navBackdrop,
-              child: IndexedStack(
-                index: _selectedIndex,
-                children: [
-                  CoursesPage(key: coursesPageKey),
-                  const AccountsPage(),
-                ],
-              ),
+            child: IndexedStack(
+              index: _selectedIndex,
+              children: [CoursesPage(key: coursesPageKey), const AccountsPage()],
             ),
           ),
-          // [改动 v4.7] 底栏换成 `MiuixGlassNavigationBar`（真·玻璃底栏）。
+          // [改动 v4.8.6] 底栏换成自研的 `MiuixLiquidGlassNavigationBar`。
           //
-          // 之前用 `MiuixFloatingNavigationBar` / `MiuixNavigationBar` 是**选错组件**：
-          // 那两个是「纯色 DecoratedBox」版本，压根没有模糊能力，所以用户看到的是
-          // 「没有模糊、没有玻璃」的实心块。真正的玻璃底栏在 Miuix 里叫
-          // `MiuixGlassNavigationBar`（对应 Kotlin `GlassNavigationBar`）。
+          // 为什么不直接用包里的 `MiuixGlassNavigationBar`：它的玻璃是
+          // 「录图层快照 → 喂 shader」，采样由 `paint()` 驱动；而 `ListView` 的
+          // `Viewport` 自己就是重绘边界（`viewport.dart:752`），滚动时重绘被限制在
+          // viewport 自己的图层里，**位于它之上的捕获节点收不到 `paint()`**，
+          // 快照就冻在旧帧 —— 真机实测滚动期间只有 ~19 次/秒（60Hz 屏），
+          // 表现为「停住 → 跳一下 → 再停住」。
           //
-          // ⚠️ 光换组件还不够：玻璃**必须**传 `backdrop`，否则会静默退化成纯色
-          // （见 `_navBackdrop` 字段注释）。
+          // 新组件改用与顶栏**完全相同**的 `BackdropFilter` + `ImageFilter.blur`：
+          // 合成时实时取正下方像素，永远与当前帧同步，且只有一次 GPU blur pass。
+          // 代价是暂时没有折射（用户已确认可接受）。
           //
           // 几何参数（左右 24 / 离底 12+安全区）来自对同一台机器上 LSPosed 管理器
           // （也是 Miuix 应用）的 uiautomator 实测：
@@ -547,16 +538,15 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
-  /// 按当前设置构建 Miuix 底栏（悬浮 / 贴边二选一），两态都是**玻璃**材质。
+  /// 按当前设置构建液态玻璃底栏（悬浮 / 贴边二选一），两态都是**真模糊**。
   ///
-  /// ⚠️ 用的是 `MiuixGlassNavigationBar`，不是 `MiuixNavigationBar` /
-  /// `MiuixFloatingNavigationBar`。后两者是纯色版本，**没有任何模糊能力**——
-  /// 第一版就是错在这里，做出来一个实心块，用户直接问「我的玻璃呢？」。
+  /// ⚠️ 用的是 `MiuixLiquidGlassNavigationBar`（`BackdropFilter` 版），
+  /// 不是包里的 `MiuixNavigationBar` / `MiuixFloatingNavigationBar` —— 后两者是
+  /// 纯色版本，**没有任何模糊能力**（第一版就是错在这里，做出来一个实心块，
+  /// 用户直接问「我的玻璃呢？」）。
   ///
-  /// ⚠️ 而且 `MiuixGlassNavigationBar` **必须传 `backdrop`**：
-  /// Miuix 的玻璃不是 `BackdropFilter`（自动模糊身后），而是「采样背景快照」，
-  /// 不传 backdrop 时源码会走「保留纯色轮廓、不伪装成折射」的分支，
-  /// **静默退化成纯色且不报错**（详见 `_navBackdrop` 字段注释）。
+  /// ⚠️ 也不是包里的 `MiuixGlassNavigationBar`：它的玻璃靠图层快照采样，
+  /// 滚动时会冻住（详见 `build()` 里的注释）。
   Widget _buildMiuixNavBar(
     BuildContext context, {
     required bool floating,
@@ -573,10 +563,10 @@ class _MainPageState extends State<MainPage> {
     ];
     const labels = <String>['课程', '账号'];
 
-    final bar = MiuixGlassNavigationBar(
+    final bar = MiuixLiquidGlassNavigationBar(
       items: [
         for (var i = 0; i < labels.length; i++)
-          MiuixGlassNavigationItem(
+          MiuixLiquidGlassNavItem(
             icon: icons[i],
             label: labels[i],
             contentDescription: labels[i],
@@ -584,9 +574,9 @@ class _MainPageState extends State<MainPage> {
       ],
       selectedIndex: _selectedIndex,
       onSelect: _onNavTap,
-      backdrop: _navBackdrop,
       height: _kNavBarHeight,
-      // 悬浮态：胶囊形（库默认 cornerRadius 999）+ floating 阴影
+      blurRadius: _kNavBlurRadius,
+      // 悬浮态：胶囊形（默认 cornerRadius 999）+ floating 阴影
       // 贴边态：直角 + 去掉阴影，通栏贴底
       shape: floating ? null : const MiuixGlassShape(cornerRadius: 0),
       shadow: floating
