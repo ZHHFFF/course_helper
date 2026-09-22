@@ -12,8 +12,6 @@ import '../platform.dart';
 import '../push/easemob.dart';
 import 'widget/avatar.dart';
 import 'widget/answer_search_settings.dart';
-// [新增] Miuix 风格的顶栏动作按钮（纯视觉，不接管手势）
-import 'widget/miuix_action_trigger.dart';
 // [新增] 外观设置页（底栏悬浮 / 贴边切换）
 import 'settings/appearance.dart';
 import 'widget/log_viewer.dart';
@@ -23,6 +21,24 @@ import 'widget/keep_alive_checker.dart';
 import 'widget/liquid_glass_nav_bar.dart';
 import '../setting/navbar_setting.dart';
 import 'login.dart';
+
+/// 雨课堂各服务器的标识色。
+///
+/// 顶栏服务器图标与弹出菜单里的小圆点共用同一份，避免两处各写一遍导致不同步。
+const Map<RainClassroomServerType, Color> kRainClassroomServerColors = {
+  RainClassroomServerType.yuketang: Color(0xFF5096F5),
+  RainClassroomServerType.pro: Color(0xFF7B3BB5),
+  RainClassroomServerType.changjiang: Color(0xFFC21F30),
+  RainClassroomServerType.huanghe: Color(0xFFB57232),
+};
+
+/// 雨课堂各服务器的显示名（弹出菜单项用）。
+const Map<RainClassroomServerType, String> kRainClassroomServerNames = {
+  RainClassroomServerType.yuketang: '雨课堂',
+  RainClassroomServerType.pro: '荷塘 · 雨课堂',
+  RainClassroomServerType.changjiang: '长江 · 雨课堂',
+  RainClassroomServerType.huanghe: '黄河 · 雨课堂',
+};
 
 class AccountsPage extends StatefulWidget {
   const AccountsPage({super.key});
@@ -49,6 +65,183 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   /// 用 `contentPadding.top` 会让内容以两倍速往栏底钻，详见
   /// `courses/list.dart` 里同名字段的注释。
   double _topBarInset = 0;
+
+  // ---------------------------------------------------------------------------
+  // 顶栏两个弹出菜单（服务器切换 / 更多）
+  //
+  // 从 Material 的 `PopupMenuButton` 换成 Miuix 的 `MiuixOverlayListPopup`。
+  // Miuix 的弹窗是**声明式**的：由 `show` 控制显隐，锚点靠 `anchorBounds`
+  // 显式给出，所以需要各自一个 `GlobalKey` 去量触发器的位置。
+  //
+  // ⚠️ 弹窗组件必须**常驻挂载**（用 `show:` 切换，而不是 `if (show)` 增删），
+  // 否则关闭时组件已被移除、退场动画播不完，表现为「一点空白处菜单就瞬间消失」。
+  // ---------------------------------------------------------------------------
+
+  /// 服务器切换菜单触发器的锚点
+  final GlobalKey _serverMenuAnchor = GlobalKey();
+
+  /// 「更多」菜单触发器的锚点
+  final GlobalKey _moreMenuAnchor = GlobalKey();
+
+  bool _showServerMenu = false;
+  bool _showMoreMenu = false;
+
+  /// 取触发器在**窗口坐标系**下的矩形，作为弹窗锚点。
+  ///
+  /// `MiuixOverlayListPopup.anchorBounds` 会同时作为定位计算的 `parentBounds`
+  /// 与 `anchorBounds` 使用，取的就是全局/窗口坐标，所以这里用 `localToGlobal`。
+  Rect _anchorBoundsOf(GlobalKey key) {
+    final box = key.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return Rect.zero;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  /// 把 `MiuixDropdownEntriesPopupContent` 的 `(组下标, 项下标)` 回调派发到
+  /// 对应项的 `onClick`。
+  ///
+  /// ⚠️ 必须自己派发：`MiuixDropdownImpl` 内部只有
+  /// `GestureDetector(onTap: () => onSelectedIndexChange(index))`，
+  /// **不会**调用 `MiuixDropdownItem.onClick`。
+  /// 库自带的 `MiuixOverlayDropdownPopup` 是自己代劳了这一层，但我们直接用
+  /// `MiuixDropdownEntriesPopupContent`，就得接住这个回调，
+  /// 否则表现是「菜单点得动、但什么都没发生，也不关」。
+  void _dispatchDropdownTap(
+    List<MiuixDropdownEntry> entries,
+    int entryIdx,
+    int itemIdx,
+  ) {
+    if (entryIdx < 0 || entryIdx >= entries.length) return;
+    final items = entries[entryIdx].items;
+    if (itemIdx < 0 || itemIdx >= items.length) return;
+    items[itemIdx].onClick?.call();
+  }
+
+  /// 服务器切换菜单：一组单选（雨课堂 / 荷塘 / 长江 / 黄河）。
+  Widget _buildServerMenu(BuildContext context) {
+    final current = PlatformManager().currentServer;
+    final entries = <MiuixDropdownEntry>[
+      MiuixDropdownEntry(
+        items: [
+          for (final type in RainClassroomServerType.values)
+            MiuixDropdownItem(
+              text: kRainClassroomServerNames[type]!,
+              icon: Icon(
+                Icons.circle,
+                size: 16,
+                color: kRainClassroomServerColors[type],
+              ),
+              selected: current == type,
+              onClick: () async {
+                setState(() => _showServerMenu = false);
+                await PlatformManager().setServer(type);
+                if (mounted) setState(() {});
+              },
+            ),
+        ],
+      ),
+    ];
+    return MiuixOverlayListPopup(
+      show: _showServerMenu,
+      anchorBounds: _anchorBoundsOf(_serverMenuAnchor),
+      // 右对齐：菜单从触发按钮的右边缘往左铺，跟 Material 的观感一致
+      alignment: MiuixPopupAlign.end,
+      onDismissRequest: () => setState(() => _showServerMenu = false),
+      content: MiuixListPopupColumn(
+        children: [
+          MiuixDropdownEntriesPopupContent(
+            entries: entries,
+            dropdownColors: MiuixDropdownDefaults.dropdownColors(context),
+            onItemClick: (entryIdx, itemIdx) =>
+                _dispatchDropdownTap(entries, entryIdx, itemIdx),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 「更多」菜单：平台单选 + 一组入口。
+  Widget _buildMoreMenu(BuildContext context) {
+    final entries = <MiuixDropdownEntry>[
+      // 第一组：平台单选（原来嵌在 PopupMenuItem 里的 RadioListTile）
+      MiuixDropdownEntry(
+        items: [
+          for (final platform in PlatformType.values)
+            MiuixDropdownItem(
+              text: platform == PlatformType.chaoxing ? '学习通' : '雨课堂',
+              selected: _selectedPlatform == platform,
+              onClick: () async {
+                setState(() {
+                  _selectedPlatform = platform;
+                  _showMoreMenu = false;
+                });
+                await PlatformManager().setPlatform(platform);
+                if (mounted) setState(() {});
+              },
+            ),
+        ],
+      ),
+      // 第二组：功能入口
+      MiuixDropdownEntry(
+        items: [
+          MiuixDropdownItem(
+            text: '答案检索设置',
+            icon: const Icon(Icons.search, size: 20),
+            onClick: () =>
+                _openFromMoreMenu(const AnswerSearchSettingsPage()),
+          ),
+          MiuixDropdownItem(
+            text: '外观设置',
+            icon: const Icon(Icons.palette_outlined, size: 20),
+            onClick: () => _openFromMoreMenu(const AppearanceSettingsPage()),
+          ),
+          MiuixDropdownItem(
+            text: '运行日志',
+            icon: const Icon(Icons.receipt_long, size: 20),
+            onClick: () => _openFromMoreMenu(const LogViewerPage()),
+          ),
+          MiuixDropdownItem(
+            text: 'PPT 缓存',
+            icon: const Icon(Icons.sd_storage_outlined, size: 20),
+            onClick: () => _openFromMoreMenu(const CacheManagerPage()),
+          ),
+          MiuixDropdownItem(
+            text: '前台服务自检',
+            icon: const Icon(Icons.power_settings_new, size: 20),
+            onClick: () => _openFromMoreMenu(const KeepAliveCheckerPage()),
+          ),
+          MiuixDropdownItem(
+            text: '关于',
+            onClick: () {
+              setState(() => _showMoreMenu = false);
+              _showAboutDialog();
+            },
+          ),
+        ],
+      ),
+    ];
+    return MiuixOverlayListPopup(
+      show: _showMoreMenu,
+      anchorBounds: _anchorBoundsOf(_moreMenuAnchor),
+      alignment: MiuixPopupAlign.end,
+      onDismissRequest: () => setState(() => _showMoreMenu = false),
+      content: MiuixListPopupColumn(
+        children: [
+          MiuixDropdownEntriesPopupContent(
+            entries: entries,
+            dropdownColors: MiuixDropdownDefaults.dropdownColors(context),
+            onItemClick: (entryIdx, itemIdx) =>
+                _dispatchDropdownTap(entries, entryIdx, itemIdx),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 先收起菜单再跳页：菜单若还开着，新页面的入场动画会和菜单的退场动画打架。
+  void _openFromMoreMenu(Widget page) {
+    setState(() => _showMoreMenu = false);
+    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+  }
 
   @override
   void initState() {
@@ -452,227 +645,33 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         blurred: true,
         scrollBehavior: _topBarBehavior,
         actions: [
+          // 注：这里的动作按钮直接用 `MiuixIconButton`（自带手势）。
+          // 之前用 `PopupMenuButton(child: 纯视觉触发器)` 时**不能**这么做 ——
+          // `MiuixPressable` 与 `PopupMenuButton` 外层的 `InkWell` 会抢手势，
+          // 而内层（更深）的识别器先入竞技场并获胜，外层永远收不到 tap。
+          // 现在弹窗改成 Miuix 的声明式组件、由按钮自己 setState 开合，
+          // 手势只有一个归属，就不存在这个冲突了。
           if (_isMultiSelectMode)
             MiuixIconButton(
               onPressed: _deleteSelectedAccounts,
               child: const Icon(Icons.delete),
             ),
           if (_selectedPlatform == PlatformType.rainClassroom)
-            StatefulBuilder(
-              builder: (context, setState) {
-                // 服务器类型与颜色
-                const serverColors = {
-                  RainClassroomServerType.yuketang: Color(0xFF5096F5),
-                  RainClassroomServerType.pro: Color(0xFF7B3BB5),
-                  RainClassroomServerType.changjiang: Color(0xFFC21F30),
-                  RainClassroomServerType.huanghe: Color(0xFFB57232)
-                };
-                
-                final serverColor = serverColors[PlatformManager().currentServer];
-                return PopupMenuButton<RainClassroomServerType>(
-                  padding: EdgeInsets.zero,
-                  tooltip: '切换服务器',
-                  onSelected: (RainClassroomServerType server) async {
-                    await PlatformManager().setServer(server);
-                  },
-                  itemBuilder: (BuildContext context) => [
-                PopupMenuItem<RainClassroomServerType>(
-                  enabled: true,
-                  child: StatefulBuilder(
-                    builder: (BuildContext context, StateSetter setPopupState) {
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          RadioGroup<RainClassroomServerType>(
-                            groupValue: PlatformManager().currentServer,
-                            onChanged: (RainClassroomServerType? value) async {
-                              if (value != null) {
-                                await PlatformManager().setServer(value);
-                                Navigator.pop(context);
-                                // 延迟执行以确保弹窗关闭后再刷新
-                                Future.microtask(() => setState(() {}));
-                              }
-                            },
-                            child: Column(
-                              children: [
-                                RadioListTile<RainClassroomServerType>(
-                                  title: const Text('雨课堂'),
-                                  value: RainClassroomServerType.yuketang,
-                                  dense: true
-                                ),
-                                RadioListTile<RainClassroomServerType>(
-                                  title: const Text('荷塘 · 雨课堂'),
-                                  value: RainClassroomServerType.pro,
-                                  dense: true
-                                ),
-                                RadioListTile<RainClassroomServerType>(
-                                  title: const Text('长江 · 雨课堂'),
-                                  value: RainClassroomServerType.changjiang,
-                                  dense: true
-                                ),
-                                RadioListTile<RainClassroomServerType>(
-                                  title: const Text('黄河 · 雨课堂'),
-                                  value: RainClassroomServerType.huanghe,
-                                  dense: true
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                ),
-              ],
-                  // ⚠️ 用 `child` 而不是 `icon`：传 `icon` 时 PopupMenuButton 会
-                  // 自己包一个 Material `IconButton`（48×48 + 水波纹），与 Miuix
-                  // 顶栏观感不符。传 `child` 则原样使用我们的 Miuix 触发器，
-                  // 外层 InkWell 负责点击，`padding` 归零避免额外 8dp 留白。
-                  child: MiuixActionTrigger(
-                    icon: Icon(Icons.dns, color: serverColor),
-                  ),
-                );
-              },
+            MiuixIconButton(
+              // GlobalKey 用来量出按钮在屏幕上的位置，作为弹窗锚点
+              key: _serverMenuAnchor,
+              onPressed: () =>
+                  setState(() => _showServerMenu = !_showServerMenu),
+              child: Icon(
+                Icons.dns,
+                color: kRainClassroomServerColors[PlatformManager().currentServer],
+              ),
             ),
-          PopupMenuButton<String>(
-            // 同上：触发器换成 Miuix 观感，弹出内容暂留 Material
-            padding: EdgeInsets.zero,
-            tooltip: '更多',
-            onSelected: (String result) {
-              if (result == 'about') {
-                _showAboutDialog();
-              } else if (result == 'answer_search_settings') {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const AnswerSearchSettingsPage(),
-                  ),
-                );
-              } else if (result == 'appearance_settings') {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const AppearanceSettingsPage(),
-                  ),
-                );
-              } else if (result == 'runtime_logs') {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const LogViewerPage(),
-                  ),
-                );
-              } else if (result == 'ppt_cache') {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const CacheManagerPage(),
-                  ),
-                );
-              } else if (result == 'keep_alive_checker') {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const KeepAliveCheckerPage(),
-                  ),
-                );
-              }
-            },
-            itemBuilder: (BuildContext context) => [
-              // 平台切换菜单项
-              PopupMenuItem<String>(
-                enabled: true,
-                child: StatefulBuilder(
-                  builder: (BuildContext context, StateSetter setState) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        RadioGroup<PlatformType>(
-                          groupValue: _selectedPlatform,
-                          onChanged: (PlatformType? value) async {
-                            if (value != null) {
-                              setState(() {
-                                _selectedPlatform = value;
-                              });
-                              Navigator.pop(context);
-                              await PlatformManager().setPlatform(value);
-                            }
-                          },
-                          child: Column(
-                            children: [
-                              RadioListTile<PlatformType>(
-                                title: const Text('学习通'),
-                                value: PlatformType.chaoxing,
-                                dense: true,
-                              ),
-                              RadioListTile<PlatformType>(
-                                title: const Text('雨课堂'),
-                                value: PlatformType.rainClassroom,
-                                dense: true,
-                              ),
-                            ],
-                          ),
-                        ),
-                        const Divider(height: 1),
-                      ],
-                    );
-                  },
-                ),
-              ),
-              // 答案检索设置菜单项
-              const PopupMenuItem<String>(
-                value: 'answer_search_settings',
-                child: Row(children: [
-                  Icon(Icons.search, size: 20),
-                  SizedBox(width: 8),
-                  Text('答案检索设置'),
-                ]),
-              ),
-              // 外观设置菜单项（底栏悬浮 / 贴边切换）
-              const PopupMenuItem<String>(
-                value: 'appearance_settings',
-                child: Row(children: [
-                  Icon(Icons.palette_outlined, size: 20),
-                  SizedBox(width: 8),
-                  Text('外观设置'),
-                ]),
-              ),
-              // 运行日志菜单项
-              const PopupMenuItem<String>(
-                value: 'runtime_logs',
-                child: Row(children: [
-                  Icon(Icons.receipt_long, size: 20),
-                  SizedBox(width: 8),
-                  Text('运行日志'),
-                ]),
-              ),
-              // PPT 缓存菜单项
-              const PopupMenuItem<String>(
-                value: 'ppt_cache',
-                child: Row(children: [
-                  Icon(Icons.sd_storage_outlined, size: 20),
-                  SizedBox(width: 8),
-                  Text('PPT 缓存'),
-                ]),
-              ),
-              // 前台服务自检菜单项
-              const PopupMenuItem<String>(
-                value: 'keep_alive_checker',
-                child: Row(children: [
-                  Icon(Icons.power_settings_new, size: 20),
-                  SizedBox(width: 8),
-                  Text('前台服务自检'),
-                ]),
-              ),
-              // 关于菜单项
-              const PopupMenuItem<String>(
-                value: 'about',
-                child: Row(children: [Text('关于')]),
-              ),
-            ],
-            // 触发器换成 Miuix 观感（理由同服务器菜单）
-            child: const MiuixActionTrigger(icon: Icon(Icons.more_horiz)),
-          )
+          MiuixIconButton(
+            key: _moreMenuAnchor,
+            onPressed: () => setState(() => _showMoreMenu = !_showMoreMenu),
+            child: const Icon(Icons.more_horiz),
+          ),
         ],
       ),
       content: (contentPadding) {
@@ -680,10 +679,12 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         if (contentPadding.top > _topBarInset) {
           _topBarInset = contentPadding.top;
         }
-        // 把顶栏折叠行为挂到滚动通知上（只认 depth==0 的竖向滚动体）
-        return MiuixScrollBehaviorListener(
-          behavior: _topBarBehavior,
-          child: _accounts.isEmpty
+        return Stack(
+          children: [
+            // 把顶栏折叠行为挂到滚动通知上（只认 depth==0 的竖向滚动体）
+            MiuixScrollBehaviorListener(
+              behavior: _topBarBehavior,
+              child: _accounts.isEmpty
           ? Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -750,6 +751,12 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
           );
         },
       ),
+            ),
+            // 两个弹出菜单常驻挂载（用 `show` 控制显隐），关闭动画才能播完。
+            // `MiuixPopupLayout` 的 build 返回 `SizedBox.shrink()`，不占布局。
+            _buildServerMenu(context),
+            _buildMoreMenu(context),
+          ],
         );
       },
       // 底栏是全局叠加的，不在本页脚手架里。这块透明占位一次解决两件事：
