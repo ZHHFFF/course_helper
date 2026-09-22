@@ -12,6 +12,8 @@ import '../platform.dart';
 import '../push/easemob.dart';
 import 'widget/avatar.dart';
 import 'widget/answer_search_settings.dart';
+// [新增] Miuix 风格的顶栏动作按钮（纯视觉，不接管手势）
+import 'widget/miuix_action_trigger.dart';
 // [新增] 外观设置页（底栏悬浮 / 贴边切换）
 import 'settings/appearance.dart';
 import 'widget/log_viewer.dart';
@@ -260,18 +262,35 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   }
 
   Widget _buildTitle(String name, bool isCurrentAccount) {
+    final theme = MiuixTheme.of(context);
+    // ⚠️ 这里必须用**当前卡片**的内容色，不能用 `colors.onBackgroundVariant`。
+    // 当前账号的卡片底色是 `primaryContainer`（浅色 `#5D9BFF` / 深色 `#338FE4`，
+    // 两种模式都是**蓝色**），而 `onPrimaryContainer` 都是白色。若用固定的
+    // `onBackgroundVariant`（深灰蓝），角标会变成「蓝底 + 深蓝字」，几乎看不见。
+    //
+    // 用「内容色 + 透明度」的写法可以同时适配两种模式：
+    // 深色 → 白色 22% 底 + 白字；浅色 → 白色 22% 底 + 白字（底色同样是蓝）。
+    final onCard = MiuixContentColor.of(context);
     return Row(
       children: [
-        Text(name),
+        Flexible(
+          child: MiuixText(
+            name,
+            fontSize: theme.textStyles.headline1.fontSize,
+            fontWeight: FontWeight.w500,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
         if (isCurrentAccount)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             margin: const EdgeInsets.only(left: 8),
             decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primary,
+              color: onCard.withValues(alpha: 0.22),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Text('当前', style: TextStyle(color: Colors.white, fontSize: 12)),
+            child: MiuixText('当前', fontSize: 12, color: onCard),
           ),
       ],
     );
@@ -279,33 +298,43 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
 
   Widget _buildListItemContent(
       BuildContext context, User user, bool isSelected, bool isCurrentAccount) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      leading: AvatarWidget(key: ValueKey(user.avatar), imageUrl: user.avatar),
-      title: _buildTitle(user.name, isCurrentAccount),
-      subtitle: Text('ID: ${user.uid}\n手机号: ${user.phone}'),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (!user.status)
-            Tooltip(
-              message: '账号失效',
-              child: Icon(
-                Icons.error_outline,
-                color: Colors.red,
-                size: 30
-              )
-            ),
-          if (isCurrentAccount && PlatformManager().isChaoxing)
-            IconButton(
-              icon: Icon(
-                EasemobIM().isLoggedIn ?
-                Icons.notifications : Icons.notifications_off,
-                color: EasemobIM().isLoggedIn ?
-                Theme.of(context).colorScheme.primary : Colors.grey
-              ),
-              iconSize: 30,
-              tooltip: '消息推送',
+    final colors = MiuixTheme.of(context).colors;
+    final textStyles = MiuixTheme.of(context).textStyles;
+    // 当前账号的卡片底色是蓝色，次级文字必须跟着卡片内容色走（见 `_buildTitle`
+    // 的注释）；普通卡片则用 Miuix 规定的 summary 色 `onSurfaceVariantSummary`。
+    final onCard = MiuixContentColor.of(context);
+    final summaryColor = isCurrentAccount
+        ? onCard.withValues(alpha: 0.85)
+        : colors.onSurfaceVariantSummary;
+    // [改动] ListTile → MiuixBasicComponent（Miuix 的「一行一项」标准组件）。
+    // 点击 / 长按已上移到外层 MiuixCard，这里只负责排版。
+    return MiuixBasicComponent(
+      // 原 ListTile 的 contentPadding 是「水平 16 / 垂直 8」，
+      // MiuixBasicComponent 默认是 16 四边，这里对齐成水平 16 + 垂直 12
+      insideMargin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      startAction: AvatarWidget(
+        key: ValueKey(user.avatar),
+        imageUrl: user.avatar,
+      ),
+      // 自定义中心内容：标题行（带「当前」角标）+ 两行摘要
+      content: [
+        _buildTitle(user.name, isCurrentAccount),
+        MiuixText(
+          'ID: ${user.uid}\n手机号: ${user.phone}',
+          fontSize: textStyles.body2.fontSize,
+          color: summaryColor,
+        ),
+      ],
+      endActions: [
+        if (!user.status)
+          Tooltip(
+            message: '账号失效',
+            child: Icon(Icons.error_outline, color: colors.error, size: 30),
+          ),
+        if (isCurrentAccount && PlatformManager().isChaoxing)
+          Tooltip(
+            message: '消息推送',
+            child: MiuixIconButton(
               onPressed: () async {
                 if (EasemobIM().isLoggedIn) {
                   await EasemobIM().logout();
@@ -313,23 +342,30 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                   await EasemobIM().loginCurrentAccount();
                 }
               },
-            ),
-          Visibility(
-            visible: _isMultiSelectMode,
-            child: Checkbox(
-              value: isSelected,
-              onChanged: (bool? value) {
-                if (value != null) _toggleSelection(user.uid);
-              },
+              child: Icon(
+                EasemobIM().isLoggedIn
+                    ? Icons.notifications
+                    : Icons.notifications_off,
+                size: 30,
+                // 蓝色卡片上不能用 primary（蓝底蓝图标），同样跟着内容色走
+                color: isCurrentAccount
+                    ? onCard
+                    : (EasemobIM().isLoggedIn
+                          ? colors.primary
+                          : colors.onSurfaceVariantSummary),
+              ),
             ),
           ),
-        ],
-      ),
-      onTap: _isMultiSelectMode ? null : () => _switchToAccount(user),
-      onLongPress: () {
-        _toggleMultiSelect();
-        _toggleSelection(user.uid);
-      },
+        Visibility(
+          visible: _isMultiSelectMode,
+          child: MiuixCheckbox(
+            value: isSelected,
+            onChanged: (bool? value) {
+              if (value != null) _toggleSelection(user.uid);
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -407,9 +443,9 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       // 内容就必须能从栏底下滚过去，所以得用 MiuixScaffold（body 铺满整屏、
       // 栏画在其上），而不是 Material 的 `Scaffold.appBar` 槽位。
       //
-      // 注：`actions` 里目前还是 Material 的 IconButton / PopupMenuButton，
-      // 等页面主体整体迁移 Miuix 时一并换掉（现在靠 main.dart 补的那层
-      // 透明 Material 也能正常渲染）。
+      // 注：两个 `PopupMenuButton` 的**弹出内容**仍是 Material（`PopupMenuItem`
+      // / `RadioListTile`）。触发器已换成 Miuix 观感（`MiuixActionTrigger`），
+      // 内容待后续用 `MiuixOverlayListPopup` + `MiuixListPopupColumn` 迁移。
       topBar: MiuixTopAppBar(
         title: '账号',
         largeTitle: '账号',
@@ -417,10 +453,9 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         scrollBehavior: _topBarBehavior,
         actions: [
           if (_isMultiSelectMode)
-            IconButton(
-              icon: const Icon(Icons.delete),
+            MiuixIconButton(
               onPressed: _deleteSelectedAccounts,
-              tooltip: '删除选中账号',
+              child: const Icon(Icons.delete),
             ),
           if (_selectedPlatform == PlatformType.rainClassroom)
             StatefulBuilder(
@@ -435,7 +470,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                 
                 final serverColor = serverColors[PlatformManager().currentServer];
                 return PopupMenuButton<RainClassroomServerType>(
-                  icon: Icon(Icons.dns, color: serverColor),
+                  padding: EdgeInsets.zero,
                   tooltip: '切换服务器',
                   onSelected: (RainClassroomServerType server) async {
                     await PlatformManager().setServer(server);
@@ -489,11 +524,20 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                   ),
                 ),
               ],
+                  // ⚠️ 用 `child` 而不是 `icon`：传 `icon` 时 PopupMenuButton 会
+                  // 自己包一个 Material `IconButton`（48×48 + 水波纹），与 Miuix
+                  // 顶栏观感不符。传 `child` 则原样使用我们的 Miuix 触发器，
+                  // 外层 InkWell 负责点击，`padding` 归零避免额外 8dp 留白。
+                  child: MiuixActionTrigger(
+                    icon: Icon(Icons.dns, color: serverColor),
+                  ),
                 );
               },
             ),
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_horiz),
+            // 同上：触发器换成 Miuix 观感，弹出内容暂留 Material
+            padding: EdgeInsets.zero,
+            tooltip: '更多',
             onSelected: (String result) {
               if (result == 'about') {
                 _showAboutDialog();
@@ -626,6 +670,8 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                 child: Row(children: [Text('关于')]),
               ),
             ],
+            // 触发器换成 Miuix 观感（理由同服务器菜单）
+            child: const MiuixActionTrigger(icon: Icon(Icons.more_horiz)),
           )
         ],
       ),
@@ -638,13 +684,20 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         return MiuixScrollBehaviorListener(
           behavior: _topBarBehavior,
           child: _accounts.isEmpty
-          ? const Center(
+          ? Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text('暂无账号', style: TextStyle(fontSize: 18, color: Colors.grey)),
-            SizedBox(height: 8),
-            Text('点击右下角添加账号', style: TextStyle(color: Colors.grey)),
+            MiuixText(
+              '暂无账号',
+              fontSize: 18,
+              color: MiuixTheme.of(context).colors.onBackgroundVariant,
+            ),
+            const SizedBox(height: 8),
+            MiuixText(
+              '点击右下角添加账号',
+              color: MiuixTheme.of(context).colors.onBackgroundVariant,
+            ),
           ],
         ),
       )
@@ -659,10 +712,41 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
           final user = _accounts[index];
           final isSelected = _selectedAccounts.contains(user.uid);
           final isCurrent = user.uid == _currentAccountId;
-          return Card(
-            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: isCurrent ? Theme.of(context).colorScheme.primaryContainer : null,
-            child: _buildListItemContent(context, user, isSelected, isCurrent),
+          final colors = MiuixTheme.of(context).colors;
+          return Padding(
+            // MiuixCard 没有 margin 参数，外边距由外面这层 Padding 提供
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: MiuixCard(
+              // 当前账号用 Miuix 的 primaryContainer 高亮（原来是 Material 的
+              // colorScheme.primaryContainer，跟 Miuix 配色不搭）
+              colors: isCurrent
+                  ? MiuixCardColors(
+                      color: colors.primaryContainer,
+                      contentColor: colors.onPrimaryContainer,
+                    )
+                  : null,
+              feedbackType: MiuixPressFeedbackType.sink,
+              // 点击 / 长按都交给 MiuixCard，原来 ListTile 的 onTap / onLongPress
+              // 已移除
+              onPressed: _isMultiSelectMode ? null : () => _switchToAccount(user),
+              onLongPress: () {
+                _toggleMultiSelect();
+                _toggleSelection(user.uid);
+              },
+              child: Builder(
+                // ⚠️ 必须套一层 `Builder`：`MiuixContentColor` 是 `MiuixCard`
+                // 在**它的子树里**提供的，而 `_buildListItemContent(context, ...)`
+                // 拿到的是 itemBuilder 的 context —— 那个 context 在 MiuixCard
+                // **之上**，取不到卡片内容色（会拿到更外层祖先的值）。
+                // 用 `Builder` 重新开一个位于卡片内部的 context 才行。
+                builder: (context) => _buildListItemContent(
+                  context,
+                  user,
+                  isSelected,
+                  isCurrent,
+                ),
+              ),
+            ),
           );
         },
       ),

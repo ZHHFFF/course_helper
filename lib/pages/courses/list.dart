@@ -575,9 +575,10 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
             ? const Center(child: CircularProgressIndicator())
             : _courses.isEmpty
             ? Center(
-                child: Text(
+                child: MiuixText(
                   PlatformManager().isRainClassroom ? '暂无正在上课的课程' : '暂无内容',
-                  style: const TextStyle(fontSize: 18, color: Colors.grey),
+                  fontSize: 18,
+                  color: MiuixTheme.of(context).colors.onBackgroundVariant,
                 ),
               )
             : ListView.builder(
@@ -589,11 +590,19 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                   bottom: contentPadding.bottom + 16,
                 ),
                 itemBuilder: (context, index) {
-                  var course = _courses[index];
-                  return Card(
-                    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: InkWell(
-                      onTap: () {
+                  final course = _courses[index];
+                  final colors = MiuixTheme.of(context).colors;
+                  return Padding(
+                    // MiuixCard 没有 margin 参数，外边距由外面这层 Padding 提供
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    child: MiuixCard(
+                      // 点击交给 MiuixCard（内部是 MiuixPressable，自带 Miuix
+                      // 的按压反馈），不再自己套 InkWell
+                      feedbackType: MiuixPressFeedbackType.sink,
+                      onPressed: () {
                         Navigator.push(
                           context,
                           PlatformManager().isChaoxing ?
@@ -612,108 +621,84 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                           ),
                         );
                       },
-                      child: Stack(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    if (course.image.isNotEmpty)
-                                      AvatarWidget(
-                                        imageUrl: course.image,
-                                        size: 50,
-                                        borderRadius: 6,
-                                        iconSize: 25,
-                                      )
-                                    else
-                                      Container(
-                                        width: 50,
-                                        height: 50,
-                                        decoration: BoxDecoration(
-                                          color: Theme.of(context).colorScheme.secondaryContainer,
-                                          borderRadius: BorderRadius.circular(6),
-                                        ),
-                                        child: Center(
-                                          child: Icon(
-                                            Icons.school,
-                                            color: Theme.of(context).colorScheme.onSecondaryContainer,
-                                            size: 25,
-                                          ),
-                                        ),
-                                      ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            course.name,
-                                            style: const TextStyle(
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            course.teacher,
-                                            style: const TextStyle(
-                                              fontSize: 14,
-                                              color: Colors.grey,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(
+                          // 原来是 Stack + Positioned 把 chevron 垂直居中，
+                          // 改成 Row 居中对齐即可（头像也跟着与文字块居中）
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            if (course.image.isNotEmpty)
+                              AvatarWidget(
+                                imageUrl: course.image,
+                                size: 50,
+                                borderRadius: 6,
+                                iconSize: 25,
+                              )
+                            else
+                              Container(
+                                width: 50,
+                                height: 50,
+                                decoration: BoxDecoration(
+                                  color: colors.secondaryContainer,
+                                  borderRadius: BorderRadius.circular(6),
                                 ),
-          
-                                const SizedBox(height: 5),
-                                if (course.note != null)
-                                  Text(
-                                    course.note!,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey,
-                                    ),
+                                child: Center(
+                                  child: Icon(
+                                    Icons.school,
+                                    color: colors.onSecondaryContainer,
+                                    size: 25,
                                   ),
-                                if (course.schools != null)
-                                  Text(
-                                    course.schools!,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey,
-                                    ),
+                                ),
+                              ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  MiuixText(
+                                    course.name,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                if (course.beginDate != null && course.endDate != null)
-                                  Text(
-                                    '开课时间：${course.beginDate} 至 ${course.endDate}',
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey,
-                                    ),
+                                  const SizedBox(height: 4),
+                                  MiuixText(
+                                    course.teacher,
+                                    fontSize: 14,
+                                    color: colors.onSurfaceVariantSummary,
                                   ),
-                              ],
-                            ),
-                          ),
-                          Positioned(
-                            right: 16,
-                            top: 0,
-                            bottom: 0,
-                            child: Align(
-                              alignment: Alignment.center,
-                              child: Icon(
-                                Icons.chevron_right,
-                                color: Colors.grey[400],
+                                  const SizedBox(height: 5),
+                                  if (course.note != null)
+                                    MiuixText(
+                                      course.note!,
+                                      fontSize: 12,
+                                      color: colors.onSurfaceVariantSummary,
+                                    ),
+                                  if (course.schools != null)
+                                    MiuixText(
+                                      course.schools!,
+                                      fontSize: 12,
+                                      color: colors.onSurfaceVariantSummary,
+                                    ),
+                                  if (course.beginDate != null &&
+                                      course.endDate != null)
+                                    MiuixText(
+                                      '开课时间：${course.beginDate} 至 ${course.endDate}',
+                                      fontSize: 12,
+                                      color: colors.onSurfaceVariantSummary,
+                                    ),
+                                ],
                               ),
                             ),
-                          ),
-                        ],
+                            Icon(
+                              Icons.chevron_right,
+                              // 卡片内的「可点」提示色，用 Miuix 的 actions 色
+                              color: colors.onSurfaceVariantActions,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   );
