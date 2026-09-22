@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 // [新增] Miuix：顶栏 / 脚手架按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
 import 'dart:async';
@@ -85,6 +84,17 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
 
   bool _showServerMenu = false;
   bool _showMoreMenu = false;
+
+  /// 「添加账号」底部抽屉。
+  ///
+  /// 原来这里是 `flutter_speed_dial` 的 `SpeedDial`（Material 紫色 + 三个
+  /// 展开式迷你 FAB）。换成 Miuix 的「FAB 点开底部抽屉」范式：
+  /// `MiuixFloatingActionButton` + `MiuixOverlayBottomSheet`。
+  /// 抽屉和弹窗一样是**声明式**的，必须常驻挂载、用 `show` 切换显隐。
+  bool _showAddAccountSheet = false;
+
+  /// Miuix 的 Snackbar 走「host + state」模型，不是 `ScaffoldMessenger`。
+  final MiuixSnackbarHostState _snackbarHost = MiuixSnackbarHostState();
 
   /// 取触发器在**窗口坐标系**下的矩形，作为弹窗锚点。
   ///
@@ -237,6 +247,59 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     );
   }
 
+  /// 先收起抽屉再执行动作：抽屉若还开着，新页面的入场动画会和抽屉的退场动画打架。
+  void _closeAddSheetThen(VoidCallback action) {
+    setState(() => _showAddAccountSheet = false);
+    action();
+  }
+
+  /// 「添加账号」底部抽屉：三种登录方式。
+  ///
+  /// ⚠️ 必须用 `MiuixWindowBottomSheet`（窗口级），**不能**用
+  /// `MiuixOverlayBottomSheet`（页内级）。原因见 `main.dart` 里底栏的挂法：
+  /// 玻璃底栏是 `MyHomePage` 的 `body: Stack` 里 `Positioned` 悬浮叠加的，
+  /// 画在页面之上；而页内级抽屉走的是本页 `MiuixScaffold` 的 `MiuixPopupHost`，
+  /// 层级低于底栏 → 抽屉最后一行会被底栏压住（实测「密码登录」正好被吞掉）。
+  /// 窗口级抽屉用 `Overlay.maybeOf(context, rootOverlay: true)` 插到**根 Overlay**，
+  /// 位于整个 Navigator 之上，连带底栏一起被遮罩盖住，才是正确的模态观感。
+  ///
+  /// 用 `MiuixArrowPreference`（= `MiuixBasicComponent` + 末尾右箭头）承载每一行，
+  /// 它的默认取色正好是为 `colors.background` 底调的（抽屉默认底色就是
+  /// `colors.background`）：标题 `onBackground`、摘要 `onSurfaceVariantSummary`、
+  /// 箭头 `onSurfaceVariantActions`，深色下都是浅色文字，不需要手动覆盖。
+  ///
+  /// 起始图标必须显式给 `tint`：`MiuixIcon` 未指定时取
+  /// `MiuixContentColor.of(context)`，而抽屉内部**没有** `MiuixContentColor`
+  /// 提供者，会静默回退到黑色 `0xFF000000` —— 在 `#242424` 的深色抽屉上等于隐形。
+  Widget _buildAddAccountSheet(BuildContext context) {
+    final colors = MiuixTheme.of(context).colors;
+    final entries = <(IconData, String, String, VoidCallback)>[
+      (Icons.qr_code, '二维码登录', '扫码即可登录，适合在手机端快速添加', _showQRCodeLoginDialog),
+      (Icons.sms, '验证码登录', '用手机号 + 短信验证码登录', _navigateToCaptchaLogin),
+      (Icons.password, '密码登录', '用手机号 + 密码登录', _navigateToPasswordLogin),
+    ];
+    return MiuixWindowBottomSheet(
+      show: _showAddAccountSheet,
+      title: '添加账号',
+      // 抽屉自带 24dp 左右内边距，这里收到 12dp，
+      // 加上行自己的 16dp 正好 28dp，与本页账号卡片的缩进观感一致。
+      insideMargin: const Size(12, 0),
+      onDismissRequest: () => setState(() => _showAddAccountSheet = false),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final (icon, title, summary, action) in entries)
+            MiuixArrowPreference(
+              title: title,
+              summary: summary,
+              startAction: MiuixIcon(icon: icon, size: 22, tint: colors.primary),
+              onClick: () => _closeAddSheetThen(action),
+            ),
+        ],
+      ),
+    );
+  }
+
   /// 先收起菜单再跳页：菜单若还开着，新页面的入场动画会和菜单的退场动画打架。
   void _openFromMoreMenu(Widget page) {
     setState(() => _showMoreMenu = false);
@@ -267,6 +330,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   @override
   void dispose() {
     _accountChangeSubscription?.cancel();
+    _snackbarHost.dispose();
     super.dispose();
   }
 
@@ -334,11 +398,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     final qrState = QRCodeLoginState();
 
     if (!await qrState.initialize()) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('获取二维码失败')),
-        );
-      }
+      if (mounted) _snackbarHost.showSnackbar('获取二维码失败');
       qrState.dispose();
       return;
     }
@@ -369,82 +429,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                   qrState.dispose();
                 }
               },
-              child: AlertDialog(
-                title: const Text('二维码登录'),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 220,
-                      height: 220,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.grey.withValues(alpha: 0.1),
-                            spreadRadius: 2,
-                            blurRadius: 8,
-                            offset: const Offset(0, 3),
-                          ),
-                        ],
-                      ),
-                      child: qrState.qrImageUrl != null
-                          ? ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Image.network(
-                          qrState.qrImageUrl!,
-                          fit: BoxFit.contain,
-                        ),
-                      )
-                          : qrState.isLoading
-                          ? const Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            CircularProgressIndicator(),
-                            SizedBox(height: 8),
-                            Text('生成中...', style: TextStyle(fontSize: 12)),
-                          ],
-                        ),
-                      )
-                          : const Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.error_outline, size: 48, color: Colors.grey),
-                            SizedBox(height: 8),
-                            Text('二维码加载失败', style: TextStyle(color: Colors.grey)),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    Text(
-                      PlatformManager().isChaoxing ?
-                      '使用学习通APP扫码登录' : '使用微信扫码登录',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      '二维码失效时会自动刷新',
-                      style: TextStyle(color: Colors.grey, fontSize: 12),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    child: const Text('取消'),
-                    onPressed: () {
-                      qrState.isLoginActive = false;
-                      qrState.dispose();
-                      Navigator.pop(context);
-                    }
-                  ),
-                ],
-              ),
+              child: _wrapDialogPanel(_buildQrDialogPanel(context, qrState)),
             );
           },
         );
@@ -452,6 +437,145 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     );
 
     qrState.dispose();
+  }
+
+  /// 把面板包成「居中 + 限宽」的弹窗。
+  ///
+  /// ⚠️ 必须自己包 `Center` + 限宽。这个 Flutter 版本里 `DialogRoute.pageBuilder`
+  /// 只做了 `SafeArea(Semantics(child: 你的 widget))` —— **既没有 `Align`
+  /// 也没有 `ConstrainedBox`**（见 `flutter/lib/src/material/dialog.dart`）。
+  /// 于是路由页会把**整屏的紧约束**直接传给 builder 的返回值：
+  /// `Column(mainAxisSize: MainAxisSize.min)` 在紧约束下形同虚设，
+  /// 面板会铺满整屏（实测就是整屏 `#242424`，连状态栏下面都被填满）。
+  ///
+  /// 对照：Material 自己的 `Dialog` 组件内部才做了 `Center` + `ConstrainedBox`
+  /// （`minWidth: 280`），所以直接 `showDialog(child: AlertDialog(...))` 没问题 ——
+  /// 换成自绘面板就必须自己补上这一层。
+  Widget _wrapDialogPanel(Widget panel) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 280, maxWidth: 300),
+        child: panel,
+      ),
+    );
+  }
+
+  /// 二维码登录弹窗的面板。
+  ///
+  /// ⚠️ 这里**不能**用 `MiuixOverlayDialog`。它是页内级弹窗，渲染在本页
+  /// `MiuixScaffold` 的 `MiuixPopupHost` 里；而玻璃底栏是 `MyHomePage` 的
+  /// `body: Stack` 里 `Positioned` 悬浮叠加的、画在页面之上 —— 于是页内级弹窗
+  /// 会落在底栏**下面**：遮罩盖不住底栏，底栏还保持可点（弹窗开着却能切 Tab）。
+  /// 账号页是 Tab 页（不是 push 出来的路由），这个问题躲不掉。
+  ///
+  /// 所以这里用 `showDialog`：它走**根 Navigator 的 Overlay**，层级天然在底栏
+  /// 之上，遮罩与拦截语义都正确；面板内容用 `MiuixSurface` 自绘，观感仍是 Miuix。
+  /// （对照：日志页 / PPT 缓存页是 push 出来的路由，本身就盖住底栏，
+  /// 那边直接用 `MiuixOverlayDialog` 就没有这个问题。）
+  Widget _buildQrDialogPanel(BuildContext context, QRCodeLoginState qrState) {
+    final colors = MiuixTheme.of(context).colors;
+    final textStyles = MiuixTheme.of(context).textStyles;
+    return MiuixSurface(
+      // 弹窗面板用 `surfaceContainer`（深色 #242424），与 `MiuixOverlayDialog`
+      // 的默认底色一致；`MiuixSurface` 自己的默认色是 `surface`（深色纯黑），
+      // 在遮罩上会糊成一片、看不出面板边界。
+      color: colors.surfaceContainer,
+      cornerRadius: 32,
+      shadowElevation: 8,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MiuixText(
+              '二维码登录',
+              fontSize: textStyles.title4.fontSize,
+              fontWeight: FontWeight.w600,
+            ),
+            const SizedBox(height: 20),
+            Container(
+              width: 220,
+              height: 220,
+              decoration: BoxDecoration(
+                // ⚠️ 这里必须是**白底**，不能跟主题走：
+                // 二维码是黑白位图，深色底上扫不出来。
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: qrState.qrImageUrl != null
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.network(
+                        qrState.qrImageUrl!,
+                        fit: BoxFit.contain,
+                      ),
+                    )
+                  : qrState.isLoading
+                  ? const Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          MiuixCircularProgressIndicator(
+                            size: 24,
+                            strokeWidth: 3,
+                          ),
+                          SizedBox(height: 8),
+                          // 白底上的文字，用固定深色而不是主题色
+                          MiuixText(
+                            '生成中...',
+                            fontSize: 12,
+                            color: Colors.black54,
+                          ),
+                        ],
+                      ),
+                    )
+                  : const Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.error_outline,
+                            size: 48,
+                            color: Colors.black38,
+                          ),
+                          SizedBox(height: 8),
+                          MiuixText(
+                            '二维码加载失败',
+                            fontSize: 12,
+                            color: Colors.black54,
+                          ),
+                        ],
+                      ),
+                    ),
+            ),
+            const SizedBox(height: 20),
+            MiuixText(
+              PlatformManager().isChaoxing ? '使用学习通APP扫码登录' : '使用微信扫码登录',
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+            const SizedBox(height: 8),
+            MiuixText(
+              '二维码失效时会自动刷新',
+              fontSize: 12,
+              color: colors.onSurfaceVariantSummary,
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: MiuixTextButton(
+                '取消',
+                onPressed: () {
+                  qrState.isLoginActive = false;
+                  qrState.dispose();
+                  Navigator.pop(context);
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildTitle(String name, bool isCurrentAccount) {
@@ -565,56 +689,94 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   void _showAboutDialog() async {
     // 先把 context 相关的东西取出来：下面要 await，
     // 之后再碰 context 会被 analyzer 判成 use_build_context_synchronously
-    final linkColor = Theme.of(context).colorScheme.primary;
+    final colors = MiuixTheme.of(context).colors;
+    final textStyles = MiuixTheme.of(context).textStyles;
 
     final packageInfo = await PackageInfo.fromPlatform();
-    final appIcon = Image.asset(
-      'images/logo.png',
-      width: 60,
-      height: 60
-    );
-    
-    showAboutDialog(
+    if (!mounted) return;
+
+    // ⚠️ 用 `showDialog` 而不是 `MiuixOverlayDialog`，理由同
+    // `_buildQrDialogPanel`：账号页是 Tab 页，玻璃底栏画在页面之上，
+    // 页内级弹窗既会被底栏压住、又挡不住底栏的点击。
+    showDialog<void>(
       context: context,
-      applicationName: '课程助手',
-      applicationVersion: packageInfo.version,
-      applicationIcon: appIcon,
-      // applicationLegalese: '',
-      children: [
-        const Text('一个管理学习通、雨课堂课程的应用。'),
-        const Text('支持多账号管理、课程查看、活动签到等功能。'),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            const Text('开发者：'),
-            GestureDetector(
-              onTap: () async {
-                final Uri url = Uri.parse('https://github.com/makisekurse');
-                if (await canLaunchUrl(url)) {
-                  await launchUrl(url, mode: LaunchMode.inAppBrowserView);
-                }
-              },
-              child: Text(
-                'makisekurse',
-                style: TextStyle(color: linkColor),
-              ),
+      builder: (dialogContext) => _wrapDialogPanel(
+        MiuixSurface(
+          // 与 `MiuixOverlayDialog` 默认底色一致；`MiuixSurface` 自己的默认
+          // 是 `surface`（深色纯黑），在遮罩上会糊成一片看不出面板边界。
+          color: colors.surfaceContainer,
+          cornerRadius: 32,
+          shadowElevation: 8,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Image.asset('images/logo.png', width: 60, height: 60),
+                const SizedBox(height: 12),
+                MiuixText(
+                  '课程助手',
+                  fontSize: textStyles.title4.fontSize,
+                  fontWeight: FontWeight.w600,
+                ),
+                const SizedBox(height: 4),
+                MiuixText(
+                  '版本 ${packageInfo.version}',
+                  fontSize: 12,
+                  color: colors.onSurfaceVariantSummary,
+                ),
+                const SizedBox(height: 16),
+                MiuixText('一个管理学习通、雨课堂课程的应用。', fontSize: 13),
+                const SizedBox(height: 2),
+                MiuixText('支持多账号管理、课程查看、活动签到等功能。', fontSize: 13),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    MiuixText('开发者：', fontSize: 13),
+                    _buildDeveloperLink(
+                      colors,
+                      'makisekurse',
+                      'https://github.com/makisekurse',
+                    ),
+                    MiuixText(' & ', fontSize: 13),
+                    _buildDeveloperLink(
+                      colors,
+                      'ZHHFFF',
+                      'https://github.com/ZHHFFF',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: MiuixTextButton(
+                    '确定',
+                    onPressed: () => Navigator.pop(dialogContext),
+                  ),
+                ),
+              ],
             ),
-            const Text(' & '),
-            GestureDetector(
-              onTap: () async {
-                final Uri url = Uri.parse('https://github.com/ZHHFFF');
-                if (await canLaunchUrl(url)) {
-                  await launchUrl(url, mode: LaunchMode.inAppBrowserView);
-                }
-              },
-              child: Text(
-                'ZHHFFF',
-                style: TextStyle(color: linkColor),
-              ),
-            ),
-          ],
+          ),
         ),
-      ],
+      ),
+    );
+  }
+
+  /// 「关于」弹窗里的开发者链接。
+  ///
+  /// `MiuixText` 没有 `onTap`（Miuix 里可点文本就是套一层按压组件），
+  /// 所以用 `MiuixPressable` 包一个主色的 `MiuixText`，保留原来
+  /// 「点名字跳 GitHub」的行为。
+  Widget _buildDeveloperLink(MiuixColors colors, String name, String url) {
+    return MiuixPressable(
+      onPressed: () async {
+        final uri = Uri.parse(url);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
+        }
+      },
+      child: MiuixText(name, fontSize: 13, color: colors.primary),
     );
   }
 
@@ -636,9 +798,10 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       // 内容就必须能从栏底下滚过去，所以得用 MiuixScaffold（body 铺满整屏、
       // 栏画在其上），而不是 Material 的 `Scaffold.appBar` 槽位。
       //
-      // 注：两个 `PopupMenuButton` 的**弹出内容**仍是 Material（`PopupMenuItem`
-      // / `RadioListTile`）。触发器已换成 Miuix 观感（`MiuixActionTrigger`），
-      // 内容待后续用 `MiuixOverlayListPopup` + `MiuixListPopupColumn` 迁移。
+      // 注：两个弹出菜单都已迁到 Miuix 的声明式弹窗
+      // （`MiuixOverlayListPopup` + `MiuixListPopupColumn` +
+      // `MiuixDropdownEntriesPopupContent`），触发器就是顶栏里的
+      // `MiuixIconButton`，不再需要 Material 的 `PopupMenuButton`。
       topBar: MiuixTopAppBar(
         title: '账号',
         largeTitle: '账号',
@@ -673,6 +836,11 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
             child: const Icon(Icons.more_horiz),
           ),
         ],
+      ),
+      snackbarHost: MiuixSnackbarHost(
+        state: _snackbarHost,
+        blurSigma: 30,
+        blurBackgroundAlpha: 0.55,
       ),
       content: (contentPadding) {
         // 只记最大高度，不跟随折叠回缩 —— 原因见 `_topBarInset` 的注释
@@ -756,6 +924,8 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
             // `MiuixPopupLayout` 的 build 返回 `SizedBox.shrink()`，不占布局。
             _buildServerMenu(context),
             _buildMoreMenu(context),
+            // 底部抽屉同理：常驻挂载，靠 `show` 开合，退场动画才播得完。
+            _buildAddAccountSheet(context),
           ],
         );
       },
@@ -765,31 +935,13 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       //    bottomBarHeight + fabSize + 12）→ 不再需要手写
       //    floatingActionButtonLocation。
       bottomBar: SizedBox(height: miuixNavBarOccupied(context)),
-      floatingActionButton: SpeedDial(
-        icon: Icons.add,
-        activeIcon: Icons.close,
-        spacing: 5,
-        spaceBetweenChildren: 2,
-        overlayColor: Colors.transparent,
-        overlayOpacity: 0.3,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
-        children: [
-          SpeedDialChild(
-            child: const Icon(Icons.qr_code),
-            label: '二维码登录',
-            onTap: _showQRCodeLoginDialog,
-          ),
-          SpeedDialChild(
-            child: const Icon(Icons.sms),
-            label: '验证码登录',
-            onTap: _navigateToCaptchaLogin,
-          ),
-          SpeedDialChild(
-            child: const Icon(Icons.password),
-            label: '密码登录',
-            onTap: _navigateToPasswordLogin,
-          ),
-        ],
+      floatingActionButton: MiuixFloatingActionButton(
+        onPressed: () => setState(() => _showAddAccountSheet = true),
+        // 用 `MiuixIcon` 而不是裸 `Icon`：`MiuixFloatingActionButton` 内部会
+        // 通过 `MiuixContentColor` 注入 `colors.onSurface`，而裸 `Icon` 不读这个
+        // InheritedWidget（只有 `MiuixText` / `MiuixIcon` 读），会掉到环境
+        // `IconTheme` 上，深浅色下取色都可能不对。
+        child: const MiuixIcon(icon: Icons.add, size: 28),
       ),
     );
   }
