@@ -1,5 +1,6 @@
 import'dart:ui' show PlatformDispatcher;
 import'package:flutter/material.dart';
+import'package:flutter/services.dart';
 import'package:flutter_localizations/flutter_localizations.dart';
 // [移除] dynamic_color：已取消 Material You 动态取色，改为固定主题色 + 纯白/纯黑背景
 // [新增] flutter_miuix：HyperOS 设计语言（Miuix）组件库。
@@ -12,19 +13,19 @@ import'package:dio/dio.dart';
 import'./pages/accounts.dart';
 import'./pages/courses/list.dart';
 import'./pages/login.dart';
-// [新增] Miuix 玻璃底栏的几何契约（占位高度 / 页面留白）
+// [新增] 「课件」Tab（全部课程 → 该课课件列表 → 离线浏览）
+import'./pages/courseware/list.dart';
+// [新增] 「设置」Tab（原账号页右上角菜单里的全部入口）
+import'./pages/settings/settings.dart';
+// [新增] 玻璃底栏的几何契约（占位高度 / 页面留白）
 import'./pages/widget/miuix_nav_metrics.dart';
-// [新增] KernelSU 对齐的玻璃规格（模糊半径 / 色调 / vibrancy / 按压 / 几何）。
-// 顶栏与底栏都从这里取值，保证「两栏是同一种玻璃、只是参数不同」。
-import'./pages/widget/miuix_glass_spec.dart';
-// [新增] 液态玻璃底栏本体。
-// 为什么不用包里的 `MiuixGlassNavigationBar`：它的玻璃是「录图层快照 → 喂 shader」，
-// 采样由 `paint()` 驱动，而 `ListView` 的 viewport 自己是重绘边界，滚动时上面的
-// 捕获节点收不到 `paint()` → 快照冻住（实测只有 ~19 次/秒）→ 表现为「一卡一卡」。
-// 本文件改用与顶栏完全相同的 `BackdropFilter` 机制，详见组件文件头。
-import'./pages/widget/miuix_liquid_glass_nav_bar.dart';
-// [新增] 底栏外观设置（悬浮 / 贴边）
-import'./setting/navbar_setting.dart';
+// [新增] 贴边玻璃底栏本体（Miuix 标准底栏 + BackdropFilter）。
+// 2026-09-22 用户拍板：取消液态玻璃与悬浮底栏，改用 Miuix 标准样式的固定底栏，
+// 但顶栏底栏都要保留模糊。所以这里只是「包里的 MiuixNavigationBar + 一层玻璃」，
+// 几何/字号/按压反馈/动画时长全部由库定义，不自造。
+import'./pages/widget/miuix_blur_navigation_bar.dart';
+// [新增] 深浅色外观设置（原「悬浮底栏」开关作废，见 setting/theme_setting.dart）
+import'./setting/theme_setting.dart';
 import'./api/api_service.dart';
 import'./session/cookie.dart';
 import'./session/account.dart';
@@ -41,6 +42,18 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // [新增] 沉浸式系统栏：内容铺到状态栏 / 手势导航区底下。
+  //
+  // 为什么必须开：玻璃底栏要一路铺到屏幕**最底边**（含 16dp 手势区），
+  // 否则「小白条」那一条会出现与底栏割裂的色块（历史 bug 就是一条纯黑）。
+  // `MiuixNavigationBar` 自带的 bottomInset 占位在它的 `ColoredBox` 之内，
+  // 只要内容能铺到最底，玻璃就自然覆盖过去。
+  //
+  // 另一半是 `systemNavigationBarContrastEnforced: false`（在 `_MiuixScope`
+  // 里按明暗设置）：系统默认会给导航栏加一层半透明黑遮罩，那层遮罩正好压在
+  // 玻璃上，看起来就是「底栏下面有一条灰边」。
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
   // [新增] 日志系统：越早初始化越好，后面的初始化过程也会被记下来
   await AppLogger.init();
@@ -60,9 +73,12 @@ void main() async {
 
   await EasemobIM().initialize();
 
-  // [新增] 底栏外观设置要在首帧前读好，否则启动瞬间会先用默认值渲染一帧、
-  // 读到配置后再跳变一次（视觉上会闪一下）。这里提前加载。
-  await NavBarSetting.ensureLoaded();
+  // [新增] 外观设置要在首帧前读好，否则启动瞬间会先用默认值渲染一帧、
+  // 读到配置后再跳变一次（深色用户会看到一次白闪）。这里提前加载。
+  //
+  // （原先这里是 `NavBarSetting.ensureLoaded()` —— 那个「悬浮 / 贴边」开关
+  //  已随悬浮底栏一起删除，见 setting/theme_setting.dart 的说明。）
+  await ThemeSetting.ensureLoaded();
 
   AppLogger.i('App', '初始化完成，进入主界面');
 
@@ -96,7 +112,11 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    // [新增] 深浅色模式由「设置 → 外观设置」控制，所以 `MaterialApp` 必须跟着
+    // `ThemeSetting.mode` 重建 —— `themeMode` 是构造参数，不重建切不动。
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: ThemeSetting.mode,
+      builder: (context, themeMode, _) => MaterialApp(
       navigatorKey: navigatorKey,
       title: '课程助手',
       locale: const Locale('zh', 'CN'),
@@ -113,7 +133,7 @@ class MyApp extends StatelessWidget {
       // 原来的 DynamicColorBuilder 已移除，因此 dynamic_color 依赖不再需要
       theme: _buildLightTheme(),
       darkTheme: _buildDarkTheme(),
-      themeMode: ThemeMode.system,
+      themeMode: themeMode,
       // [改动] 用 MiuixTheme 包裹整棵树。
       //
       // 为什么必须包在最外层：MiuixTheme.of() 在上下文**未被包裹**时不会抛错，
@@ -164,6 +184,7 @@ class MyApp extends StatelessWidget {
         '/accounts': (context) => const AccountsPage(),
         '/login': (context) => const LoginPage(),
       },
+      ),
     );
   }
 
@@ -247,8 +268,9 @@ class _MiuixScope extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (child == null) return const SizedBox.shrink();
+    final brightness = MediaQuery.platformBrightnessOf(context);
     return MiuixTheme(
-      data: MiuixThemeData.of(MediaQuery.platformBrightnessOf(context)),
+      data: MiuixThemeData.of(brightness),
       // [新增] 全局补一层透明 `Material`。
       //
       // 为什么需要：Miuix 的 `MiuixScaffold` / `MiuixSurface` **不提供
@@ -262,9 +284,32 @@ class _MiuixScope extends StatelessWidget {
       //
       // 对原有 Material 页面无影响：`Scaffold` 自己也会套一层 `Material`，
       // 且用的是同一套主题文字样式。
-      child: Material(type: MaterialType.transparency, child: child!),
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: _overlayStyleOf(brightness),
+        child: Material(type: MaterialType.transparency, child: child!),
+      ),
     );
   }
+
+  /// 沉浸式系统栏的样式。
+  ///
+  /// 为什么要自己设：`MiuixTopAppBar` 不是 Material 的 `AppBar`，不会通过
+  /// `AppBarTheme.systemOverlayStyle` 帮我们设；而 edge-to-edge 下状态栏图标
+  /// 颜色必须跟着明暗走，否则浅色主题下白色图标直接看不见。
+  ///
+  /// `systemNavigationBarContrastEnforced: false` 是关键的一条：系统默认会给
+  /// 手势导航区叠一层半透明黑，那层正好压在玻璃底栏上，看起来像「底栏下缘
+  /// 多了一条灰边」。关掉它，玻璃才能一路干净地铺到屏幕最底。
+  static SystemUiOverlayStyle _overlayStyleOf(Brightness brightness) =>
+      SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: brightness == Brightness.dark
+            ? Brightness.light
+            : Brightness.dark,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarDividerColor: Colors.transparent,
+        systemNavigationBarContrastEnforced: false,
+      );
 }
 
 /// 给全局注入「底栏占位」的底部内边距。
@@ -344,38 +389,20 @@ class MainPage extends StatefulWidget {
 }
 
 class _MainPageState extends State<MainPage> {
+  /// 当前选中的 Tab。顺序 = 底栏从左到右：
+  /// 0 课程 / 1 账号 / 2 课件 / 3 设置
   int _selectedIndex = 0;
 
-  // ── 底栏几何常量 ────────────────────────────────────────────────────────
+  // [移除] 底栏几何常量（_kNavSideMargin / _kNavBottomGap / _kNavBarHeight /
+  // _kNavBlurRadius）。
   //
-  // 全部来自对同一台机器（一加 13 / Android 15 / density 3.5）上 **LSPosed 管理器**
-  // 的 uiautomator 实测 —— 那也是一个 Miuix 应用，是最权威的「参照物」。
-  // 原始像素与 dp 换算（÷3.5）：
-  //   胶囊本体   [86,2458][1178,2682] → 高 224px = 64.0dp，左右边距各 86px = 24.6dp
-  //   单个 item  [100,2472][366,2668] → 高 196px = 56.0dp，宽 266px = 76.0dp
-  //   胶囊离屏底 2780 - 2682 = 98px = 28.0dp
-  //   其中手势条安全区 56px = 16.0dp → 额外留 12.0dp
+  // 2026-09-22 用户拍板「底部导航栏改为 miuix 标准样式，采用非悬浮的固定布局」，
+  // 左右边距与「离底抬起」两个常量随之作废；高度与模糊半径改由
+  // `MiuixNavigationBarDefaults`（库定义）和 `MiuixGlassSpec`（玻璃口径）提供，
+  // 不再需要在本文件里存一份。
   //
-  // ⚠️ 注意库默认 `MiuixGlassNavigationBarDefaults.height = 54.0`，
-  // 与参照物的 64dp 不一致。这里按用户「你看看他的底栏高度」的要求对齐到 64。
-
-  /// 悬浮底栏左右边距（实测 24.6dp，取整 24）
-  static const double _kNavSideMargin = 24;
-
-  /// 悬浮底栏离「手势条安全区上沿」的额外间距（实测 28 - 16 = 12）
-  static const double _kNavBottomGap = 12;
-
-  /// 底栏内容高度（实测参照物 64dp，与 KernelSU `FloatingBottomBar` 的
-  /// `height(64.dp)` 一致 → 见 [MiuixGlassSpec.navShellHeight]）
-  static const double _kNavBarHeight = MiuixGlassSpec.navShellHeight;
-
-  /// 底栏玻璃的模糊半径（dp）。
-  ///
-  /// 2026-09-22 起按 KernelSU 的 `FloatingBottomBar` 取
-  /// [MiuixGlassSpec.navBlurRadius] = 14 → sigma 6.3，约顶栏（25 → 11.25）的一半
-  /// —— KernelSU 的悬浮胶囊是「轻霜」而不是重磨砂。
-  /// （改之前是 20 → sigma 9.0，与 Miuix 玻璃材质 `puredThinGlass` 一致。）
-  static const double _kNavBlurRadius = MiuixGlassSpec.navBlurRadius;
+  // 页面留白仍走 `miuixNavBarOccupied(context)`（widget/miuix_nav_metrics.dart），
+  // 那是「底栏顶边离屏底多远」的单一事实来源。
 
   @override
   void initState() {
@@ -482,128 +509,89 @@ class _MainPageState extends State<MainPage> {
 
   @override
   Widget build(BuildContext context) {
-    // 底栏离屏幕底的距离依据：实测同为一加 13 上的 LSPosed（也是 Miuix 应用），
-    // 其底栏胶囊底边距屏幕底 28dp，其中 16dp 是手势条安全区 → 额外留 12dp。
-    //
-    // ⚠️ 必须用 `viewPaddingOf` 而不是 `MediaQuery.of().padding`：
-    // 上层 `_GlassNavInsets` 为了给 SnackBar 让位已经把 `padding.bottom`
-    // 撑大了，用它算间距会把底栏顶得极高（这正是之前悬空 104dp 的成因）。
-    final safeBottom = MediaQuery.viewPaddingOf(context).bottom;
-
     return Scaffold(
-      // 底栏由 Stack 叠加（弃用 Scaffold.bottomNavigationBar，因为它无法悬浮）
+      // 底栏由 Stack 叠加（弃用 Scaffold.bottomNavigationBar）：
+      // 玻璃靠 `BackdropFilter` 采「**已经画好的**内容」，一旦挪进槽位，
+      // body 会被顶到栏上方、栏底下没有内容可糊 —— 糊了个寂寞。
       body: Stack(
         children: [
-          // 内容层：直接铺满即可。
+          // ── Tab 内容 ─────────────────────────────────────────────────
           //
-          // 为什么不再需要「捕获组件包住内容层」：底栏已改用 `BackdropFilter`
-          // （与顶栏同一机制），它在合成时**实时**读正下方像素，
-          // 不需要预先录制任何快照。旧的 `MiuixSampledBackdropCapture` +
-          // 滚动唤醒那套已随方案 B 一并移除（组件文件保留备查）。
+          // 保活策略（用户要求「课件如果打开了，就要保活，切回去还是那个页面」）：
+          //   课程页 / 课件页 → `Offstage` 常驻，切 Tab 不销毁 State
+          //   账号页 / 设置页 → `if` 条件挂载，切走即释放
+          //
+          // 为什么课程页也要保活：它有个 3 秒轮询在跑「正在上课」状态，
+          // 重建会打断轮询；滚动位置也不该被重置。
+          //
+          // ⚠️ `Offstage` 必须包在 `Positioned.fill` 里：`RenderOffstage` 在
+          // offstage 时 `size = constraints.smallest`，而 `Stack` 给非定位子节点
+          // 的是 **loose** 约束（min 为 0）→ 直接放进去会塌成 0×0。
+          // 用 `Positioned.fill` 给 tight 约束后 `smallest` 才是满屏。
           Positioned.fill(
-            child: IndexedStack(
-              index: _selectedIndex,
-              children: [CoursesPage(key: coursesPageKey), const AccountsPage()],
+            child: Offstage(
+              offstage: _selectedIndex != 0,
+              child: CoursesPage(key: coursesPageKey),
             ),
           ),
-          // [改动 v4.8.6] 底栏换成自研的 `MiuixLiquidGlassNavigationBar`。
-          //
-          // 为什么不直接用包里的 `MiuixGlassNavigationBar`：它的玻璃是
-          // 「录图层快照 → 喂 shader」，采样由 `paint()` 驱动；而 `ListView` 的
-          // `Viewport` 自己就是重绘边界（`viewport.dart:752`），滚动时重绘被限制在
-          // viewport 自己的图层里，**位于它之上的捕获节点收不到 `paint()`**，
-          // 快照就冻在旧帧 —— 真机实测滚动期间只有 ~19 次/秒（60Hz 屏），
-          // 表现为「停住 → 跳一下 → 再停住」。
-          //
-          // 新组件改用与顶栏**完全相同**的 `BackdropFilter` + `ImageFilter.blur`：
-          // 合成时实时取正下方像素，永远与当前帧同步，且只有一次 GPU blur pass。
-          // 代价是暂时没有折射（用户已确认可接受）。
-          //
-          // 几何参数（左右 24 / 离底 12+安全区）来自对同一台机器上 LSPosed 管理器
-          // （也是 Miuix 应用）的 uiautomator 实测：
-          //   胶囊 [86,2458][1178,2682] → 高 64dp，左右边距 24.6dp，离屏底 28dp
-          //   离屏底 28dp 中有 16dp 是手势条安全区 → 额外留 12dp
-          //
-          // ⚠️ 外面套 ValueListenableBuilder 而不是把它塞进 Positioned：
-          // 因为「悬浮 / 贴边」两态的 left/right/bottom 都不同，必须让
-          // **Positioned 本身**参与重建。`Positioned` 是 ParentDataWidget，
-          // 中间隔一层 StatefulWidget 不影响它向上找到 RenderStack（合法）。
-          ValueListenableBuilder<bool>(
-            valueListenable: NavBarSetting.floating,
-            builder: (context, floating, _) => Positioned(
-              left: floating ? _kNavSideMargin : 0,
-              right: floating ? _kNavSideMargin : 0,
-              bottom: floating ? safeBottom + _kNavBottomGap : 0,
-              child: _buildMiuixNavBar(
-                context,
-                floating: floating,
-                safeBottom: safeBottom,
-              ),
+          Positioned.fill(
+            child: Offstage(
+              offstage: _selectedIndex != 2,
+              child: const CoursewarePage(),
             ),
+          ),
+          if (_selectedIndex == 1) const AccountsPage(),
+          if (_selectedIndex == 3) const SettingsPage(),
+
+          // ── 玻璃底栏（贴边叠加）──────────────────────────────────────
+          //
+          // 2026-09-22 用户拍板：取消液态玻璃与悬浮底栏，改用 Miuix 标准样式的
+          // 固定底栏，但**顶栏底栏都要保留模糊**。所以这里 = 包里的
+          // `MiuixNavigationBar`（几何 / 字号 / 按压 / 动画全由库定义）
+          // + 一层 `BackdropFilter` 玻璃，见
+          // `widget/miuix_blur_navigation_bar.dart`。
+          //
+          // 玻璃铺满整条含手势区 → 历史 bug「小白条区域显示为黑块」不复存在
+          // （那个黑块来自旧代码用 `ColoredBox(colors.surface)` 补手势区，
+          //  而深色下 surface 是纯黑 `#000000`，与上面的玻璃之间出现硬边）。
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _buildNavBar(context),
           ),
         ],
       ),
     );
   }
 
-  /// 按当前设置构建液态玻璃底栏（悬浮 / 贴边二选一），两态都是**真模糊**。
+  /// 贴边玻璃底栏（4 个 Tab：课程 / 账号 / 课件 / 设置）。
   ///
-  /// ⚠️ 用的是 `MiuixLiquidGlassNavigationBar`（`BackdropFilter` 版），
-  /// 不是包里的 `MiuixNavigationBar` / `MiuixFloatingNavigationBar` —— 后两者是
-  /// 纯色版本，**没有任何模糊能力**（第一版就是错在这里，做出来一个实心块，
-  /// 用户直接问「我的玻璃呢？」）。
-  ///
-  /// ⚠️ 也不是包里的 `MiuixGlassNavigationBar`：它的玻璃靠图层快照采样，
-  /// 滚动时会冻住（详见 `build()` 里的注释）。
-  Widget _buildMiuixNavBar(
-    BuildContext context, {
-    required bool floating,
-    required double safeBottom,
-  }) {
-    // 图标按选中态切换实心/描边
-    final icons = <Widget>[
-      Icon(_selectedIndex == 0 ? Icons.school : Icons.school_outlined),
-      Icon(
-        _selectedIndex == 1
-            ? Icons.account_circle
-            : Icons.account_circle_outlined,
-      ),
+  /// 几何、字号、按压反馈、选中动画时长全部由包里的
+  /// `MiuixNavigationBarDefaults` 定义（item 高 64 / 图标 26 / 字号 12 /
+  /// 动画 300ms），我们只补一层玻璃。
+  Widget _buildNavBar(BuildContext context) {
+    // 图标：选中态用实心，未选中用描边（Miuix 底栏的常规做法）
+    const items = <(IconData, IconData, String)>[
+      (Icons.school, Icons.school_outlined, '课程'),
+      (Icons.account_circle, Icons.account_circle_outlined, '账号'),
+      (Icons.folder_copy, Icons.folder_copy_outlined, '课件'),
+      (Icons.settings, Icons.settings_outlined, '设置'),
     ];
-    const labels = <String>['课程', '账号'];
 
-    final bar = MiuixLiquidGlassNavigationBar(
-      items: [
-        for (var i = 0; i < labels.length; i++)
-          MiuixLiquidGlassNavItem(
-            icon: icons[i],
-            label: labels[i],
-            contentDescription: labels[i],
+    return MiuixBlurNavigationBar(
+      children: [
+        for (var i = 0; i < items.length; i++)
+          MiuixNavigationBarItem(
+            selected: _selectedIndex == i,
+            onPressed: () => _onNavTap(i),
+            // 裸 `Icon` 即可：`MiuixNavigationBarItem` 内部用 `IconTheme.merge`
+            // 注入尺寸与状态色（选中 `onSurfaceContainer`，未选中同色 @ 40%），
+            // 不需要自己算颜色。
+            icon: Icon(_selectedIndex == i ? items[i].$1 : items[i].$2),
+            label: items[i].$3,
           ),
       ],
-      selectedIndex: _selectedIndex,
-      onSelect: _onNavTap,
-      height: _kNavBarHeight,
-      blurRadius: _kNavBlurRadius,
-      // 悬浮态：胶囊形（默认 cornerRadius 999）+ KernelSU 口径的外阴影
-      //         （`dropShadow(radius = 10, Black @ .1/.2)`，传 null 即用默认值）
-      // 贴边态：直角 + 去掉阴影，通栏贴底
-      shape: floating ? null : const MiuixGlassShape(cornerRadius: 0),
-      shadow: floating
-          ? null
-          : const MiuixGlassShadow(radius: 0, color: Color(0x00000000)),
-    );
-
-    if (floating) return bar;
-
-    // 贴边态：玻璃条本身只有 _kNavBarHeight 高，直接 bottom:0 会把手势条
-    // 那 16dp 安全区留成一条透明缝（能看见底下内容穿过去）。所以把玻璃条
-    // 上抬 safeBottom，缝里用 surface 纯色补上。
-    return ColoredBox(
-      color: MiuixTheme.of(context).colors.surface,
-      child: Padding(
-        padding: EdgeInsets.only(bottom: safeBottom),
-        child: bar,
-      ),
     );
   }
 

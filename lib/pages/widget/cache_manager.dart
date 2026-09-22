@@ -1,18 +1,22 @@
-/// PPT 缓存管理页
+/// 课件缓存管理页
 ///
 /// 展示缓存占用，并提供手动清理入口。
 ///
-/// 自动清理策略本来就在跑（进课堂时清一遍）：
-/// 1. 课程目录里有「已结束」标记且过了 24 小时 → 删
-/// 2. 课程目录超过 7 天没有任何写入 → 删
+/// ⚠️ 2026-09-22 用户拍板「取消自动删除 ppt」：原先进课堂时会自动跑一遍
+/// `CourseCache.cleanup()`（结束标记超 24h 删 / 7 天无写入删），那行已从
+/// `presentation.dart` 里删除。现在**只有两种删除途径**：
+///   1. 底栏「课件」Tab 里逐份删除（精确到某一份课件）
+///   2. 本页的「立即清理」（按下面的规则批量清）与「清空全部」
 ///
-/// 这一页只是让用户能主动看一眼、主动清一次，不是必需品。
+/// `CourseCache.cleanup()` 本身保留 —— 它就是「立即清理」按钮的实现，
+/// 只是不再自动触发。
+///
+/// [改名] 页标题从「PPT 缓存」改成「课件缓存」，与底栏的「课件」Tab 统一用词。
 library;
 
 import 'package:flutter/material.dart';
 // [新增] Miuix：整页按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
-import 'miuix_glass_spec.dart';
 
 import '../../cache/answer_cache.dart';
 import '../../cache/ppt_cache.dart';
@@ -113,14 +117,14 @@ class _CacheManagerPageState extends State<CacheManagerPage> {
 
     return MiuixScaffold(
       topBar: MiuixTopAppBar(
-        title: 'PPT 缓存',
-        largeTitle: 'PPT 缓存',
+        // [改名] 「PPT 缓存」→「课件缓存」：与底栏的「课件」Tab 用同一个词。
+        // 用户原话「不叫 ppt 缓存了」—— 他面对的是「这门课的课件」，
+        // 缓存只是实现细节；而且本页也确实是管理缓存用的，两者不冲突。
+        title: '课件缓存',
+        largeTitle: '课件缓存',
         blurred: true,
-        // KernelSU `BlurredBar` 口径（见 miuix_glass_spec.dart）：
-        // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
-        // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
-        blurRadius: MiuixGlassSpec.topBarBlurRadius,
-        blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
+        // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
+        // 与底栏是同一套玻璃口径（见 miuix_glass_spec.dart）。
         scrollBehavior: _topBarBehavior,
         // ⚠️ `MiuixTopAppBar` **没有** `onBack`，返回键要用 `navigationIcon`
         navigationIcon: MiuixIconButton(
@@ -326,11 +330,18 @@ class _CacheManagerPageState extends State<CacheManagerPage> {
               ),
               const SizedBox(width: 6),
               MiuixText(
-                '自动清理规则',
+                '手动清理规则',
                 fontSize: 13,
                 fontWeight: FontWeight.bold,
               ),
             ],
+          ),
+          const SizedBox(height: 6),
+          MiuixText(
+            '2026-09-22 起已取消自动删除：下面这些规则只在点「立即清理」时才生效，'
+            '平时不会自动删掉任何课件。想精确删某一份，去底栏「课件」Tab。',
+            fontSize: 12,
+            color: colors.onSurfaceVariantSummary,
           ),
           const SizedBox(height: 10),
           _buildRule(

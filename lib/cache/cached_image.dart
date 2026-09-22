@@ -164,6 +164,13 @@ class SlideImageStore {
   /// 去重键与落盘键不一致导致两个 worker 抢写同一文件），
   /// 所以抽成纯函数 + 单测钉住，见那个文件顶部的说明。
   static String _digest(String url) => imageCacheDigest(url);
+
+  /// 缓存键推导（对外暴露）。
+  ///
+  /// 离线浏览页要按 slide 里的图片 URL **反查**磁盘上有没有对应文件，
+  /// 而落盘文件名就是 `<digest>.bin` —— 所以这个推导必须是公开的，
+  /// 不能各写一份（写歪了就变成「明明缓存了却显示不出来」）。
+  static String digestOf(String url) => _digest(url);
 }
 
 /// 走磁盘缓存的 `ImageProvider`

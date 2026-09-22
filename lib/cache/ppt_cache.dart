@@ -47,7 +47,7 @@ class PptCache {
 
     try {
       final dir = await CourseCache.pptDir(lessonId, create: false);
-      final file = File(p.join(dir.path, '${_safeFile(presentationId)}.json'));
+      final file = File(p.join(dir.path, '${CourseCache.safeFile(presentationId)}.json'));
       final json = await CourseCache.readJson(file);
       if (json == null) return null;
 
@@ -64,18 +64,25 @@ class PptCache {
   }
 
   /// 写缓存
+  ///
+  /// [courseId] / [courseName] 是**顺带**记下来的课程身份（写进该课的
+  /// `meta.json`）。课件页要按课程聚合缓存，而缓存目录是按 lessonId 分的，
+  /// 没有这两个字段就关联不上（老缓存因此在课件页里只能显示一串数字）。
+  /// 两个都传空字符串时不会产生任何额外 IO。
   static Future<void> save(
     String lessonId,
     String presentationId,
-    Map<String, dynamic> raw,
-  ) async {
+    Map<String, dynamic> raw, {
+    String courseId = '',
+    String courseName = '',
+  }) async {
     if (presentationId.trim().isEmpty || raw.isEmpty) return;
 
     _memory[_key(lessonId, presentationId)] = raw;
 
     try {
       final dir = await CourseCache.pptDir(lessonId);
-      final file = File(p.join(dir.path, '${_safeFile(presentationId)}.json'));
+      final file = File(p.join(dir.path, '${CourseCache.safeFile(presentationId)}.json'));
       await CourseCache.writeJson(file, {
         'presentationId': presentationId,
         'savedAt': DateTime.now().millisecondsSinceEpoch,
@@ -85,6 +92,14 @@ class PptCache {
     } catch (e) {
       AppLogger.w(_tag, '写 PPT 缓存失败：$e');
     }
+
+    // 课程身份单独落一份（合并写，不会覆盖已有值）。
+    // 不放在上面的 try 里：meta 写失败不该让「PPT 已缓存」的日志变成错误。
+    await CourseCache.writeMeta(
+      lessonId,
+      courseId: courseId,
+      courseName: courseName,
+    );
   }
 
   /// 清掉内存层（换课程 / 退出课堂时调用）
@@ -97,19 +112,5 @@ class PptCache {
       AppLogger.w(_tag, '解析 PPT 缓存失败：$e');
       return null;
     }
-  }
-
-  /// presentationId 理论上是纯数字，但仍然白名单化一遍再当文件名
-  static String _safeFile(String raw) {
-    final trimmed = raw.trim();
-    final buffer = StringBuffer();
-    for (final rune in trimmed.runes) {
-      final isDigit = rune >= 0x30 && rune <= 0x39;
-      final isAlpha = (rune >= 0x41 && rune <= 0x5a) || (rune >= 0x61 && rune <= 0x7a);
-      final isDash = rune == 0x5f || rune == 0x2d;
-      buffer.write(isDigit || isAlpha || isDash ? String.fromCharCode(rune) : '_');
-    }
-    final name = buffer.toString();
-    return name.isEmpty ? 'unknown' : name;
   }
 }

@@ -6,7 +6,7 @@
 //
 // 底栏最终走的是「方案 C」——直接换成 `BackdropFilter`（与顶栏同一机制），
 // 从根上绕开了「捕获频率跟不上滚动」的问题，因此不再需要这个组件。
-// 详见 `miuix_liquid_glass_nav_bar.dart` 的文件头。
+// 详见 `miuix_blur_navigation_bar.dart` 与 `miuix_glass_spec.dart` 的文件头。
 //
 // 什么时候会再需要它：如果以后要用 `ui.ImageFilter.shader` 把**折射**补回来
 // （方案 D：实时模糊 + 折射兼得，但只在 Impeller 下可用），

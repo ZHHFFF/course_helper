@@ -47,10 +47,18 @@ class PresentationPage extends StatefulWidget {
   final String lessonId;
   final String title;
 
+  /// 课程 ID（雨课堂的 `course_id`）。
+  ///
+  /// 为什么要传：缓存目录是按 **lessonId** 分的，而课件页要按 **课程** 聚合，
+  /// 两者的对应关系必须落盘才留得住 —— 见 `CourseCache.writeMeta`。
+  /// 老调用点没传时是空串，不会写坏已有的 meta。
+  final String courseId;
+
   const PresentationPage({
     super.key,
     required this.lessonId,
     required this.title,
+    this.courseId = '',
   });
 
   @override
@@ -241,8 +249,12 @@ class _PresentationPageState extends State<PresentationPage>
   Future<void> _initialize() async {
     await _checkToken();
 
-    // 进课堂先按策略清一遍过期缓存（只 stat 一层目录，很便宜）
-    unawaited(CourseCache.cleanup());
+    // ⚠️ 这里**曾经**每次进课堂都跑一遍 `CourseCache.cleanup()`
+    // （结束标记超 24h 删 / 7 天无写入删）。2026-09-22 用户拍板
+    // 「取消自动删除 ppt」—— 缓存改成**只由用户在课件页手动删**，
+    // 所以这行已删除。`CourseCache.cleanup()` 本身保留（设置页里还有
+    // 手动触发的入口），只是不再自动跑。
+
     // 把本节课已有的答案缓存读进内存，切页时展示是同步的、不闪
     await AnswerCache.preload(widget.lessonId);
     AnswerQueue.resetCounters();
@@ -1300,8 +1312,16 @@ class _PresentationPageState extends State<PresentationPage>
     try {
       final pptData = await RCCourseApi().getPresentation(presentationId);
       if (pptData != null) {
-        // 整份 PPT 元数据落盘：老师来回切同一份时不用重复请求
-        unawaited(PptCache.save(widget.lessonId, presentationId, pptData));
+        // 整份 PPT 元数据落盘：老师来回切同一份时不用重复请求。
+        // 顺手把「这节课属于哪门课」记进 meta.json —— 课件页靠它把
+        // lessonId 目录归到课程名下（老缓存就是缺这个，只能显示一串数字）。
+        unawaited(PptCache.save(
+          widget.lessonId,
+          presentationId,
+          pptData,
+          courseId: widget.courseId,
+          courseName: widget.title,
+        ));
         presentation = Presentation.fromJson(pptData);
       }
     } catch (e) {

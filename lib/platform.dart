@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'dart:async';
 
 import '../api/api_service.dart';
@@ -19,6 +20,26 @@ enum RainClassroomServerType {
   huanghe // 黄河雨课堂
 }
 
+/// 雨课堂各服务器的标识色。
+///
+/// 原先住在 `pages/accounts.dart`。2026-09-22 服务器切换入口从账号页右上角菜单
+/// 搬到「设置」Tab，两个文件都要用这份色板 —— 放到枚举定义处最合适，
+/// 避免两处各写一遍导致不同步。
+const Map<RainClassroomServerType, Color> kRainClassroomServerColors = {
+  RainClassroomServerType.yuketang: Color(0xFF5096F5),
+  RainClassroomServerType.pro: Color(0xFF7B3BB5),
+  RainClassroomServerType.changjiang: Color(0xFFC21F30),
+  RainClassroomServerType.huanghe: Color(0xFFB57232),
+};
+
+/// 雨课堂各服务器的显示名。
+const Map<RainClassroomServerType, String> kRainClassroomServerNames = {
+  RainClassroomServerType.yuketang: '雨课堂',
+  RainClassroomServerType.pro: '荷塘 · 雨课堂',
+  RainClassroomServerType.changjiang: '长江 · 雨课堂',
+  RainClassroomServerType.huanghe: '黄河 · 雨课堂',
+};
+
 /// 平台状态管理器
 class PlatformManager {
   static final PlatformManager _instance = PlatformManager._internal();
@@ -28,7 +49,13 @@ class PlatformManager {
   static const _platformKey = 'current_platform';
   static const _serverKey = 'current_server';
   PlatformType _currentPlatform = PlatformType.chaoxing;
-  RainClassroomServerType _currentServer = RainClassroomServerType.yuketang;
+
+  /// 雨课堂服务器的**新装默认值**。
+  ///
+  /// 2026-09-22 用户要求「雨课堂默认为长江雨课堂」。
+  /// ⚠️ 只改默认值、不动已装机用户的存量设置：`initialize()` 里读得到
+  /// `current_server` 就以后者为准，所以老用户不会被这次改动改掉。
+  RainClassroomServerType _currentServer = RainClassroomServerType.changjiang;
 
   /// 获取当前平台
   PlatformType get currentPlatform => _currentPlatform;

@@ -31,6 +31,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../utils/app_logger.dart';
+import '../utils/image_cache_key.dart';
 
 /// 一次清理的结果
 class CacheCleanupReport {
@@ -45,6 +46,92 @@ class CacheCleanupReport {
   @override
   String toString() =>
       '清理 ${removedLessons.length} 门课，释放 ${(removedBytes / 1024 / 1024).toStringAsFixed(1)} MB';
+}
+
+/// 一门已缓存课程在磁盘上的元信息（`lessons/<lessonId>/meta.json`）。
+///
+/// 为什么需要它：缓存目录是按 **lessonId** 组织的（雨课堂里每上一次课就是一个
+/// 新 lessonId），而「课程」这个概念用的是 **courseId**。两者的对应关系以前
+/// 从来没落过盘 —— `PresentationPage(title: course.name)` 只在内存里，进程一退
+/// 就没了，于是课件页只能看到一串 lessonId 数字，既不知道是哪门课、也没法按
+/// 课程聚合。
+///
+/// 从 v4.8.8 起，每次进课堂都会把 `{courseId, courseName}` 写进 meta.json。
+/// 老缓存没有这个文件，首次重新进入那门课时会被回填（见 [CourseCache.listLessons]
+/// 的兜底）。
+class LessonMeta {
+  const LessonMeta({
+    required this.lessonId,
+    this.courseId = '',
+    this.courseName = '',
+    this.updatedAt = 0,
+  });
+
+  /// 缓存目录名（= `safeName(lessonId)`）
+  final String lessonId;
+
+  /// 课程 ID（雨课堂的 `course_id`）
+  final String courseId;
+
+  /// 课程名（用于列表展示）
+  final String courseName;
+
+  /// 最后一次写入时间（毫秒时间戳）
+  final int updatedAt;
+
+  /// 展示名：课程名优先，退回 lessonId（老缓存 / 未回填）
+  String get displayName => courseName.trim().isEmpty ? lessonId : courseName;
+}
+
+/// 课件页第一层的列表项：一门课 + 它的缓存概况。
+class CachedLesson {
+  const CachedLesson({
+    required this.lessonId,
+    required this.courseId,
+    required this.name,
+    required this.presentationCount,
+    required this.updatedAt,
+  });
+
+  final String lessonId;
+  final String courseId;
+
+  /// 展示名（课程名，或老缓存的兜底名）
+  final String name;
+
+  /// 该 lessonId 下缓存了几份 PPT
+  final int presentationCount;
+
+  final int updatedAt;
+
+  bool get hasPresentations => presentationCount > 0;
+}
+
+/// 课件页第二层的列表项：一份已缓存的 PPT。
+class CachedPresentation {
+  const CachedPresentation({
+    required this.lessonId,
+    required this.presentationId,
+    required this.title,
+    required this.slideCount,
+    required this.savedAt,
+    required this.bytes,
+  });
+
+  /// 它属于哪节课的缓存目录（查看 / 删除都要用它定位文件）
+  final String lessonId;
+
+  final String presentationId;
+  final String title;
+  final int slideCount;
+
+  /// 落盘时间（毫秒时间戳）
+  final int savedAt;
+
+  /// json 文件大小（图片另计，由整门课一起管理）
+  final int bytes;
+
+  String get displayTitle => title.trim().isEmpty ? presentationId : title;
 }
 
 class CourseCache {
@@ -240,6 +327,241 @@ class CourseCache {
   }
 
   // ---------------------------------------------------------------------------
+  // 课件管理（课件页用）
+  //
+  // 需求原文：「一个是缓存的 ppt，增加查看缓存的 ppt，和删除的按钮，
+  //          取消自动删除 ppt」
+  // ---------------------------------------------------------------------------
+
+  static const String _metaFileName = 'meta.json';
+  static const String _imagesDirName = 'images';
+
+  /// 某节课的元信息文件
+  static Future<File> metaFile(String lessonId) async =>
+      File(p.join((await lessonDir(lessonId)).path, _metaFileName));
+
+  /// 写入 / 合并课程元信息。
+  ///
+  /// 空字符串**不会**覆盖已有值 —— 调用方（例如学习通路径）可能拿不到
+  /// courseName，不能因此把之前记好的名字抹掉。
+  static Future<void> writeMeta(
+    String lessonId, {
+    String courseId = '',
+    String courseName = '',
+  }) async {
+    final hasCourseId = courseId.trim().isNotEmpty;
+    final hasCourseName = courseName.trim().isNotEmpty;
+    if (!hasCourseId && !hasCourseName) return;
+
+    try {
+      final existing = await readMeta(lessonId);
+      await writeJson(await metaFile(lessonId), {
+        'lessonId': lessonId,
+        'courseId': hasCourseId ? courseId : (existing?.courseId ?? ''),
+        'courseName': hasCourseName ? courseName : (existing?.courseName ?? ''),
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      });
+    } catch (e) {
+      AppLogger.w(_tag, '写课程元信息失败：$e');
+    }
+  }
+
+  /// 读课程元信息（不存在返回 null）
+  static Future<LessonMeta?> readMeta(String lessonId) async {
+    try {
+      final json = await readJson(await metaFile(lessonId));
+      if (json == null) return null;
+      return LessonMeta(
+        lessonId: lessonId,
+        courseId: (json['courseId'] ?? '').toString(),
+        courseName: (json['courseName'] ?? '').toString(),
+        updatedAt: (json['updatedAt'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 列出所有已缓存的课程（按最后写入时间倒序）。
+  ///
+  /// 老缓存（没有 meta.json）用「该课第一份 PPT 的标题」兜底当展示名 ——
+  /// 至少比一串 lessonId 数字可读；下次进课堂时会被正式回填。
+  static Future<List<CachedLesson>> listLessons() async {
+    final result = <CachedLesson>[];
+    try {
+      final lessonsRoot =
+          Directory(p.join((await root()).path, _lessonsDirName));
+      if (!await lessonsRoot.exists()) return result;
+
+      await for (final entity in lessonsRoot.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final dirName = p.basename(entity.path);
+
+        final ppts = await listPresentations(dirName);
+        final meta = await readMeta(dirName);
+
+        result.add(CachedLesson(
+          lessonId: dirName,
+          courseId: meta?.courseId ?? '',
+          name: meta?.displayName ??
+              (ppts.isNotEmpty ? ppts.first.displayTitle : dirName),
+          presentationCount: ppts.length,
+          updatedAt: meta?.updatedAt != null && meta!.updatedAt > 0
+              ? meta.updatedAt
+              : (ppts.isNotEmpty
+                  ? ppts.first.savedAt
+                  : await _dirModifiedMs(entity)),
+        ));
+      }
+    } catch (e) {
+      AppLogger.w(_tag, '列课程缓存失败：$e');
+    }
+
+    result.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return result;
+  }
+
+  /// 列出某节课缓存的所有 PPT（按落盘时间倒序）。
+  static Future<List<CachedPresentation>> listPresentations(
+      String lessonId) async {
+    final result = <CachedPresentation>[];
+    try {
+      final dir = await pptDir(lessonId, create: false);
+      if (!await dir.exists()) return result;
+
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        if (!entity.path.toLowerCase().endsWith('.json')) continue;
+
+        try {
+          final json = await readJson(entity);
+          if (json == null) continue;
+          final data = json['data'];
+          final slides = data is Map ? data['slides'] : null;
+
+          result.add(CachedPresentation(
+            lessonId: lessonId,
+            presentationId: (json['presentationId'] ??
+                    p.basenameWithoutExtension(entity.path))
+                .toString(),
+            title: (data is Map ? (data['title'] ?? '') : '').toString(),
+            slideCount: slides is List ? slides.length : 0,
+            savedAt: (json['savedAt'] as num?)?.toInt() ?? 0,
+            bytes: await entity.length(),
+          ));
+        } catch (e) {
+          AppLogger.d(_tag, '读课件失败 ${p.basename(entity.path)}：$e');
+        }
+      }
+    } catch (e) {
+      AppLogger.w(_tag, '列课件失败：$e');
+    }
+
+    result.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+    return result;
+  }
+
+  /// 删掉一份课件（json + 它**独占**的图片），返回释放的字节数。
+  ///
+  /// ⚠️ 图片是同一节课的**所有 PPT 共享** `ppt/images/` 一个目录的，同一张源图
+  /// 可能被多份 PPT 引用（甚至同一份 PPT 的多页引用）。所以不能把「这份 PPT
+  /// 引用的图片」直接删掉 —— 先删 json，再重新收集**剩余 PPT 还引用着的**图片
+  /// 指纹，只清理不在这个集合里的文件（孤儿）。
+  static Future<int> deletePresentation(
+    String lessonId,
+    String presentationId,
+  ) async {
+    var freed = 0;
+    try {
+      final dir = await pptDir(lessonId, create: false);
+      final target =
+          File(p.join(dir.path, '${safeFile(presentationId)}.json'));
+      if (await target.exists()) {
+        freed += await target.length();
+        await target.delete();
+      }
+      freed += await _sweepOrphanImages(lessonId);
+      AppLogger.i(_tag, '已删除课件 $presentationId');
+    } catch (e) {
+      AppLogger.w(_tag, '删除课件失败：$e');
+    }
+    return freed;
+  }
+
+  /// 按 courseId 找出所有相关的 lessonId。
+  ///
+  /// 同一门课会有多个 lessonId（每次上课都是一个新的），所以返回列表。
+  /// 老缓存没有 meta.json → 关联不上，只能靠「进课堂时回填」逐步补齐。
+  static Future<List<String>> findLessonIdsByCourseId(String courseId) async {
+    if (courseId.trim().isEmpty) return const [];
+    final result = <String>[];
+    for (final lesson in await listLessons()) {
+      if (lesson.courseId == courseId) result.add(lesson.lessonId);
+    }
+    return result;
+  }
+
+  /// 清掉某门课下所有 lessonId 的缓存（课件页「删除该课全部课件」用）。
+  static Future<int> clearCourse(String courseId) async {
+    var freed = 0;
+    for (final lessonId in await findLessonIdsByCourseId(courseId)) {
+      freed += await clearLesson(lessonId);
+    }
+    return freed;
+  }
+
+  /// 删掉 `ppt/images/` 里已经没有任何 PPT 引用的图片，返回释放字节数。
+  ///
+  /// 引用关系怎么求：每份 PPT 的 json 里 `slides[].cover / coverAlt / thumbnail`
+  /// 就是图片 URL，取 [imageCacheDigest] 即落盘文件名主体。
+  static Future<int> _sweepOrphanImages(String lessonId) async {
+    var freed = 0;
+    try {
+      final imagesDir = Directory(
+        p.join((await pptDir(lessonId, create: false)).path, _imagesDirName),
+      );
+      if (!await imagesDir.exists()) return 0;
+
+      // 1) 收集所有 PPT 还引用着的图片指纹
+      final referenced = <String>{};
+      final ppt = await pptDir(lessonId, create: false);
+      await for (final entity in ppt.list(followLinks: false)) {
+        if (entity is! File) continue;
+        if (!entity.path.toLowerCase().endsWith('.json')) continue;
+        final json = await readJson(entity);
+        final data = json?['data'];
+        if (data is! Map) continue;
+        final slides = data['slides'];
+        if (slides is! List) continue;
+        for (final slide in slides) {
+          if (slide is! Map) continue;
+          for (final key in const ['cover', 'coverAlt', 'thumbnail']) {
+            final url = slide[key]?.toString() ?? '';
+            if (url.trim().isNotEmpty) referenced.add(imageCacheDigest(url));
+          }
+        }
+      }
+
+      // 2) 清掉不在集合里的文件
+      await for (final entity in imagesDir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        if (referenced.contains(p.basenameWithoutExtension(entity.path))) {
+          continue;
+        }
+        try {
+          freed += await entity.length();
+          await entity.delete();
+        } catch (_) {
+          // 单个文件删不掉不影响整体
+        }
+      }
+    } catch (e) {
+      AppLogger.w(_tag, '清理孤儿图片失败：$e');
+    }
+    return freed;
+  }
+
+  // ---------------------------------------------------------------------------
   // 内部工具
   // ---------------------------------------------------------------------------
 
@@ -287,6 +609,18 @@ class CourseCache {
       return null;
     }
     return latest;
+  }
+
+  /// 目录自身的最后修改时间（毫秒时间戳）。
+  ///
+  /// 比 [_lastModified] 轻得多：只 `stat` 一层，不递归扫文件。
+  /// 课件页要按「最近使用」排序，对没写过 meta.json 的老缓存用它兜底。
+  static Future<int> _dirModifiedMs(Directory dir) async {
+    try {
+      return (await dir.stat()).modified.millisecondsSinceEpoch;
+    } catch (_) {
+      return 0;
+    }
   }
 
   static Future<int> _dirSize(Directory dir) async {
@@ -340,6 +674,25 @@ class CourseCache {
     if (name.isEmpty || name == '.' || name == '..') return 'unknown';
     // 兜住 Windows/Android 都不喜欢的超长文件名
     return name.length <= 80 ? name : name.substring(0, 80);
+  }
+
+  /// presentationId 理论上是纯数字，但仍然白名单化一遍再当文件名。
+  ///
+  /// 从 `PptCache` 提上来的：`PptCache` 要写、本文件要读/删，
+  /// 两处各写一份白名单逻辑迟早会写歪（写歪就是「列表里有、点进去 404」）。
+  static String safeFile(String raw) {
+    final trimmed = raw.trim();
+    final buffer = StringBuffer();
+    for (final rune in trimmed.runes) {
+      final isDigit = rune >= 0x30 && rune <= 0x39;
+      final isAlpha =
+          (rune >= 0x41 && rune <= 0x5a) || (rune >= 0x61 && rune <= 0x7a);
+      final isDash = rune == 0x5f || rune == 0x2d;
+      buffer.write(
+          isDigit || isAlpha || isDash ? String.fromCharCode(rune) : '_');
+    }
+    final name = buffer.toString();
+    return name.isEmpty ? 'unknown' : name;
   }
 
   /// 读一个 JSON 文件（不存在或解析失败都返回 null）

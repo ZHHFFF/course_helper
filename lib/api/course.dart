@@ -212,6 +212,38 @@ class RCCourseApi extends Api {
     return contentList;
   }
 
+  /// 获取**全部**课程（不 join「正在上课」）
+  ///
+  /// 与 [getCoursesList] 的区别：那个只遍历 `on-lesson` 返回的课，也就是
+  /// **当前正在上课**的课（课程 tab 的空态文案「暂无正在上课的课程」即由此而来），
+  /// `lessonId` 也只有那些课才有。
+  ///
+  /// 但 `/v/course_meta/learning_list/` 返回的 `courses['data']` 本来就是
+  /// **我这学期选过的全部课程** —— 只是被 join 过滤掉了。课件页需要全量，
+  /// 所以这里不 join，直接全转。
+  ///
+  /// ⚠️ 这样拿到的 `Course.lessonId` 恒为 `null`（`lesson_id` 只有正在上课的课
+  /// 才有）。课件页与缓存目录的关联必须**走 `courseId`**，见
+  /// `CourseCache.findLessonIdsByCourseId`。
+  static Future<List<Course>?> getAllCourses() async {
+    final courses = await getCourses();
+    if (courses == null) return null;
+
+    final data = courses['data'];
+    if (data is! List || data.isEmpty) return null;
+
+    final list = <Course>[];
+    for (final item in data) {
+      if (item is! Map) continue;
+      try {
+        list.add(Course.fromRCJson(Map<String, dynamic>.from(item)));
+      } catch (e) {
+        debugPrint('解析课程失败：$e');
+      }
+    }
+    return list.isEmpty ? null : list;
+  }
+
   Future<int?> checkIn(String lessonId) async {
     final url = '/api/v3/lesson/checkin';
     final jsonData = {

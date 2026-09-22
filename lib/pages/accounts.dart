@@ -1,46 +1,27 @@
 import 'package:flutter/material.dart';
 // [新增] Miuix：顶栏 / 脚手架按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
-import 'widget/miuix_glass_spec.dart';
 import 'dart:async';
-import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../session/account.dart';
 import '../models/user.dart';
 import '../platform.dart';
 import '../push/easemob.dart';
 import 'widget/avatar.dart';
-import 'widget/answer_search_settings.dart';
-// [新增] 外观设置页（底栏悬浮 / 贴边切换）
-import 'settings/appearance.dart';
-import 'widget/log_viewer.dart';
-import 'widget/cache_manager.dart';
-import 'widget/keep_alive_checker.dart';
-// [新增] 悬浮玻璃底栏的底部占位高度（几何常量模块）
+// [新增] 底栏（Miuix 标准样式）的底部占位高度（几何常量模块）
 import 'widget/miuix_nav_metrics.dart';
 // [新增] 开发期压测假数据（--dart-define=SEED_TEST_DATA=N 时才有内容）
 import '../utils/test_data_seeder.dart';
-import '../setting/navbar_setting.dart';
 import 'login.dart';
 
-/// 雨课堂各服务器的标识色。
-///
-/// 顶栏服务器图标与弹出菜单里的小圆点共用同一份，避免两处各写一遍导致不同步。
-const Map<RainClassroomServerType, Color> kRainClassroomServerColors = {
-  RainClassroomServerType.yuketang: Color(0xFF5096F5),
-  RainClassroomServerType.pro: Color(0xFF7B3BB5),
-  RainClassroomServerType.changjiang: Color(0xFFC21F30),
-  RainClassroomServerType.huanghe: Color(0xFFB57232),
-};
-
-/// 雨课堂各服务器的显示名（弹出菜单项用）。
-const Map<RainClassroomServerType, String> kRainClassroomServerNames = {
-  RainClassroomServerType.yuketang: '雨课堂',
-  RainClassroomServerType.pro: '荷塘 · 雨课堂',
-  RainClassroomServerType.changjiang: '长江 · 雨课堂',
-  RainClassroomServerType.huanghe: '黄河 · 雨课堂',
-};
+// [移除] 2026-09-22：账号页右上角**只保留「切换雨课堂 / 学习通」**，
+// 其余入口（答案检索设置 / 外观设置 / 运行日志 / 课件缓存 / 前台服务自检 /
+// 关于）全部搬到新的「设置」Tab。连带移除的 import：
+//   widget/answer_search_settings.dart、settings/appearance.dart、
+//   widget/log_viewer.dart、widget/cache_manager.dart、
+//   widget/keep_alive_checker.dart、setting/navbar_setting.dart、
+//   package_info_plus、url_launcher
+// （最后两个原先只服务于「关于」弹窗，那个弹窗也搬去设置页了。）
 
 class AccountsPage extends StatefulWidget {
   const AccountsPage({super.key});
@@ -69,7 +50,11 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   double _topBarInset = 0;
 
   // ---------------------------------------------------------------------------
-  // 顶栏两个弹出菜单（服务器切换 / 更多）
+  // 顶栏的平台切换菜单（学习通 / 雨课堂）
+  //
+  // 2026-09-22 起账号页右上角**只保留这一个菜单**。原来还有一个「服务器切换」
+  // 按钮（雨课堂专用，四个小圆点）和一个「更多」菜单（答案检索设置 / 外观设置 /
+  // 运行日志 / PPT 缓存 / 前台服务自检 / 关于），全部搬到新的「设置」Tab。
   //
   // 从 Material 的 `PopupMenuButton` 换成 Miuix 的 `MiuixOverlayListPopup`。
   // Miuix 的弹窗是**声明式**的：由 `show` 控制显隐，锚点靠 `anchorBounds`
@@ -79,13 +64,9 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   // 否则关闭时组件已被移除、退场动画播不完，表现为「一点空白处菜单就瞬间消失」。
   // ---------------------------------------------------------------------------
 
-  /// 服务器切换菜单触发器的锚点
-  final GlobalKey _serverMenuAnchor = GlobalKey();
-
-  /// 「更多」菜单触发器的锚点
+  /// 平台切换菜单触发器的锚点
   final GlobalKey _moreMenuAnchor = GlobalKey();
 
-  bool _showServerMenu = false;
   bool _showMoreMenu = false;
 
   /// 「添加账号」底部抽屉。
@@ -129,58 +110,23 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     items[itemIdx].onClick?.call();
   }
 
-  /// 服务器切换菜单：一组单选（雨课堂 / 荷塘 / 长江 / 黄河）。
-  Widget _buildServerMenu(BuildContext context) {
-    final current = PlatformManager().currentServer;
-    final entries = <MiuixDropdownEntry>[
-      MiuixDropdownEntry(
-        items: [
-          for (final type in RainClassroomServerType.values)
-            MiuixDropdownItem(
-              text: kRainClassroomServerNames[type]!,
-              icon: Icon(
-                Icons.circle,
-                size: 16,
-                color: kRainClassroomServerColors[type],
-              ),
-              selected: current == type,
-              onClick: () async {
-                setState(() => _showServerMenu = false);
-                await PlatformManager().setServer(type);
-                if (mounted) setState(() {});
-              },
-            ),
-        ],
-      ),
-    ];
-    return MiuixOverlayListPopup(
-      show: _showServerMenu,
-      anchorBounds: _anchorBoundsOf(_serverMenuAnchor),
-      // 右对齐：菜单从触发按钮的右边缘往左铺，跟 Material 的观感一致
-      alignment: MiuixPopupAlign.end,
-      onDismissRequest: () => setState(() => _showServerMenu = false),
-      content: MiuixListPopupColumn(
-        children: [
-          MiuixDropdownEntriesPopupContent(
-            entries: entries,
-            dropdownColors: MiuixDropdownDefaults.dropdownColors(context),
-            onItemClick: (entryIdx, itemIdx) =>
-                _dispatchDropdownTap(entries, entryIdx, itemIdx),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 「更多」菜单：平台单选 + 一组入口。
+  /// 平台切换菜单：一组单选（学习通 / 雨课堂）。
+  ///
+  /// 2026-09-22 起这是账号页顶栏**唯一**的菜单 —— 雨课堂的服务器选择
+  /// （雨课堂 / 荷塘 / 长江 / 黄河）搬到了「设置」Tab。
   Widget _buildMoreMenu(BuildContext context) {
     final entries = <MiuixDropdownEntry>[
-      // 第一组：平台单选（原来嵌在 PopupMenuItem 里的 RadioListTile）
       MiuixDropdownEntry(
         items: [
           for (final platform in PlatformType.values)
             MiuixDropdownItem(
               text: platform == PlatformType.chaoxing ? '学习通' : '雨课堂',
+              icon: Icon(
+                platform == PlatformType.chaoxing
+                    ? Icons.school_outlined
+                    : Icons.dns_outlined,
+                size: 20,
+              ),
               selected: _selectedPlatform == platform,
               onClick: () async {
                 setState(() {
@@ -191,44 +137,6 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
                 if (mounted) setState(() {});
               },
             ),
-        ],
-      ),
-      // 第二组：功能入口
-      MiuixDropdownEntry(
-        items: [
-          MiuixDropdownItem(
-            text: '答案检索设置',
-            icon: const Icon(Icons.search, size: 20),
-            onClick: () =>
-                _openFromMoreMenu(const AnswerSearchSettingsPage()),
-          ),
-          MiuixDropdownItem(
-            text: '外观设置',
-            icon: const Icon(Icons.palette_outlined, size: 20),
-            onClick: () => _openFromMoreMenu(const AppearanceSettingsPage()),
-          ),
-          MiuixDropdownItem(
-            text: '运行日志',
-            icon: const Icon(Icons.receipt_long, size: 20),
-            onClick: () => _openFromMoreMenu(const LogViewerPage()),
-          ),
-          MiuixDropdownItem(
-            text: 'PPT 缓存',
-            icon: const Icon(Icons.sd_storage_outlined, size: 20),
-            onClick: () => _openFromMoreMenu(const CacheManagerPage()),
-          ),
-          MiuixDropdownItem(
-            text: '前台服务自检',
-            icon: const Icon(Icons.power_settings_new, size: 20),
-            onClick: () => _openFromMoreMenu(const KeepAliveCheckerPage()),
-          ),
-          MiuixDropdownItem(
-            text: '关于',
-            onClick: () {
-              setState(() => _showMoreMenu = false);
-              _showAboutDialog();
-            },
-          ),
         ],
       ),
     ];
@@ -301,12 +209,6 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         ],
       ),
     );
-  }
-
-  /// 先收起菜单再跳页：菜单若还开着，新页面的入场动画会和菜单的退场动画打架。
-  void _openFromMoreMenu(Widget page) {
-    setState(() => _showMoreMenu = false);
-    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
   }
 
   @override
@@ -699,108 +601,11 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     );
   }
 
-  void _showAboutDialog() async {
-    // 先把 context 相关的东西取出来：下面要 await，
-    // 之后再碰 context 会被 analyzer 判成 use_build_context_synchronously
-    final colors = MiuixTheme.of(context).colors;
-    final textStyles = MiuixTheme.of(context).textStyles;
-
-    final packageInfo = await PackageInfo.fromPlatform();
-    if (!mounted) return;
-
-    // ⚠️ 用 `showDialog` 而不是 `MiuixOverlayDialog`，理由同
-    // `_buildQrDialogPanel`：账号页是 Tab 页，玻璃底栏画在页面之上，
-    // 页内级弹窗既会被底栏压住、又挡不住底栏的点击。
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => _wrapDialogPanel(
-        MiuixSurface(
-          // 与 `MiuixOverlayDialog` 默认底色一致；`MiuixSurface` 自己的默认
-          // 是 `surface`（深色纯黑），在遮罩上会糊成一片看不出面板边界。
-          color: colors.surfaceContainer,
-          cornerRadius: 32,
-          shadowElevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Image.asset('images/logo.png', width: 60, height: 60),
-                const SizedBox(height: 12),
-                MiuixText(
-                  '课程助手',
-                  fontSize: textStyles.title4.fontSize,
-                  fontWeight: FontWeight.w600,
-                ),
-                const SizedBox(height: 4),
-                MiuixText(
-                  '版本 ${packageInfo.version}',
-                  fontSize: 12,
-                  color: colors.onSurfaceVariantSummary,
-                ),
-                const SizedBox(height: 16),
-                MiuixText('一个管理学习通、雨课堂课程的应用。', fontSize: 13),
-                const SizedBox(height: 2),
-                MiuixText('支持多账号管理、课程查看、活动签到等功能。', fontSize: 13),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    MiuixText('开发者：', fontSize: 13),
-                    _buildDeveloperLink(
-                      colors,
-                      'makisekurse',
-                      'https://github.com/makisekurse',
-                    ),
-                    MiuixText(' & ', fontSize: 13),
-                    _buildDeveloperLink(
-                      colors,
-                      'ZHHFFF',
-                      'https://github.com/ZHHFFF',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: MiuixTextButton(
-                    '确定',
-                    onPressed: () => Navigator.pop(dialogContext),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 「关于」弹窗里的开发者链接。
-  ///
-  /// `MiuixText` 没有 `onTap`（Miuix 里可点文本就是套一层按压组件），
-  /// 所以用 `MiuixPressable` 包一个主色的 `MiuixText`，保留原来
-  /// 「点名字跳 GitHub」的行为。
-  Widget _buildDeveloperLink(MiuixColors colors, String name, String url) {
-    return MiuixPressable(
-      onPressed: () async {
-        final uri = Uri.parse(url);
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
-        }
-      },
-      child: MiuixText(name, fontSize: 13, color: colors.primary),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    // [新增] 监听底栏形态设置：切换后 FAB 位置与列表留白都要跟着变。
-    // 底栏本身在 main.dart 里也监听同一个 notifier，两边同步刷新。
-    return ValueListenableBuilder<bool>(
-      valueListenable: NavBarSetting.floating,
-      builder: (context, _, _) => _buildScaffold(context),
-    );
+    // 底栏已固定为「贴边 Miuix 标准样式」（2026-09-22 取消悬浮），
+    // 高度是常量，不再需要按设置重建。
+    return _buildScaffold(context);
   }
 
   Widget _buildScaffold(BuildContext context) {
@@ -811,7 +616,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       // 内容就必须能从栏底下滚过去，所以得用 MiuixScaffold（body 铺满整屏、
       // 栏画在其上），而不是 Material 的 `Scaffold.appBar` 槽位。
       //
-      // 注：两个弹出菜单都已迁到 Miuix 的声明式弹窗
+      // 注：弹出菜单已迁到 Miuix 的声明式弹窗
       // （`MiuixOverlayListPopup` + `MiuixListPopupColumn` +
       // `MiuixDropdownEntriesPopupContent`），触发器就是顶栏里的
       // `MiuixIconButton`，不再需要 Material 的 `PopupMenuButton`。
@@ -819,11 +624,6 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         title: '账号',
         largeTitle: '账号',
         blurred: true,
-        // KernelSU `BlurredBar` 口径（见 widget/miuix_glass_spec.dart）：
-        // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
-        // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
-        blurRadius: MiuixGlassSpec.topBarBlurRadius,
-        blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
         scrollBehavior: _topBarBehavior,
         actions: [
           // 注：这里的动作按钮直接用 `MiuixIconButton`（自带手势）。
@@ -837,17 +637,9 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
               onPressed: _deleteSelectedAccounts,
               child: const Icon(Icons.delete),
             ),
-          if (_selectedPlatform == PlatformType.rainClassroom)
-            MiuixIconButton(
-              // GlobalKey 用来量出按钮在屏幕上的位置，作为弹窗锚点
-              key: _serverMenuAnchor,
-              onPressed: () =>
-                  setState(() => _showServerMenu = !_showServerMenu),
-              child: Icon(
-                Icons.dns,
-                color: kRainClassroomServerColors[PlatformManager().currentServer],
-              ),
-            ),
+          // 2026-09-22 起这里**只保留**平台切换。原来的「服务器切换」按钮
+          // （雨课堂专用的彩色圆点）与「更多」菜单（答案检索设置 / 外观设置 /
+          // 运行日志 / PPT 缓存 / 前台服务自检 / 关于）都搬到了「设置」Tab。
           MiuixIconButton(
             key: _moreMenuAnchor,
             onPressed: () => setState(() => _showMoreMenu = !_showMoreMenu),
@@ -938,9 +730,8 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         },
       ),
             ),
-            // 两个弹出菜单常驻挂载（用 `show` 控制显隐），关闭动画才能播完。
+            // 弹出菜单常驻挂载（用 `show` 控制显隐），关闭动画才能播完。
             // `MiuixPopupLayout` 的 build 返回 `SizedBox.shrink()`，不占布局。
-            _buildServerMenu(context),
             _buildMoreMenu(context),
             // 底部抽屉同理：常驻挂载，靠 `show` 开合，退场动画才播得完。
             _buildAddAccountSheet(context),

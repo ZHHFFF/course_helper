@@ -1,20 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_miuix/miuix.dart';
-import '../widget/miuix_glass_spec.dart';
 
-import '../../setting/navbar_setting.dart';
+import '../../setting/theme_setting.dart';
 
 /// 「外观设置」页
 ///
-/// 用户要求「底栏加个按钮选择是否为悬浮底栏」，故把开关独立成一页，
-/// 从账号页右上角菜单（`/accounts` 页的 `more_horiz`）进入。
+/// 入口：设置 Tab → 外观设置。
 ///
-/// 之所以不直接做成菜单里的一项：菜单项点一下就关，而用户切换后需要能
-/// **立刻看到底栏变化**，留在页面上才方便反复对比两种形态。
+/// 【历史】
+/// 本页原先只有一个「悬浮底栏」开关（`NavBarSetting.floating`）。2026-09-22
+/// 用户拍板「底部导航栏改为 miuix 标准样式，采用非悬浮的固定布局，删除现有的
+/// 悬浮底栏实现」—— 那个开关随之作废，`setting/navbar_setting.dart` 已整体删除。
 ///
-/// [改动] 本页为 Miuix 迁移试点：整页改用 Miuix 组件
-/// （`MiuixScaffold` + `MiuixSmallTitle` + `MiuixCard` + `MiuixSwitchPreference`），
-/// 验证迁移模式后再推广到其余页面。
+/// 现在换成真正属于「外观」的内容：**深浅色模式**（跟随系统 / 浅色 / 深色）。
+/// 三态单选而不是一个开关 —— 因为「跟随系统」必须能选回来，
+/// 二元开关表达不了三态。
 class AppearanceSettingsPage extends StatelessWidget {
   const AppearanceSettingsPage({super.key});
 
@@ -25,12 +25,10 @@ class AppearanceSettingsPage extends StatelessWidget {
         title: '外观设置',
         // ⚠️ `MiuixTopAppBar` **没有** `onBack` 参数（踩过：写 `onBack:` 直接编译不过）。
         // 返回键要自己塞进 `navigationIcon`。
+        //
+        // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
+        // 与顶栏、底栏是同一套玻璃口径（见 `widget/miuix_glass_spec.dart`）。
         blurred: true,
-        // KernelSU `BlurredBar` 口径（见 ../widget/miuix_glass_spec.dart）：
-        // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
-        // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
-        blurRadius: MiuixGlassSpec.topBarBlurRadius,
-        blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
         navigationIcon: MiuixIconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           child: const Icon(Icons.arrow_back_ios_new, size: 20),
@@ -42,35 +40,58 @@ class AppearanceSettingsPage extends StatelessWidget {
       content: (contentPadding) => ListView(
         padding: contentPadding,
         children: [
-          const MiuixSmallTitle('底栏样式'),
-          // 用 ValueListenableBuilder 直接监听全局设置：
-          // 切换后底栏立刻重绘（底栏本身也监听了同一个 notifier）
-          ValueListenableBuilder<bool>(
-            valueListenable: NavBarSetting.floating,
-            builder: (context, floating, _) {
-              return MiuixSwitchPreference(
-                value: floating,
-                onChanged: (v) => NavBarSetting.setFloating(v),
-                title: '悬浮底栏',
-                summary: floating
-                    ? '胶囊圆角 + 阴影，与屏幕底边留有间距'
-                    : '通栏贴底，顶部带分隔线',
-                startAction: Icon(
-                  floating ? Icons.rounded_corner : Icons.crop_16_9,
+          const MiuixSmallTitle('深浅色'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: MiuixCard(
+              child: ValueListenableBuilder<ThemeMode>(
+                valueListenable: ThemeSetting.mode,
+                builder: (context, current, _) => Column(
+                  children: [
+                    for (final mode in ThemeMode.values)
+                      MiuixRadioButtonPreference(
+                        title: _labelOf(mode),
+                        summary: _summaryOf(mode),
+                        selected: current == mode,
+                        onClick: () => ThemeSetting.setMode(mode),
+                      ),
+                  ],
                 ),
-              );
-            },
+              ),
+            ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(28, 12, 28, 0),
             child: MiuixText(
-              '关闭后底栏会贴住屏幕底边，视觉上更紧凑；'
-              '开启则更接近悬浮胶囊的观感。切换即时生效，无需重启。',
+              '「跟随系统」会随手机的深色模式自动切换；选「浅色」或「深色」'
+              '则固定不变。切换即时生效，无需重启。',
               style: MiuixTheme.of(context).textStyles.footnote1,
             ),
           ),
         ],
       ),
     );
+  }
+
+  static String _labelOf(ThemeMode mode) {
+    switch (mode) {
+      case ThemeMode.system:
+        return '跟随系统';
+      case ThemeMode.light:
+        return '浅色';
+      case ThemeMode.dark:
+        return '深色';
+    }
+  }
+
+  static String _summaryOf(ThemeMode mode) {
+    switch (mode) {
+      case ThemeMode.system:
+        return '与手机的深色模式保持一致';
+      case ThemeMode.light:
+        return '始终使用浅色外观';
+      case ThemeMode.dark:
+        return '始终使用深色外观';
+    }
   }
 }

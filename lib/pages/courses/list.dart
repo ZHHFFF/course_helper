@@ -4,7 +4,6 @@ import 'package:dio/dio.dart';
 import 'package:collection/collection.dart';
 // [新增] Miuix：顶栏 / 脚手架按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
-import '../widget/miuix_glass_spec.dart';
 
 import '../../platform.dart';
 import '../../api/course.dart';
@@ -18,8 +17,6 @@ import '../widget/avatar.dart';
 import '../widget/miuix_nav_metrics.dart';
 // [新增] 开发期压测假数据（--dart-define=SEED_TEST_DATA=N 时才有内容）
 import '../../utils/test_data_seeder.dart';
-// [新增] 底栏「悬浮 / 贴边」形态（脚手架要按它算底部占位）
-import '../../setting/navbar_setting.dart';
 import '../actives/sign_in/sign_in.dart';
 import '../actives/topic_discuss.dart';
 import '../actives/quiz.dart';
@@ -534,10 +531,9 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    // 底栏形态一变，底栏占位高度就得跟着变，所以整个脚手架包在监听里
-    return ValueListenableBuilder<bool>(
-      valueListenable: NavBarSetting.floating,
-      builder: (context, _, _) => MiuixScaffold(
+    // 底栏已固定为「贴边 Miuix 标准样式」（2026-09-22 用户拍板取消悬浮），
+    // 高度是常量，不再需要按设置重建整个脚手架。
+    return MiuixScaffold(
         // 顶栏换成 Miuix 玻璃顶栏。
         //
         // ⚠️ 模糊能看见的前提是「内容从顶栏底下滚过去」：`MiuixScaffold` 的
@@ -553,11 +549,6 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
           title: '课程',
           largeTitle: '课程',
           blurred: true,
-          // KernelSU `BlurredBar` 口径（见 ../widget/miuix_glass_spec.dart）：
-          // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
-          // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
-          blurRadius: MiuixGlassSpec.topBarBlurRadius,
-          blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
           scrollBehavior: _topBarBehavior,
           actions: [
             MiuixIconButton(
@@ -634,7 +625,10 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                           ) : MaterialPageRoute(
                             builder: (context) => PresentationPage(
                               lessonId: course.lessonId!,
-                              title: course.name
+                              title: course.name,
+                              // 让进课堂时把「lessonId 属于哪门课」记进 meta.json，
+                              // 课件页才能把这节课的缓存归到课程名下
+                              courseId: course.courseId,
                             ),
                           ),
                         );
@@ -725,8 +719,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
       ),
             );
         },
-      ),
-    );
+      );
   }
 
   @override

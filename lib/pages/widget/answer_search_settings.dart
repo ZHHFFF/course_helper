@@ -9,7 +9,6 @@ library;
 import 'package:flutter/material.dart';
 // [新增] Miuix：整页按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
-import 'miuix_glass_spec.dart';
 
 import '../../api/answer_search.dart';
 import '../../setting/auto_answer_setting.dart';
@@ -196,11 +195,8 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
         title: '答案检索设置',
         largeTitle: '答案检索设置',
         blurred: true,
-        // KernelSU `BlurredBar` 口径（见 miuix_glass_spec.dart）：
-        // blurRadius 25 → sigma 11.25、色调 surface @ .87 —— 磨砂到几乎实心，
-        // 只透出一点点底纹（HyperOS 顶栏就是这个观感）。
-        blurRadius: MiuixGlassSpec.topBarBlurRadius,
-        blurTintAlpha: MiuixGlassSpec.topBarTintAlpha,
+        // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
+        // 与底栏是同一套玻璃口径（见 miuix_glass_spec.dart）。
         scrollBehavior: _topBarBehavior,
         // ⚠️ `MiuixTopAppBar` **没有** `onBack`，返回键要用 `navigationIcon`
         navigationIcon: MiuixIconButton(
