@@ -5,6 +5,8 @@
 /// 以及课堂回放流 (replay / live stream) 的提取。
 library;
 
+import 'dart:convert';
+
 class RCActivity {
   final String id;
   final int type;
@@ -13,6 +15,8 @@ class RCActivity {
   final String classroomId;
   final int createdAt;
   final String? replayUrl;
+  final String? presentationId;
+  final List<String> presentationIds;
   final Map<String, dynamic> raw;
 
   const RCActivity({
@@ -23,6 +27,8 @@ class RCActivity {
     required this.classroomId,
     required this.createdAt,
     this.replayUrl,
+    this.presentationId,
+    this.presentationIds = const [],
     this.raw = const {},
   });
 
@@ -34,6 +40,10 @@ class RCActivity {
 
   /// 是否有回放视频流
   bool get hasReplay => replayUrl != null && replayUrl!.trim().isNotEmpty;
+
+  /// 是否包含课件/幻灯片元数据标识
+  bool get hasPresentation =>
+      (presentationId != null && presentationId!.isNotEmpty) || presentationIds.isNotEmpty;
 
   /// 活动类型显示名称
   String get typeName {
@@ -54,13 +64,37 @@ class RCActivity {
   }
 
   factory RCActivity.fromJson(Map<String, dynamic> json, {String classroomId = ''}) {
-    final id = (json['id'] ?? json['activity_id'] ?? '').toString();
+    final id = (json['id'] ?? json['activity_id'] ?? json['lesson_id'] ?? json['lessonId'] ?? '').toString().trim();
     final type = (json['type'] as num?)?.toInt() ??
         int.tryParse(json['type']?.toString() ?? '0') ??
         0;
     final title = (json['title'] ?? json['name'] ?? '未命名活动').toString().trim();
-    final coursewareId = (json['courseware_id'] ?? json['coursewareId'] ?? id).toString();
-    final cId = (json['classroom_id'] ?? json['classroomId'] ?? classroomId).toString();
+
+    // 解析 content（支持 Map 或 JSON 字符串）
+    dynamic content = json['content'];
+    if (content is String && content.trim().startsWith('{')) {
+      try {
+        content = jsonDecode(content);
+      } catch (_) {}
+    }
+
+    var coursewareId = (json['courseware_id'] ?? json['coursewareId'] ?? '').toString().trim();
+    if (coursewareId.isEmpty || coursewareId == 'null') {
+      if (content is Map) {
+        final cid = (content['courseware_id'] ?? content['coursewareId'] ?? content['lesson_id'] ?? content['lessonId'])?.toString().trim();
+        if (cid != null && cid.isNotEmpty && cid != 'null') {
+          coursewareId = cid;
+        }
+      }
+    }
+    if (coursewareId.isEmpty || coursewareId == 'null') {
+      coursewareId = id;
+    }
+
+    var cId = (json['classroom_id'] ?? json['classroomId'] ?? '').toString().trim();
+    if (cId.isEmpty || cId == 'null') {
+      cId = classroomId.trim();
+    }
 
     int createdAt = 0;
     final createdRaw = json['created'] ?? json['created_at'] ?? json['startTime'] ?? json['date'];
@@ -82,6 +116,8 @@ class RCActivity {
     }
 
     final replayUrl = extractReplayUrl(json);
+    final presIds = extractPresentationIds(json);
+    final presId = presIds.isNotEmpty ? presIds.first : null;
 
     return RCActivity(
       id: id,
@@ -91,37 +127,53 @@ class RCActivity {
       classroomId: cId,
       createdAt: createdAt,
       replayUrl: replayUrl,
+      presentationId: presId,
+      presentationIds: presIds,
       raw: json,
     );
+  }
+
+  /// 规范化回放或媒体 URL（处理协议相对路径 //...）
+  static String? _normalizeUrl(dynamic raw) {
+    if (raw == null) return null;
+    var str = raw.toString().trim();
+    if (str.startsWith('http://') || str.startsWith('https://')) return str;
+    if (str.startsWith('//')) return 'https:$str';
+    return null;
   }
 
   /// 从活动数据中解析回放流或播放地址
   static String? extractReplayUrl(Map<String, dynamic> json) {
     for (final key in const ['replay_url', 'replayUrl', 'video_url', 'play_url', 'live_url']) {
-      final val = json[key]?.toString().trim() ?? '';
-      if (val.startsWith('http')) return val;
+      final url = _normalizeUrl(json[key]);
+      if (url != null) return url;
     }
 
     final replay = json['replay'];
-    if (replay is String && replay.trim().startsWith('http')) {
-      return replay.trim();
+    if (replay is String) {
+      final url = _normalizeUrl(replay);
+      if (url != null) return url;
     } else if (replay is Map) {
       for (final key in const ['url', 'play_url', 'live_url', 'stream_url', 'm3u8']) {
-        final val = replay[key]?.toString().trim() ?? '';
-        if (val.startsWith('http')) return val;
+        final url = _normalizeUrl(replay[key]);
+        if (url != null) return url;
       }
     }
 
-    final live = json['live'];
+    final live = json['live'] ?? json['live_info'];
     if (live is Map) {
-      final val = (live['url'] ?? live['play_url'] ?? live['stream'])?.toString().trim() ?? '';
-      if (val.startsWith('http')) return val;
+      for (final key in const ['url', 'play_url', 'stream', 'stream_url', 'm3u8']) {
+        final url = _normalizeUrl(live[key]);
+        if (url != null) return url;
+      }
     }
 
-    final video = json['video'];
+    final video = json['video'] ?? json['video_info'];
     if (video is Map) {
-      final val = (video['url'] ?? video['play_url'])?.toString().trim() ?? '';
-      if (val.startsWith('http')) return val;
+      for (final key in const ['url', 'play_url', 'stream', 'stream_url', 'm3u8']) {
+        final url = _normalizeUrl(video[key]);
+        if (url != null) return url;
+      }
     }
 
     return null;
@@ -160,6 +212,91 @@ class RCActivity {
     return result;
   }
 
+  /// 从活动 JSON 中提取包含的 presentation_id 列表
+  static List<String> extractPresentationIds(Map<String, dynamic> json) {
+    final ids = <String>{};
+
+    void addValid(dynamic val) {
+      if (val == null) return;
+      final s = val.toString().trim();
+      if (s.isNotEmpty && s != 'null' && s != '0' && s != 'undefined') {
+        ids.add(s);
+      }
+    }
+
+    // 1. 顶层直接字段
+    addValid(json['presentation_id']);
+    addValid(json['presentationId']);
+    addValid(json['presentation_url_id']);
+
+    // 2. content 内嵌（Map 或 JSON 字符串）
+    dynamic content = json['content'];
+    if (content is String && content.trim().startsWith('{')) {
+      try {
+        content = jsonDecode(content);
+      } catch (_) {}
+    }
+    if (content is Map) {
+      addValid(content['presentation_id']);
+      addValid(content['presentationId']);
+      addValid(content['presentation_url_id']);
+      if (content['id'] != null && (json['type'] == 2 || content['type'] == 'presentation')) {
+        addValid(content['id']);
+      }
+      if (content['presentations'] is List) {
+        for (final p in content['presentations']) {
+          if (p is Map) {
+            addValid(p['id']);
+            addValid(p['presentation_id']);
+            addValid(p['presentationId']);
+          } else {
+            addValid(p);
+          }
+        }
+      }
+      if (content['res_list'] is List) {
+        for (final r in content['res_list']) {
+          if (r is Map) {
+            addValid(r['presentation_id']);
+            addValid(r['presentationId']);
+            addValid(r['id']);
+          } else {
+            addValid(r);
+          }
+        }
+      }
+    }
+
+    // 3. 顶层 res_list / resList 资源列表
+    final resList = json['res_list'] ?? json['resList'] ?? json['resources'];
+    if (resList is List) {
+      for (final r in resList) {
+        if (r is Map) {
+          addValid(r['presentation_id']);
+          addValid(r['presentationId']);
+          addValid(r['id']);
+        } else {
+          addValid(r);
+        }
+      }
+    }
+
+    // 4. 顶层 presentations 列表
+    if (json['presentations'] is List) {
+      for (final p in json['presentations']) {
+        if (p is Map) {
+          addValid(p['id']);
+          addValid(p['presentation_id']);
+          addValid(p['presentationId']);
+        } else {
+          addValid(p);
+        }
+      }
+    }
+
+    return ids.toList();
+  }
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'type': type,
@@ -168,5 +305,7 @@ class RCActivity {
     'classroomId': classroomId,
     'createdAt': createdAt,
     if (replayUrl != null) 'replayUrl': replayUrl,
+    if (presentationId != null) 'presentationId': presentationId,
+    if (presentationIds.isNotEmpty) 'presentationIds': presentationIds,
   };
 }

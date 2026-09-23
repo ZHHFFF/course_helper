@@ -222,6 +222,8 @@ class _CoursewarePageState extends State<CoursewarePage> {
     for (final course in remote) {
       final courseKey = course.classId.isNotEmpty ? course.classId : course.courseId;
       if (courseKey.isEmpty || !seen.add(courseKey)) continue;
+      if (course.courseId.isNotEmpty) seen.add(course.courseId);
+      if (course.classId.isNotEmpty) seen.add(course.classId);
 
       final ids = resolveLessonIdsForCourse(
         courseId: course.courseId,
@@ -281,6 +283,11 @@ class _CoursewarePageState extends State<CoursewarePage> {
     // 有课件的排前面 —— 用户进这一页十有八九是冲着已缓存的课件来的。
     // ⚠️ 不用 `sort` 拼比较函数：`List.sort` 不保证稳定，同组内顺序会被打乱。
     final withCache = entries.where((e) => e.presentationCount > 0).toList();
+    withCache.sort((a, b) {
+      if (!a.isArchived && b.isArchived) return -1;
+      if (a.isArchived && !b.isArchived) return 1;
+      return 0;
+    });
     final without = entries.where((e) => e.presentationCount == 0).toList();
     without.sort((a, b) {
       if (!a.isArchived && b.isArchived) return -1;
@@ -343,11 +350,12 @@ class _CoursewarePageState extends State<CoursewarePage> {
   }
 
   Future<void> _loadActivities(_CourseEntry entry) async {
-    if (PlatformManager().isChaoxing || entry.classId.isEmpty) return;
+    final targetId = entry.classId.isNotEmpty ? entry.classId : entry.courseId;
+    if (PlatformManager().isChaoxing || targetId.isEmpty) return;
 
     setState(() => _activitiesLoading = true);
     try {
-      final list = await RCCourseApi.getCourseActivities(entry.classId);
+      final list = await RCCourseApi.getCourseActivities(targetId);
       if (!mounted) return;
       setState(() {
         _activities = list ?? [];
@@ -362,13 +370,29 @@ class _CoursewarePageState extends State<CoursewarePage> {
     }
   }
 
+  /// 查找活动对应的本地已缓存课件
+  CachedPresentation? _findCachedPresentation(RCActivity act) {
+    return _presentations.firstWhereOrNull((p) =>
+        p.lessonId == act.coursewareId ||
+        p.lessonId == act.id ||
+        (act.presentationId != null && (p.presentationId == act.presentationId || p.lessonId == act.presentationId)) ||
+        act.presentationIds.contains(p.presentationId) ||
+        act.presentationIds.contains(p.lessonId) ||
+        p.presentationId == act.coursewareId ||
+        p.presentationId == act.id);
+  }
+
+  /// 判定活动是否已有本地缓存
+  bool _isActivityCached(RCActivity act) => _findCachedPresentation(act) != null;
+
   /// 抓取单个活动对应的课件 PPT
   Future<void> _crawlActivity(RCActivity act) async {
-    if (_crawlingIds.contains(act.coursewareId)) return;
+    final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
+    if (_crawlingIds.contains(crawlKey)) return;
     final entry = _entry;
     if (entry == null) return;
 
-    setState(() => _crawlingIds.add(act.coursewareId));
+    setState(() => _crawlingIds.add(crawlKey));
     _toast('正在抓取「${act.title}」课件 PPT...');
 
     try {
@@ -376,13 +400,23 @@ class _CoursewarePageState extends State<CoursewarePage> {
         lessonId: act.coursewareId,
         courseId: entry.courseId,
         courseName: entry.name,
+        classroomId: entry.classId.isNotEmpty ? entry.classId : act.classroomId,
+        presentationId: act.presentationId,
+        presentationIds: act.presentationIds,
+        activity: act,
       );
 
       if (!mounted) return;
       if (pres != null) {
         _toast('抓取成功：${pres.title.isNotEmpty ? pres.title : act.title}（${pres.slides.length} 页）');
-        if (!entry.lessonIds.contains(act.coursewareId)) {
+        if (act.coursewareId.isNotEmpty && !entry.lessonIds.contains(act.coursewareId)) {
           entry.lessonIds.add(act.coursewareId);
+        }
+        if (act.id.isNotEmpty && !entry.lessonIds.contains(act.id)) {
+          entry.lessonIds.add(act.id);
+        }
+        if (act.presentationId != null && act.presentationId!.isNotEmpty && !entry.lessonIds.contains(act.presentationId!)) {
+          entry.lessonIds.add(act.presentationId!);
         }
         final all = <CachedPresentation>[];
         for (final lid in entry.lessonIds) {
@@ -401,22 +435,21 @@ class _CoursewarePageState extends State<CoursewarePage> {
       _toast('抓取课件失败：$e');
     } finally {
       if (mounted) {
-        setState(() => _crawlingIds.remove(act.coursewareId));
+        setState(() => _crawlingIds.remove(crawlKey));
       }
     }
   }
 
-  /// 批量抓取所有未缓存的历史课堂课件
+  /// 批量抓取所有未缓存的历史课堂课件（支持课堂教学 Type 14 与课件资料 Type 2）
   Future<void> _crawlAllUncached() async {
     if (_batchCrawling) return;
     final entry = _entry;
     if (entry == null) return;
 
-    final cachedLessonIds = _presentations.map((p) => p.lessonId).toSet();
-    final targets = _activities.where((a) => a.isLesson && !cachedLessonIds.contains(a.coursewareId)).toList();
+    final targets = _activities.where((a) => (a.isLesson || a.isCourseware) && !_isActivityCached(a)).toList();
 
     if (targets.isEmpty) {
-      _toast('没有需要抓取的课件（全部已缓存或暂无课堂）');
+      _toast('没有需要抓取的课件（全部已缓存或暂无课件活动）');
       return;
     }
 
@@ -426,24 +459,47 @@ class _CoursewarePageState extends State<CoursewarePage> {
     var successCount = 0;
     for (final act in targets) {
       if (!mounted || _entry != entry) break;
-      setState(() => _crawlingIds.add(act.coursewareId));
+      final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
+      setState(() => _crawlingIds.add(crawlKey));
       try {
         final pres = await RCCourseApi.crawlLessonPresentation(
           lessonId: act.coursewareId,
           courseId: entry.courseId,
           courseName: entry.name,
+          classroomId: entry.classId.isNotEmpty ? entry.classId : act.classroomId,
+          presentationId: act.presentationId,
+          presentationIds: act.presentationIds,
+          activity: act,
         );
         if (pres != null) {
           successCount++;
-          if (!entry.lessonIds.contains(act.coursewareId)) {
+          if (act.coursewareId.isNotEmpty && !entry.lessonIds.contains(act.coursewareId)) {
             entry.lessonIds.add(act.coursewareId);
+          }
+          if (act.id.isNotEmpty && !entry.lessonIds.contains(act.id)) {
+            entry.lessonIds.add(act.id);
+          }
+          if (act.presentationId != null && act.presentationId!.isNotEmpty && !entry.lessonIds.contains(act.presentationId!)) {
+            entry.lessonIds.add(act.presentationId!);
+          }
+          // 实时增量更新已缓存列表与计数，给用户即时反馈
+          final all = <CachedPresentation>[];
+          for (final lid in entry.lessonIds) {
+            all.addAll(await CourseCache.listPresentations(lid));
+          }
+          all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+          if (mounted && _entry == entry) {
+            setState(() {
+              _presentations = all;
+              entry.presentationCount = all.length;
+            });
           }
         }
       } catch (e) {
-        AppLogger.w(_tag, '批量抓取课件出错 ${act.coursewareId}：$e');
+        AppLogger.w(_tag, '批量抓取课件出错 $crawlKey：$e');
       } finally {
         if (mounted) {
-          setState(() => _crawlingIds.remove(act.coursewareId));
+          setState(() => _crawlingIds.remove(crawlKey));
         }
       }
     }
@@ -459,7 +515,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
         entry.presentationCount = all.length;
         _batchCrawling = false;
       });
-      _toast('批量抓取完成，成功 $successCount/${targets.length} 份');
+      _toast('批量抓取完成：成功 $successCount / ${targets.length} 份');
     }
   }
 
@@ -815,9 +871,15 @@ class _CoursewarePageState extends State<CoursewarePage> {
     if (_pptLoading) return const Center(child: CircularProgressIndicator());
 
     final entry = _entry;
-    final activityLessonIds = _activities.map((a) => a.coursewareId).toSet();
     final extraCached = _presentations
-        .where((p) => !activityLessonIds.contains(p.lessonId))
+        .where((p) => !_activities.any((a) =>
+            p.lessonId == a.coursewareId ||
+            p.lessonId == a.id ||
+            (a.presentationId != null && (p.presentationId == a.presentationId || p.lessonId == a.presentationId)) ||
+            a.presentationIds.contains(p.presentationId) ||
+            a.presentationIds.contains(p.lessonId) ||
+            p.presentationId == a.coursewareId ||
+            p.presentationId == a.id))
         .toList();
 
     final hasContent = _activities.isNotEmpty || _presentations.isNotEmpty;
@@ -838,7 +900,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
     } else if (_activities.isNotEmpty) {
       items.add(_buildSectionHeader(context, '教学活动与课件 (${_activities.length})'));
       for (final act in _activities) {
-        final cachedPpt = _presentations.firstWhereOrNull((p) => p.lessonId == act.coursewareId);
+        final cachedPpt = _findCachedPresentation(act);
         items.add(_buildActivityTile(context, act, cachedPpt));
       }
     }
@@ -882,7 +944,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
     final colors = MiuixTheme.of(context).colors;
     final totalActs = _activities.length;
     final uncachedLessons = _activities
-        .where((a) => a.isLesson && !_presentations.any((p) => p.lessonId == a.coursewareId))
+        .where((a) => (a.isLesson || a.isCourseware) && !_isActivityCached(a))
         .length;
 
     return Padding(
@@ -1032,7 +1094,8 @@ class _CoursewarePageState extends State<CoursewarePage> {
     CachedPresentation? cachedPpt,
   ) {
     final colors = MiuixTheme.of(context).colors;
-    final isCrawling = _crawlingIds.contains(act.coursewareId);
+    final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
+    final isCrawling = _crawlingIds.contains(crawlKey);
     final isCached = cachedPpt != null;
 
     IconData typeIcon;

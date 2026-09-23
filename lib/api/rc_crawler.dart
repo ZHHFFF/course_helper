@@ -63,16 +63,25 @@ class RCCrawler {
   }) {
     final Map<String, Course> courseMap = {};
 
+    Course? findExisting(String classId, String courseId) {
+      if (classId.isNotEmpty && courseMap.containsKey(classId)) return courseMap[classId];
+      if (courseId.isNotEmpty && courseMap.containsKey(courseId)) return courseMap[courseId];
+      for (final c in courseMap.values) {
+        if (classId.isNotEmpty && c.classId == classId) return c;
+        if (courseId.isNotEmpty && c.courseId == courseId) return c;
+      }
+      return null;
+    }
+
     // 1. 先录入移动端学习列表（信息最完整）
     if (learningList != null) {
       for (final item in learningList) {
         if (item is! Map) continue;
         try {
           final c = Course.fromRCJson(Map<String, dynamic>.from(item));
-          if (c.classId.isNotEmpty) {
-            courseMap[c.classId] = c;
-          } else if (c.courseId.isNotEmpty) {
-            courseMap[c.courseId] = c;
+          final key = c.classId.isNotEmpty ? c.classId : c.courseId;
+          if (key.isNotEmpty) {
+            courseMap[key] = c;
           }
         } catch (_) {}
       }
@@ -87,7 +96,8 @@ class RCCrawler {
           final key = classId.isNotEmpty ? classId : courseId;
           if (key.isEmpty) continue;
 
-          if (!courseMap.containsKey(key)) {
+          final existing = findExisting(classId, courseId);
+          if (existing == null) {
             final teacherName = item['teacher'] is Map
                 ? (item['teacher']['name'] ?? '未知教师').toString()
                 : (item['teacher_name'] ?? item['teacher'] ?? '未知教师').toString();
@@ -129,7 +139,8 @@ class RCCrawler {
           final note = item['classroom_name']?.toString() ?? '';
           final displayNote = note.isNotEmpty ? '$note [已结课]' : '已结课';
 
-          if (!courseMap.containsKey(key)) {
+          final existing = findExisting(classId, courseId);
+          if (existing == null) {
             courseMap[key] = Course(
               courseId: courseId,
               classId: classId,
@@ -140,14 +151,18 @@ class RCCrawler {
               state: false, // 标记为已结课
             );
           } else {
-            // 如果已存在但归档列表中有它，更新状态为已结课
-            final existing = courseMap[key]!;
-            courseMap[key] = Course(
-              courseId: existing.courseId,
-              classId: existing.classId,
-              image: existing.image,
-              name: existing.name,
-              teacher: existing.teacher,
+            // 找到对应的已有课程条目，原地更新为已结课（同时补齐缺失的 classId/courseId）
+            final existingKey = existing.classId.isNotEmpty && courseMap.containsKey(existing.classId)
+                ? existing.classId
+                : (existing.courseId.isNotEmpty && courseMap.containsKey(existing.courseId)
+                    ? existing.courseId
+                    : key);
+            courseMap[existingKey] = Course(
+              courseId: existing.courseId.isNotEmpty ? existing.courseId : courseId,
+              classId: existing.classId.isNotEmpty ? existing.classId : classId,
+              image: existing.image.isNotEmpty ? existing.image : teacherAvatar,
+              name: existing.name.isNotEmpty ? existing.name : rawName,
+              teacher: existing.teacher.isNotEmpty ? existing.teacher : teacherName,
               note: displayNote,
               state: false,
               lessonId: existing.lessonId,
@@ -180,8 +195,12 @@ class RCCrawler {
     }
 
     final list = courseMap.values.toList();
-    // 排序：进行中课程排前面，已结课排后面
+    // 排序：进行中正在上课排最前，进行中排中，已结课排后
     list.sort((a, b) {
+      final aLive = a.lessonId != null && a.lessonId!.isNotEmpty;
+      final bLive = b.lessonId != null && b.lessonId!.isNotEmpty;
+      if (aLive && !bLive) return -1;
+      if (!aLive && bLive) return 1;
       if (a.state && !b.state) return -1;
       if (!a.state && b.state) return 1;
       return a.name.compareTo(b.name);
@@ -219,29 +238,128 @@ class RCCrawler {
   /// 抓取指定历史课堂的课件 PPT 并落盘到本地缓存
   ///
   /// 流程：
-  /// 1. 签到进课堂获取鉴权凭证（Bearer Token 与 Lesson Token）
-  /// 2. 通过轻量 WebSocket 握手获取 presentationId（备用以 lessonId 兜底）
-  /// 3. 请求 `/api/v3/lesson/presentation/fetch` 拉取整份 PPT 元数据
-  /// 4. 存入 `PptCache` 并写入 `CourseCache` 元数据
+  /// 1. 尝试从活动本身提取的 presentationId、已缓存数据进行直连或装载；
+  /// 2. 签到进课堂获取鉴权凭证（宽容处理，支持传入 classroomId 并保留降级策略）；
+  /// 3. 多路发现 presentationId：
+  ///    - 直接活动提取（content/res_list）
+  ///    - 学生历史报告 / 详情 API (`lesson-summary/student`, `classroom-report/student/lesson-info`, `lesson/presentation/active`)
+  ///    - Web 端课后课件接口 (`/v2/api/web/lessonafter/{id}/presentation`)
+  ///    - 实时课堂 WebSocket 握手
+  ///    - 课件资料卡片接口 (`/v2/api/web/cards/detlist`)
+  /// 4. 多路拉取整份 PPT 元数据并落盘缓存到 `PptCache` 与 `CourseCache`。
   static Future<Presentation?> crawlLessonPresentation({
     required String lessonId,
     required String courseId,
     required String courseName,
+    String? classroomId,
+    String? presentationId,
+    List<String>? presentationIds,
+    RCActivity? activity,
     User? user,
   }) async {
-    final api = RCCourseApi(user);
-    // 1. 签到进课堂
-    final checkInRes = await api.checkIn(lessonId);
-    if (checkInRes != 0 && api.bearerToken == null) {
-      AppLogger.w(_tag, '课堂签到失败 (code=$checkInRes): $lessonId');
+    final effectiveClassroomId = (classroomId != null && classroomId.trim().isNotEmpty)
+        ? classroomId.trim()
+        : (activity?.classroomId ?? '').trim();
+
+    final candidatePresIds = <String>{};
+    if (presentationId != null && presentationId.trim().isNotEmpty) {
+      candidatePresIds.add(presentationId.trim());
+    }
+    if (presentationIds != null) {
+      for (final id in presentationIds) {
+        if (id.trim().isNotEmpty) candidatePresIds.add(id.trim());
+      }
+    }
+    if (activity != null) {
+      for (final id in activity.presentationIds) {
+        if (id.trim().isNotEmpty) candidatePresIds.add(id.trim());
+      }
     }
 
+    // 0. 优先命中本地缓存
+    for (final pid in candidatePresIds) {
+      final cached = await PptCache.load(lessonId, pid);
+      if (cached != null && cached.slides.isNotEmpty) {
+        AppLogger.i(_tag, '命中本地课件缓存：$pid (${cached.slides.length} 页)');
+        return cached;
+      }
+    }
+
+    final api = RCCourseApi(user);
+
+    // 1. 签到进课堂（宽容处理，携带 classroomId，避免 set-auth 断言崩溃）
+    try {
+      final checkInRes = await api.checkIn(lessonId, classroomId: effectiveClassroomId);
+      if (checkInRes != 0 && api.bearerToken == null) {
+        AppLogger.d(_tag, '历史课堂签到返回 code=$checkInRes，进入多路探测链路');
+      }
+    } catch (e) {
+      AppLogger.d(_tag, '签到异常（历史课堂忽略）：$e');
+    }
+
+    // 2. 多路探测 presentationId 与课件数据
+    // 链路 A：通过 /api/v3/lesson-summary/student 探测
+    Map<String, dynamic>? summaryData;
+    try {
+      summaryData = await api.getLessonSummary(lessonId);
+      if (summaryData != null) {
+        final presentations = summaryData['presentations'];
+        if (presentations is List) {
+          for (final p in presentations) {
+            if (p is Map && p['id'] != null) {
+              final pid = p['id'].toString().trim();
+              if (pid.isNotEmpty) candidatePresIds.add(pid);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      AppLogger.d(_tag, 'lesson-summary 探测失败: $e');
+    }
+
+    // 链路 B：通过 Web 端 /v2/api/web/lessonafter/{lessonId}/presentation 探测
+    if (candidatePresIds.isEmpty && effectiveClassroomId.isNotEmpty) {
+      try {
+        final webPresList = await api.getLessonAfterPresentations(lessonId, effectiveClassroomId);
+        if (webPresList != null && webPresList.isNotEmpty) {
+          for (final p in webPresList) {
+            final pid = (p['id'] ?? p['presentation_id'])?.toString().trim();
+            if (pid != null && pid.isNotEmpty) candidatePresIds.add(pid);
+          }
+        }
+      } catch (e) {
+        AppLogger.d(_tag, 'lessonafter presentation 探测失败: $e');
+      }
+    }
+
+    // 链路 C：通过 /api/v3/classroom-report/student/lesson-info 探测
+    if (candidatePresIds.isEmpty) {
+      try {
+        final reportData = await api.getClassroomReportLessonInfo(lessonId);
+        if (reportData != null) {
+          final presentations = reportData['presentations'] ?? reportData['presentation_list'];
+          if (presentations is List) {
+            for (final p in presentations) {
+              if (p is Map && p['id'] != null) {
+                final pid = p['id'].toString().trim();
+                if (pid.isNotEmpty) candidatePresIds.add(pid);
+              }
+            }
+          }
+          final singlePres = reportData['presentation'];
+          if (singlePres is Map && singlePres['id'] != null) {
+            final pid = singlePres['id'].toString().trim();
+            if (pid.isNotEmpty) candidatePresIds.add(pid);
+          }
+        }
+      } catch (e) {
+        AppLogger.d(_tag, 'classroom-report 探测失败: $e');
+      }
+    }
+
+    // 链路 D：在线实时课堂 WebSocket 握手探测（仅在有 lessonToken 时尝试）
     final lessonToken = api.lessonToken;
-
-    final presentationIds = <String>{};
-
-    // 2. 探测 presentationId（优先通过 WebSocket hello 握手）
-    if (lessonToken != null) {
+    if (candidatePresIds.isEmpty && lessonToken != null) {
       try {
         final currentServerName = PlatformManager().currentServer.name;
         final wsUrl = currentServerName == 'yuketang'
@@ -263,19 +381,23 @@ class RCCrawler {
         final sub = ws.listen((msg) {
           try {
             final data = jsonDecode(msg);
-            if (data['presentation'] != null) {
-              final pres = data['presentation'].toString().trim();
-              if (pres.isNotEmpty) presentationIds.add(pres);
-            }
-            if (data['timeline'] is List) {
-              for (final ev in data['timeline']) {
-                if (ev['type'] == 'slide' && ev['pres'] != null) {
-                  final pres = ev['pres'].toString().trim();
-                  if (pres.isNotEmpty) presentationIds.add(pres);
+            if (data is Map) {
+              if (data['presentation'] != null) {
+                final pres = data['presentation'].toString().trim();
+                if (pres.isNotEmpty) candidatePresIds.add(pres);
+              }
+              if (data['timeline'] is List) {
+                for (final ev in data['timeline']) {
+                  if (ev['type'] == 'slide' && ev['pres'] != null) {
+                    final pres = ev['pres'].toString().trim();
+                    if (pres.isNotEmpty) candidatePresIds.add(pres);
+                  }
                 }
               }
+              if (candidatePresIds.isNotEmpty || data['op'] == 'hello' || data['message'] == 'lesson finished') {
+                if (!completer.isCompleted) completer.complete();
+              }
             }
-            if (!completer.isCompleted) completer.complete();
           } catch (_) {}
         });
 
@@ -283,34 +405,104 @@ class RCCrawler {
         await sub.cancel();
         await ws.close();
       } catch (e) {
-        AppLogger.d(_tag, 'WS 探测 presentationId 失败 (尝试备用途径): $e');
+        AppLogger.d(_tag, 'WS 探测 presentationId 失败: $e');
       }
     }
 
-    // 备用兜底：若握手未拿到 presentationId，尝试将 lessonId 本身作为 presentationId
-    if (presentationIds.isEmpty) {
-      presentationIds.add(lessonId);
+    // 备用兜底：若握手或接口探测仍未拿到 presentationId，尝试将 lessonId 本身作为 presentationId
+    if (candidatePresIds.isEmpty) {
+      candidatePresIds.add(lessonId);
     }
 
     // 3. 拉取整份 PPT 元数据并落盘缓存
     Presentation? firstPresentation;
-    for (final presId in presentationIds) {
+    for (final presId in candidatePresIds) {
       try {
-        final pptData = await api.getPresentation(presId);
+        Map<String, dynamic>? pptData;
+
+        // 尝试 1：/api/v3/lesson/presentation/fetch
+        pptData = await api.getPresentation(presId);
+
+        // 尝试 2：/api/v3/lesson-summary/student/presentation
+        if (pptData == null || (pptData['slides'] == null && pptData['presentation'] == null)) {
+          final summaryPres = await api.getLessonSummaryPresentation(presId, lessonId);
+          if (summaryPres != null && (summaryPres['slides'] != null || summaryPres['presentation'] != null)) {
+            pptData = summaryPres;
+          }
+        }
+
+        // 尝试 3：/v2/api/web/lessonafter/presentation/{presentationId}
+        if ((pptData == null || (pptData['slides'] == null && pptData['presentation'] == null)) && effectiveClassroomId.isNotEmpty) {
+          final webPres = await api.getLessonAfterPresentationDetail(presId, effectiveClassroomId);
+          if (webPres != null && (webPres['slides'] != null || webPres['presentation'] != null || webPres['Slides'] != null)) {
+            pptData = webPres;
+          }
+        }
+
         if (pptData != null) {
-          await PptCache.save(
-            lessonId,
-            presId,
-            pptData,
-            courseId: courseId,
-            courseName: courseName,
-          );
           final pres = Presentation.fromJson(pptData);
-          firstPresentation ??= pres;
-          AppLogger.i(_tag, '成功抓取并缓存 PPT: $presId (${pres.slides.length} 页)');
+          if (pres.slides.isNotEmpty) {
+            await PptCache.save(
+              lessonId,
+              presId,
+              pptData,
+              courseId: courseId,
+              courseName: courseName,
+            );
+            firstPresentation ??= pres;
+            AppLogger.i(_tag, '成功抓取并缓存 PPT: $presId (${pres.slides.length} 页)');
+            break;
+          }
         }
       } catch (e) {
         AppLogger.w(_tag, '拉取课件 presentation $presId 失败：$e');
+      }
+    }
+
+    // 4. 若为 Type 2 课件资料或仍为空，尝试拉取课件资料卡片 /v2/api/web/cards/detlist/{coursewareId}
+    if (firstPresentation == null && effectiveClassroomId.isNotEmpty) {
+      try {
+        final cardData = await api.getCardsDetList(lessonId, effectiveClassroomId);
+        if (cardData != null) {
+          final title = (cardData['Title'] ?? cardData['title'] ?? activity?.title ?? courseName).toString();
+          final rawSlides = cardData['Slides'] ?? cardData['slides'] ?? cardData['Cards'] ?? cardData['cards'] ?? cardData['det_list'];
+          if (rawSlides is List && rawSlides.isNotEmpty) {
+            final List<Map<String, dynamic>> slides = [];
+            for (var i = 0; i < rawSlides.length; i++) {
+              final item = rawSlides[i];
+              if (item is Map) {
+                slides.add({
+                  'id': (item['id'] ?? item['Index'] ?? i + 1).toString(),
+                  'index': i + 1,
+                  'cover': (item['Cover'] ?? item['cover'] ?? item['url'] ?? item['image'] ?? '').toString(),
+                  'shapes': const [],
+                  'note': (item['text'] ?? item['desc'] ?? '').toString(),
+                });
+              }
+            }
+            if (slides.isNotEmpty) {
+              final constructed = {
+                'title': title,
+                'width': 720,
+                'height': 540,
+                'version': '1.0',
+                'slides': slides,
+              };
+              await PptCache.save(
+                lessonId,
+                lessonId,
+                constructed,
+                courseId: courseId,
+                courseName: courseName,
+              );
+              final pres = Presentation.fromJson(constructed);
+              firstPresentation = pres;
+              AppLogger.i(_tag, '成功从课件资料卡片抓取并缓存 PPT: $lessonId (${pres.slides.length} 页)');
+            }
+          }
+        }
+      } catch (e) {
+        AppLogger.d(_tag, '课件资料卡片抓取失败: $e');
       }
     }
 

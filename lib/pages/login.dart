@@ -304,12 +304,9 @@ class _LoginPageState extends State<LoginPage> {
   Future<bool?> _showTencentCaptcha() async {
     final config = TencentCaptchaConfig(
       bizState: 'tencent-captcha',
-      // 用 `platformBrightnessOf` 而不是 `Theme.of(context).brightness`：
-      // 后者读的是 MaterialApp 的主题，而本页已经换成 Miuix 体系，
-      // 用平台亮度才能保证与 `MiuixTheme` 的明暗判断完全一致
-      // （`MiuixTheme` 内部也是读它）。
+      // 与 MiuixTheme 保持一致（支持外观设置手动切换深浅色）
       enableDarkMode:
-          MediaQuery.platformBrightnessOf(context) == Brightness.dark,
+          MiuixTheme.of(context).brightness == Brightness.dark,
     );
 
     try {

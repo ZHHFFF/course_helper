@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:course_helper/api/rc_crawler.dart';
+import 'package:course_helper/models/presentation.dart';
 import 'package:course_helper/models/rc_activity.dart';
 
 void main() {
@@ -121,6 +122,51 @@ void main() {
       expect(RCActivity.parseActivitiesJson({}), isEmpty);
       expect(RCActivity.parseActivitiesJson({'data': null}), isEmpty);
       expect(RCActivity.parseActivitiesJson('bad json'), isEmpty);
+    });
+
+    test('从 content (Map 与 JSON 字符串) 和 res_list 提取 presentationId 与 coursewareId', () {
+      // 1. content 为 Map
+      final jsonMap = {
+        'id': 'act_001',
+        'type': 14,
+        'title': '计算机网络第1课',
+        'content': {
+          'presentation_id': 'pres_998877',
+          'courseware_id': 'cw_112233',
+        },
+      };
+      final act1 = RCActivity.fromJson(jsonMap);
+      expect(act1.presentationId, 'pres_998877');
+      expect(act1.presentationIds, contains('pres_998877'));
+      expect(act1.coursewareId, 'cw_112233');
+      expect(act1.hasPresentation, isTrue);
+
+      // 2. content 为 JSON 编码字符串
+      final jsonString = {
+        'id': 'act_002',
+        'type': 14,
+        'title': '计算机网络第2课',
+        'content': '{"presentation_id":"pres_445566","courseware_id":"cw_778899"}',
+      };
+      final act2 = RCActivity.fromJson(jsonString);
+      expect(act2.presentationId, 'pres_445566');
+      expect(act2.coursewareId, 'cw_778899');
+      expect(act2.hasPresentation, isTrue);
+
+      // 3. res_list 列表提取
+      final jsonResList = {
+        'id': 'act_003',
+        'type': 2,
+        'title': '课件资料',
+        'res_list': [
+          {'id': 'pres_r1', 'presentation_id': 'pres_r1'},
+          {'id': 'pres_r2', 'presentationId': 'pres_r2'},
+        ],
+      };
+      final act3 = RCActivity.fromJson(jsonResList);
+      expect(act3.presentationId, 'pres_r1');
+      expect(act3.presentationIds, containsAll(['pres_r1', 'pres_r2']));
+      expect(act3.hasPresentation, isTrue);
     });
   });
 
@@ -283,6 +329,73 @@ void main() {
       expect(merged.length, 2);
       expect(merged[0].state, isTrue); // 进行中的B课程排前
       expect(merged[1].state, isFalse); // 已结课的A课程排后
+    });
+  });
+
+  group('Presentation 课件反序列化兼容性', () {
+    test('支持从 nested presentation 字段以及数字 ID / 大写 Cover 中解析', () {
+      final json = {
+        'presentation': {
+          'id': 1234567890,
+          'title': '计算机网络课件',
+          'width': 1024,
+          'height': 768,
+        },
+        'slides': [
+          {
+            'id': 9876543210123,
+            'Index': 1,
+            'Cover': 'https://img.yuketang.cn/slide1.jpg',
+          },
+          {
+            'id': 'slide_02',
+            'index': 2,
+            'cover': 'https://img.yuketang.cn/slide2.jpg',
+          },
+        ]
+      };
+
+      final pres = Presentation.fromJson(json);
+      expect(pres.title, '计算机网络课件');
+      expect(pres.width, 1024);
+      expect(pres.height, 768);
+      expect(pres.slides.length, 2);
+
+      final s1 = pres.slides[0];
+      expect(s1.id, '9876543210123');
+      expect(s1.index, 1);
+      expect(s1.cover, 'https://img.yuketang.cn/slide1.jpg');
+
+      final s2 = pres.slides[1];
+      expect(s2.id, 'slide_02');
+      expect(s2.index, 2);
+      expect(s2.cover, 'https://img.yuketang.cn/slide2.jpg');
+    });
+
+    test('支持多层 presentations 结构与 res_list 混合活动提取', () {
+      final json = {
+        'id': 'act_deep',
+        'type': 2,
+        'title': '多课件资源包',
+        'content': {
+          'presentations': [
+            {'id': 11111, 'title': '子课件1'},
+            {'presentation_id': '22222', 'title': '子课件2'},
+          ],
+          'res_list': [
+            {'id': '33333', 'presentationId': '33333'},
+          ]
+        },
+        'presentations': [
+          {'id': '44444'},
+        ]
+      };
+
+      final act = RCActivity.fromJson(json);
+      expect(act.presentationIds, containsAll(['11111', '22222', '33333', '44444']));
+      expect(act.isCourseware, isTrue);
+      expect(act.isLesson, isFalse);
+      expect(act.hasPresentation, isTrue);
     });
   });
 }

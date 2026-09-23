@@ -268,9 +268,16 @@ class _MiuixScope extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (child == null) return const SizedBox.shrink();
-    final brightness = MediaQuery.platformBrightnessOf(context);
-    return MiuixTheme(
-      data: MiuixThemeData.of(brightness),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: ThemeSetting.mode,
+      builder: (context, mode, _) {
+        final brightness = switch (mode) {
+          ThemeMode.light => Brightness.light,
+          ThemeMode.dark => Brightness.dark,
+          ThemeMode.system => MediaQuery.platformBrightnessOf(context),
+        };
+        return MiuixTheme(
+          data: MiuixThemeData.of(brightness),
       // [新增] 全局补一层透明 `Material`。
       //
       // 为什么需要：Miuix 的 `MiuixScaffold` / `MiuixSurface` **不提供
@@ -288,6 +295,8 @@ class _MiuixScope extends StatelessWidget {
         value: _overlayStyleOf(brightness),
         child: Material(type: MaterialType.transparency, child: child!),
       ),
+    );
+      },
     );
   }
 
