@@ -41,9 +41,11 @@
 - [x] 自动预选（老师发布题目的瞬间把答案填进作答区）
 - [x] 自动提交（可配置拟人化延迟；网络失败会重试，失败时明确报错而非静默丢弃）
 - [x] 建议答案卡片 + 缓存管理页
+- [x] **历史结课课程**：可列出已归档课程的活动与课件，并抓取回看
+      （雨课堂移动端接口拿不到结课课程的数据，走 Web 端接口 + 多路兜底探测）
 
 通用:
-- [x] 课件页（底栏第 3 个 Tab）：全部课程 → 该课已缓存的课件列表 → **离线浏览 + 导出 PDF**
+- [x] 课件页（底栏第 3 个 Tab）：全部课程（含已结课）→ 该课的活动/课件列表 → **离线浏览 + 导出 PDF**
 - [x] 逐份删除课件；**已取消自动清理**（删除只由用户手动触发）
 - [x] 深浅色外观设置（跟随系统 / 浅色 / 深色）
 
@@ -175,6 +177,34 @@ flutter test
 7. **顶栏不要传 `blurRadius` / `blurTintAlpha`**，用 `MiuixTopAppBar` 的默认值
    （24 / .55）—— 与底栏是同一套口径。想改就只改 `miuix_glass_spec.dart`。
 
+### 又两条（2026-09-23 新增，都踩过真机）
+
+8. ⚠️⚠️ **`MiuixCard` 的 `insideMargin` 默认是 `EdgeInsets.zero`（0），不是 16！**
+
+   这是最反直觉的一条 —— 直觉上「卡片应该有内边距」，但库里偏偏没有：
+   | 组件 | `insideMargin` 默认值 |
+   |------|----------------------|
+   | `MiuixCard`（`MiuixCardDefaults`） | **`EdgeInsets.zero`** |
+   | 各 preference（`MiuixBasicComponentDefaults`） | `EdgeInsets.all(16)` |
+
+   所以裸用 `MiuixCard` 包裸内容，文字会**紧贴卡片边缘**；
+   和下面带 preference 的卡片并排就成了「同一个页面的文字没对齐」。
+
+   **凡是 `MiuixCard` 直接包裸内容（Column / Row / Text…），
+   必须显式传 `insideMargin: kMiuixCardInsideMargin`**
+   （`pages/widget/miuix_card_metrics.dart`）。
+   反例：卡片里已有 preference、或已有显式 `Padding` 时**不要加**（会双重缩进）。
+
+9. ⚠️⚠️ **`dio` 发 `Map` body 时若不设 `Content-Type`，会被编成
+   `application/x-www-form-urlencoded`**
+
+   列表值会被展平成重复参数：`result: ['A','B']` → `result=A&result=B`，
+   服务端按标量绑定只取到第一个 → **多选题只提交一个选项**。
+   单选之所以正常：`result=['A']` 编成 `result=A`，两种写法服务端都能吃。
+
+   **body 里有列表就必须显式设 `'Content-Type': 'application/json'`。**
+   `test/rc_answer_body_test.dart` 钉住了这个行为。
+
 ### 课件缓存
 
 `lib/cache/course_cache.dart` 的目录结构：
@@ -211,49 +241,116 @@ ppt_cache/lessons/<safeName(lessonId)>/
 
 **2026-09-21 已真机确认服务能跑起来**（锁屏静置 22 分钟仍存活、通知正常、唤醒锁在生效）。
 
+### 历史结课课程爬取
+
+雨课堂**移动端接口拿不到已结课/已归档课程**的活动与课件，用户想回看以前的课
+就必须走 Web 端接口。这块在 `api/rc_crawler.dart` + `models/rc_activity.dart`。
+
+**难点是没有「单一可靠」的 presentationId 来源**，所以用**多路兜底探测**
+（任一命中即用）：活动自身 → `/api/v3/lesson-summary/student` →
+`/v2/api/web/lessonafter/{lessonId}/presentation` →
+`/api/v3/classroom-report/student/lesson-info` → 实时 WebSocket 握手 →
+兜底把 `lessonId` 当 presentationId → 课件资料卡片 `/v2/api/web/cards/detlist`。
+
+拉 PPT 元数据也是三级降级，成功即 `PptCache.save` 落盘。
+
+**课程列表三路合并**（`RCCrawler.mergeCourses`，纯函数）：
+移动端学习列表 ＋ Web 在修课程 ＋ 已归档课程，按 classId/courseId 去重，
+结课的打 `state: false` + note 追加 `[已结课]`。
+排序：**正在上课 > 进行中 > 已结课**。
+
+⚠️ **`checkIn()` 有三个崩溃点**（历史结课课程必然触发，因为服务器不返回
+`set-auth` 头），已在 `651637f` 修掉，别再写回去：
+
+```dart
+final int code = data['code'];                            // ① 非空类型转换
+final bearerToken = response.headers.value('set-auth')!;   // ② ! 断言
+final lessonToken = data['data']['lessonToken'];          // ③ 链式下标
+```
+
+`checkIn(lessonId, {classroomId})` 有两种形态：传 `classroomId` → 历史课程
+（body 只发 `{lessonId, classroomId}`）；不传 → 实时课堂
+（`{lessonId, source: 21, joinIfNotIn: true}`）。
+
+### CI 构建提速（2026-09-24）
+
+`Build release APK` 步骤原来稳定 **9.48 分钟**（整个 run 11.0 分钟的 88%），
+日志里 `Running Gradle task 'assembleRelease'... 567.0s`。
+
+拆开这 9.48 分钟：Flutter 自身准备 ~1.90min、Gradle 配置+依赖下载 ~2.43min、
+CMake/NDK ~1.28min、AOT+R8+打包 ~3.32min。
+
+**根因**：CI 完全没缓存 Gradle（`setup-java` 没开 `cache: gradle`），
+每次 run 从零下载依赖 + 全量重编译。
+
+**改动**（两处配置，零代码改动）：
+- `.github/workflows/build-apk.yml`：`setup-java` 加 `cache: 'gradle'`
+- `android/gradle.properties`：`org.gradle.caching=true` + `org.gradle.parallel=true`
+
+**实测收益**：
+
+| run | 说明 | Build 步骤 | run 总时长 |
+|-----|------|-----------|-----------|
+| 56 | 基线（master） | 9.48min | 11.0min |
+| 58 | 半热缓存 | 6.62min | 9.0min |
+| 59 | **稳态** | **4.53min** | **6.4min** |
+
+→ 构建步骤 **−52%**，run 总时长 **−42%**。
+
+⚠️ **已试过但否决：关闭 `android.enableJetifier`** —— 实测直接构建失败
+（`:app:checkReleaseDuplicateClasses` 报 `android.support.v4.*` 重复类）。
+根因是**传递依赖**：`flutter_baidu_mapapi_map` 的 android/build.gradle 里写着
+`implementation 'android.arch.lifecycle:extensions:1.1.1'`（2018 年的 pre-AndroidX 包），
+拖进 `com.android.support:support-compat:26.1.0`。
+**排查教训**：只 grep 包名 `android.support.` 查不出来（那 3 处命中全是 AndroidX
+自己也在用的兼容字符串），必须 grep Maven 坐标 `com.android.support:`。
+
 ### 待办（交给协作者）
 
-1. ⚠️ **真机回归**（v4.8.8 只过了 `analyze` + `test`，真机没验完）：
+1. ⚠️ **真机回归**：下面这些还没全验完（用户会自己跑真机）
    - 底栏 4 个 Tab 切换、选中态、滑动时模糊是否实时跟随
    - 数像素验小白条（真实 y 2724–2780 应是模糊背景，不再恒定 `#000000`）
-   - 课件页三层（课程 → 课件列表 → 离线浏览）+ 逐份删除
+   - 课件页三层（课程 → 活动/课件列表 → 离线浏览）+ 逐份删除
    - 设置页各入口 + 深浅色切换
+   - 历史结课课程能否列出活动并抓到课件
 2. `lib/pages/presentation.dart`（111KB，最后动）
-3. 底栏折射（方案 D）：`ImageFilter.shader`，**仅 Impeller 可用**
-4. 应用被锁 60Hz（`frameRateOverride uid=10196`），需 Android 侧
+3. `lib/pages/courseware/list.dart` 已涨到 1469 行，**下一个该拆分的候选**
+   （现在混了课程列表 / 活动列表 / 课件列表 / 爬取进度 / 删除面板 5 种职责）
+4. 底栏折射（方案 D）：`ImageFilter.shader`，**仅 Impeller 可用**
+5. 应用被锁 60Hz（`frameRateOverride uid=10196`），需 Android 侧
    `Surface.setFrameRate` / `preferredDisplayModeId` 或 ColorOS 白名单
-5. 老缓存的课程名回填（进一次那门课即可，见上）
+6. 老缓存的课程名回填（进一次那门课即可，见上）
 
-### 已修（本轮，commit 见 git log）
+### 已修（commit 见 git log）
 
-- ⚠️⚠️ **文字对齐异常**（真机截图已定位）：根因是 **`MiuixCard` 的
-  `insideMargin` 默认是 `EdgeInsets.zero`（0）**，而各 preference 是
-  `MiuixBasicComponentDefaults.insideMargin`（16）。裸用 `MiuixCard` 包裸内容，
-  文字就紧贴卡片边缘；和下面带 preference 的卡片并排 → 看起来「没对齐」。
-  真机像素取证：说明卡文字 x≈61、开关卡文字 x≈121，卡片边缘 x≈56（dpr 3.5）。
-  修法：8 处裸 `MiuixCard` 显式传 `kMiuixCardInsideMargin`
-  （见 `pages/widget/miuix_card_metrics.dart`，那里把这个坑写死了）。
-  另外说明卡的编号列表改成「编号定宽 + Expanded 正文」实现**悬挂缩进** ——
-  原来用一个 `Text` 拼 `\n`，折行会顶回和「1.」同一列，像多出一条没编号的条目。
-- ⚠️⚠️ **多选题只提交一个选项**：`RCCourseApi.answer()` 只设了 `authorization`，
-  **没设 `Content-Type: application/json`** → Dio 把 Map body 编成
+**2026-09-23 / 24 这一批：**
+
+- ⚠️⚠️ **历史结课课程课件抓取为空 + `checkIn` 鉴权断言崩溃**（`651637f`）：
+  `checkIn` 有三处崩溃点（见上「历史结课课程爬取」），历史课程必然触发。
+- ⚠️⚠️ **多选题预选了多个、实际只提交一个**：`RCCourseApi.answer()` 只设了
+  `authorization`、**没设 `Content-Type`** → Dio 把 Map body 编成
   form-urlencoded → `result: ['A','B']` 被展平成 `result=A&result=B` →
-  服务端按标量绑定只取到第一个。单选因为 `result=['A']` 编成 `result=A`
-  恰好一样，所以一直没暴露。修法：显式设 JSON content-type
-  （请求头/请求体抽成 `answerHeaders()` / `buildAnswerBody()` 以便单测钉住）。
+  服务端只取到第一个。单选因为 `result=['A']` 编成 `result=A` 恰好一样，
+  所以一直没暴露。**body 里有列表就必须显式设 JSON content-type。**
 - ⚠️⚠️ **挂后台十几分钟后自动提交失效**：`_connectWebSocket()` 没有心跳、
-  没有 `onDone`/`onError`、没有重连。socket 被静默丢弃后 Dart 侧收不到任何通知，
-  页面还以为连着 → 再也收不到 `unlockproblem`。修法：`pingInterval`（20s，
-  用于发现死连接）+ 退避重连（2→30s）+ 回前台补检 + **重连后从 timeline
-  补查断线期间漏掉的发题**（`pickResyncProblemId`，三道闸门防误交）。
-- **课件页点开课程看不到课件**：关联逻辑只认 `meta.json` 的 courseId，
-  而它 v4.8.8 才引入 → 老缓存全关联不上。改为「meta.json + 按缓存目录名兜底」。
-- **页面反复重载**：课程页 3 秒轮询每次刷新都无条件 `setState(_isLoading = true)`，
-  整页闪回 loading。改为**静默刷新**（不置 loading、数据未变则完全不动）。
-  配套：`Course.sameShallowAs`（`Course` 没覆写 `==`，用 `==` 判定永远为 false）。
+  没有 `onDone`/`onError`、没有重连，socket 被静默丢弃后 Dart 侧收不到任何
+  通知 → 再也收不到 `unlockproblem`。修法：`pingInterval`（发现死连接）
+  + 退避重连 + 回前台补检 + 重连后从 timeline 补查漏掉的发题。
+- **文字对齐异常**：根因是 **`MiuixCard` 的 `insideMargin` 默认是 0**
+  （不是 16！），裸用会让文字贴到卡片边缘。8 处已补
+  `kMiuixCardInsideMargin`（见 `pages/widget/miuix_card_metrics.dart`）。
+- **页面反复重载**：课程页 3 秒轮询每次刷新都无条件 `setState(_isLoading = true)`
+  → 整页闪回 loading。改为**静默刷新**（数据未变则完全不动）。
+- 空状态文本色按 Miuix 规范改（`onBackgroundVariant` → 中性灰阶）。
+- 合并上游（百度地图 SO 打包兼容、定位防重防泄漏、Quiz 主题色）。
 - 更新检查失效（`/releases/latest` 不返回 prerelease → 404 被静默吞）。
 - `courses/list.dart` 补 3 处缺失的 `mounted` 检查。
 - `theme_setting.dart` 的 `debugPrint` 改 `AppLogger`（`debugPrint` 不进日志文件）。
+
+**更早：**
+
+- **课件页点开课程看不到课件**：关联逻辑只认 `meta.json` 的 courseId，
+  而它 v4.8.8 才引入 → 老缓存全关联不上。改为「meta.json + 按缓存目录名兜底」。
 
 ### 约定
 
