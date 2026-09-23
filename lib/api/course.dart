@@ -1,9 +1,12 @@
 import 'package:flutter/foundation.dart';
 
 import 'api_service.dart';
+import 'rc_crawler.dart';
 import '../utils/encrypt.dart';
 import '../models/active.dart';
 import '../models/course.dart';
+import '../models/presentation.dart';
+import '../models/rc_activity.dart';
 
 class CXCourseApi extends Api {
   CXCourseApi([super.user]);
@@ -226,23 +229,57 @@ class RCCourseApi extends Api {
   /// 才有）。课件页与缓存目录的关联必须**走 `courseId`**，见
   /// `CourseCache.findLessonIdsByCourseId`。
   static Future<List<Course>?> getAllCourses() async {
-    final courses = await getCourses();
-    if (courses == null) return null;
+    // 爬虫能力：并行抓取移动端学习列表、Web 端在修课程与 Web 端历史归档结课课程
+    try {
+      final results = await Future.wait([
+        getCourses(),
+        RCCrawler.getWebCourses(),
+        RCCrawler.getArchivedCourses(),
+      ]);
 
-    final data = courses['data'];
-    if (data is! List || data.isEmpty) return null;
+      final learningList = results[0] as Map<String, dynamic>?;
+      final webCourses = results[1] as List<Map<String, dynamic>>?;
+      final archivedCourses = results[2] as List<Map<String, dynamic>>?;
 
-    final list = <Course>[];
-    for (final item in data) {
-      if (item is! Map) continue;
-      try {
-        list.add(Course.fromRCJson(Map<String, dynamic>.from(item)));
-      } catch (e) {
-        debugPrint('解析课程失败：$e');
+      final merged = RCCrawler.mergeCourses(
+        learningList: learningList?['data'] is List ? learningList!['data'] as List : null,
+        webCourses: webCourses,
+        archivedCourses: archivedCourses,
+      );
+
+      return merged.isEmpty ? null : merged;
+    } catch (e) {
+      debugPrint('获取课程失败，尝试退回单一接口：$e');
+      final courses = await getCourses();
+      if (courses == null) return null;
+      final data = courses['data'];
+      if (data is! List || data.isEmpty) return null;
+      final list = <Course>[];
+      for (final item in data) {
+        if (item is! Map) continue;
+        try {
+          list.add(Course.fromRCJson(Map<String, dynamic>.from(item)));
+        } catch (_) {}
       }
+      return list.isEmpty ? null : list;
     }
-    return list.isEmpty ? null : list;
   }
+
+  /// 获取指定班级的教学活动与课件日志
+  static Future<List<RCActivity>?> getCourseActivities(String classroomId) =>
+      RCCrawler.getCourseActivities(classroomId);
+
+  /// 抓取指定历史课堂的课件 PPT 并落盘
+  static Future<Presentation?> crawlLessonPresentation({
+    required String lessonId,
+    required String courseId,
+    required String courseName,
+  }) =>
+      RCCrawler.crawlLessonPresentation(
+        lessonId: lessonId,
+        courseId: courseId,
+        courseName: courseName,
+      );
 
   Future<int?> checkIn(String lessonId) async {
     final url = '/api/v3/lesson/checkin';
