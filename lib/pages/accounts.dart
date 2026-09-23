@@ -670,12 +670,12 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
             MiuixText(
               '暂无账号',
               fontSize: 18,
-              color: MiuixTheme.of(context).colors.onBackgroundVariant,
+              color: MiuixTheme.of(context).colors.onSurfaceSecondary,
             ),
             const SizedBox(height: 8),
             MiuixText(
               '点击右下角添加账号',
-              color: MiuixTheme.of(context).colors.onBackgroundVariant,
+              color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
             ),
           ],
         ),

@@ -115,7 +115,7 @@ class _CoursewareViewerState extends State<CoursewareViewer> {
             MiuixText(
               '这份课件没有本地缓存',
               fontSize: 16,
-              color: colors.onBackgroundVariant,
+              color: colors.onSurfaceSecondary,
             ),
             const SizedBox(height: 6),
             MiuixText(

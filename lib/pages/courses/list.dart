@@ -637,7 +637,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                 child: MiuixText(
                   PlatformManager().isRainClassroom ? '暂无正在上课的课程' : '暂无内容',
                   fontSize: 18,
-                  color: MiuixTheme.of(context).colors.onBackgroundVariant,
+                  color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
                 ),
               )
             : ListView.builder(

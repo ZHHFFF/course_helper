@@ -657,7 +657,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
               tint: colors.onSurfaceVariantSummary,
             ),
             const SizedBox(height: 12),
-            MiuixText(title, fontSize: 16, color: colors.onBackgroundVariant),
+            MiuixText(title, fontSize: 16, color: colors.onSurfaceSecondary),
             const SizedBox(height: 6),
             MiuixText(
               summary,
