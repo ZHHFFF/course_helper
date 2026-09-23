@@ -218,21 +218,34 @@ ppt_cache/lessons/<safeName(lessonId)>/
    - 数像素验小白条（真实 y 2724–2780 应是模糊背景，不再恒定 `#000000`）
    - 课件页三层（课程 → 课件列表 → 离线浏览）+ 逐份删除
    - 设置页各入口 + 深浅色切换
-2. ⚠️ **文字对齐异常**（真机反馈）：多个页面的文字看起来没对齐。代码侧查过
-   `Row`/`Column` 的 `crossAxisAlignment` 都是对的，怀疑来自
-   **`MiuixText` 与 Material `Text` 混用** —— 两者的字号/行高体系不同
-   （`MiuixText` 基础样式是 `textStyles.main` = 17sp 且**不设 `height`**，
-   覆盖 `fontSize` 后行高按字体默认比例走；Material `Text` 走 `DefaultTextStyle`）。
-   混用最严重的是 `pages/courses/list.dart`（`MiuixText` 6 处 / `Text` 23 处）。
-   **需要一张真机截图定位到具体页面/元素**再改，别盲改排版。
-3. `lib/pages/presentation.dart`（111KB，最后动）
-4. 底栏折射（方案 D）：`ImageFilter.shader`，**仅 Impeller 可用**
-5. 应用被锁 60Hz（`frameRateOverride uid=10196`），需 Android 侧
+2. `lib/pages/presentation.dart`（111KB，最后动）
+3. 底栏折射（方案 D）：`ImageFilter.shader`，**仅 Impeller 可用**
+4. 应用被锁 60Hz（`frameRateOverride uid=10196`），需 Android 侧
    `Surface.setFrameRate` / `preferredDisplayModeId` 或 ColorOS 白名单
-6. 老缓存的课程名回填（进一次那门课即可，见上）
+5. 老缓存的课程名回填（进一次那门课即可，见上）
 
 ### 已修（本轮，commit 见 git log）
 
+- ⚠️⚠️ **文字对齐异常**（真机截图已定位）：根因是 **`MiuixCard` 的
+  `insideMargin` 默认是 `EdgeInsets.zero`（0）**，而各 preference 是
+  `MiuixBasicComponentDefaults.insideMargin`（16）。裸用 `MiuixCard` 包裸内容，
+  文字就紧贴卡片边缘；和下面带 preference 的卡片并排 → 看起来「没对齐」。
+  真机像素取证：说明卡文字 x≈61、开关卡文字 x≈121，卡片边缘 x≈56（dpr 3.5）。
+  修法：8 处裸 `MiuixCard` 显式传 `kMiuixCardInsideMargin`
+  （见 `pages/widget/miuix_card_metrics.dart`，那里把这个坑写死了）。
+  另外说明卡的编号列表改成「编号定宽 + Expanded 正文」实现**悬挂缩进** ——
+  原来用一个 `Text` 拼 `\n`，折行会顶回和「1.」同一列，像多出一条没编号的条目。
+- ⚠️⚠️ **多选题只提交一个选项**：`RCCourseApi.answer()` 只设了 `authorization`，
+  **没设 `Content-Type: application/json`** → Dio 把 Map body 编成
+  form-urlencoded → `result: ['A','B']` 被展平成 `result=A&result=B` →
+  服务端按标量绑定只取到第一个。单选因为 `result=['A']` 编成 `result=A`
+  恰好一样，所以一直没暴露。修法：显式设 JSON content-type
+  （请求头/请求体抽成 `answerHeaders()` / `buildAnswerBody()` 以便单测钉住）。
+- ⚠️⚠️ **挂后台十几分钟后自动提交失效**：`_connectWebSocket()` 没有心跳、
+  没有 `onDone`/`onError`、没有重连。socket 被静默丢弃后 Dart 侧收不到任何通知，
+  页面还以为连着 → 再也收不到 `unlockproblem`。修法：`pingInterval`（20s，
+  用于发现死连接）+ 退避重连（2→30s）+ 回前台补检 + **重连后从 timeline
+  补查断线期间漏掉的发题**（`pickResyncProblemId`，三道闸门防误交）。
 - **课件页点开课程看不到课件**：关联逻辑只认 `meta.json` 的 courseId，
   而它 v4.8.8 才引入 → 老缓存全关联不上。改为「meta.json + 按缓存目录名兜底」。
 - **页面反复重载**：课程页 3 秒轮询每次刷新都无条件 `setState(_isLoading = true)`，

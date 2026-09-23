@@ -12,6 +12,8 @@ import 'package:flutter_miuix/miuix.dart';
 
 import '../../api/answer_search.dart';
 import '../../setting/auto_answer_setting.dart';
+// [新增] 卡片内容的标准内边距（MiuixCard 默认是 0，裸用会贴边，见该文件注释）
+import 'miuix_card_metrics.dart';
 
 class AnswerSearchSettingsPage extends StatefulWidget {
   const AnswerSearchSettingsPage({super.key});
@@ -253,7 +255,11 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
   // ---------------------------------------------------------------------------
 
   Widget _buildIntroCard(BuildContext context, MiuixColors colors) {
+    // ⚠️ `insideMargin` 必须显式给：`MiuixCard` 默认是 `EdgeInsets.zero`，
+    // 不给的话整块内容会贴到卡片左边缘，与下面开关卡片的 16dp 形成错位
+    // （真机截图已确认）。详见 `widget/miuix_card_metrics.dart`。
     return MiuixCard(
+      insideMargin: kMiuixCardInsideMargin,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -265,20 +271,54 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
             ],
           ),
           const SizedBox(height: 12),
-          MiuixText(
-            '1. 学习通题目：服务器直接返回正确答案标记，无需配置AI即可自动获取\n'
-            '2. 雨课堂题目：服务器不返回答案，需配置AI检索源\n'
-            '3. 检索结果仅供参考，不保证正确\n'
-            '4. AI检索结果仅展示当前题目，不会缓存到本地\n'
-            '5. 题目只写在PPT上时，会自动把课件图片发给多模态模型识别\n'
-            '6. 检索到答案后可一键填入选项，但不会自动提交，需你核对',
-            fontSize: 13,
-            color: colors.onSurfaceVariantSummary,
-          ),
+          // ⚠️ 这里**不能**写成「一个 MiuixText 用 \n 拼 6 条」：
+          // 一旦某条折行，第二行会顶回最左边（和「1.」同一列），
+          // 看起来像凭空多出一条没编号的条目 —— 就是实机反馈的「文字没对齐」。
+          // 改成「编号定宽 + Expanded 正文」，折行自然对齐到正文列（悬挂缩进）。
+          for (final (number, text) in _introItems)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: _introNumberWidth,
+                    child: MiuixText(
+                      number,
+                      fontSize: 13,
+                      color: colors.onSurfaceVariantSummary,
+                    ),
+                  ),
+                  Expanded(
+                    child: MiuixText(
+                      text,
+                      fontSize: 13,
+                      color: colors.onSurfaceVariantSummary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
   }
+
+  /// 说明卡编号列的宽度（悬挂缩进的关键）。
+  ///
+  /// 固定宽度后，正文被 `Expanded` 推到同一列：首行对齐、折行也对齐。
+  /// 13sp 下「6.」约 14dp，留 20dp 够用且不会让正文离得太远。
+  static const double _introNumberWidth = 20;
+
+  /// 说明卡条目：(编号, 正文)。
+  static const List<(String, String)> _introItems = [
+    ('1.', '学习通题目：服务器直接返回正确答案标记，无需配置AI即可自动获取'),
+    ('2.', '雨课堂题目：服务器不返回答案，需配置AI检索源'),
+    ('3.', '检索结果仅供参考，不保证正确'),
+    ('4.', 'AI检索结果仅展示当前题目，不会缓存到本地'),
+    ('5.', '题目只写在PPT上时，会自动把课件图片发给多模态模型识别'),
+    ('6.', '检索到答案后可一键填入选项，但不会自动提交，需你核对'),
+  ];
 
   Widget _buildEnableCard(BuildContext context) {
     // ⚠️ 卡片 `insideMargin` 归零，让 preference 自己的内边距生效，
@@ -364,6 +404,8 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
     final urlChanged = rawUrl.isNotEmpty && previewUrl != rawUrl;
 
     return MiuixCard(
+      // 同上：裸 MiuixCard 默认无内边距，不显式给会让标题/说明文字贴到卡片边缘
+      insideMargin: kMiuixCardInsideMargin,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

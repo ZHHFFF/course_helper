@@ -68,6 +68,23 @@ class PresentationPage extends StatefulWidget {
 class _PresentationPageState extends State<PresentationPage>
     with WidgetsBindingObserver {
   WebSocket? _ws;
+
+  /// WebSocket 重连定时器（断开后退避重连用）
+  Timer? _wsReconnectTimer;
+
+  /// 连续重连失败次数。连上就归零，用于计算退避时长。
+  int _wsRetryCount = 0;
+
+  /// 是否是我们主动关闭的（dispose）。置 true 后不再重连。
+  bool _wsClosedByUs = false;
+
+  /// 连接代次：每次发起新连接 +1。
+  ///
+  /// 为什么要它：旧连接的 `onDone` / `onError` 可能在新连接建立之后才跑起来，
+  /// 那时如果无脑重连，就会「旧连接的回调把新连接又拆一次」，陷入反复重连。
+  /// 回调里带上自己那一代的编号，对不上就忽略。
+  int _wsGeneration = 0;
+
   final ScrollController _scrollController = ScrollController();
   final PageController _pageController = PageController();
 
@@ -201,6 +218,13 @@ class _PresentationPageState extends State<PresentationPage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 图片预取只在 App 前台时跑：后台下载既费电又容易被系统掐断
     SlideImagePrefetcher.paused = state != AppLifecycleState.resumed;
+
+    // 回到前台补检一次 WebSocket。
+    // 后台期间系统/网络很可能把这条长连接掐了，而 `onDone` 在进程被冻结时
+    // 未必跑得到 —— 不补检的话表现就是「回到前台后自动提交一直不工作」。
+    if (state == AppLifecycleState.resumed) {
+      _ensureWebSocketAlive();
+    }
   }
 
   @override
@@ -229,6 +253,13 @@ class _PresentationPageState extends State<PresentationPage>
     if (_currentPresentationId != null) {
       unawaited(CourseCache.markFinished(widget.lessonId));
     }
+
+    // 主动关闭：置了它之后，断开回调不会再安排重连（否则页面都销毁了
+    // 还在后台反复重连，白耗电）。代次 +1 让迟到的回调直接失效。
+    _wsClosedByUs = true;
+    _wsGeneration++;
+    _wsReconnectTimer?.cancel();
+    _wsReconnectTimer = null;
 
     if (_ws != null) {
       final leaveData = {
@@ -969,7 +1000,26 @@ class _PresentationPageState extends State<PresentationPage>
     await KeepAliveService.stop();
   }
 
+  /// 建立（或重建）课堂 WebSocket
+  ///
+  /// ⚠️⚠️ 这个连接**必须能自愈**，否则会出现「挂后台十几到二十分钟后
+  /// 再也收不到题、自动提交彻底失效」——真机已复现。
+  ///
+  /// 原来的实现只有一句 `WebSocket.connect` + `ws.listen`：
+  /// - **没有心跳**：socket 空闲一段时间后会被服务端 / 运营商 NAT / 系统
+  ///   静默丢弃，而 Dart 侧 `listen` **不会收到任何通知**（不报错、不结束），
+  ///   页面还以为自己是连着的。
+  /// - **没有重连**：`listen` 结束就结束了，不会有人再连一次。
+  ///
+  /// 现在补三件事：
+  /// 1. `pingInterval`：dart:io 会定期发协议层 ping，pong 超时就主动判定
+  ///    连接已死 → 触发 `onDone` → 走重连。这是「发现死连接」的关键。
+  /// 2. `onDone` / `onError` → 退避重连。
+  /// 3. 回前台时主动补检一次（见 `_ensureWebSocketAlive`）。
   Future<void> _connectWebSocket() async {
+    if (_wsClosedByUs) return;
+
+    final generation = ++_wsGeneration;
     try {
       late String lessonUrl;
       final currentServerName = PlatformManager().currentServer.name;
@@ -977,7 +1027,18 @@ class _PresentationPageState extends State<PresentationPage>
       'wss://www.yuketang.cn/wsapp/' : 'wss://$currentServerName.yuketang.cn/wsapp/';
 
       final ws = await WebSocket.connect(lessonUrl);
+
+      // 连接期间可能已经 dispose，或又发起了更新的连接 —— 这次的作废
+      if (_wsClosedByUs || generation != _wsGeneration) {
+        unawaited(ws.close());
+        return;
+      }
+
       _ws = ws;
+      _wsRetryCount = 0;
+
+      // 心跳：20 秒一次。没有它就没法察觉「socket 已经死了但没人告诉我们」。
+      ws.pingInterval = const Duration(seconds: 20);
 
       final helloData = {
         "op": "hello",
@@ -989,14 +1050,86 @@ class _PresentationPageState extends State<PresentationPage>
 
       ws.add(jsonEncode(helloData));
 
+      AppLogger.i('WebSocket', '已连接（第 $_wsGeneration 代）');
+
       ws.listen(
         (message) {
           _handleMessage(message);
         },
+        onError: (Object e) {
+          AppLogger.w('WebSocket', '连接出错：$e');
+          _scheduleWebSocketReconnect(generation);
+        },
+        onDone: () {
+          AppLogger.w(
+            'WebSocket',
+            '连接已断开（code=${ws.closeCode} reason=${ws.closeReason}），将自动重连',
+          );
+          _scheduleWebSocketReconnect(generation);
+        },
+        cancelOnError: true,
       );
     } catch (e) {
       AppLogger.e('WebSocket', '连接失败：$e');
+      _scheduleWebSocketReconnect(generation);
     }
+  }
+
+  /// 安排一次退避重连
+  ///
+  /// 只对**当前代**生效：旧连接迟到的回调不会干扰新连接（见 `_wsGeneration`）。
+  void _scheduleWebSocketReconnect(int generation) {
+    if (_wsClosedByUs || generation != _wsGeneration) return;
+    // 已经排了一个就不要再排，否则一次抖动会排出一串重连
+    if (_wsReconnectTimer?.isActive ?? false) return;
+
+    // 退避：2s → 4s → 8s → 16s → 30s（封顶）。
+    // 封顶很重要：上课期间网络可能是断续的，不能无限拉长导致错过发题。
+    _wsRetryCount = (_wsRetryCount + 1).clamp(1, 5);
+    final delay = Duration(seconds: (1 << _wsRetryCount).clamp(2, 30));
+    AppLogger.i('WebSocket', '${delay.inSeconds}s 后第 $_wsRetryCount 次重连');
+
+    _wsReconnectTimer = Timer(delay, () {
+      if (!mounted || _wsClosedByUs) return;
+      unawaited(_connectWebSocket());
+    });
+  }
+
+  /// 回到前台时补检连接
+  ///
+  /// 为什么还要这一层：后台期间 `onDone` 未必能及时跑到（进程被冻结），
+  /// 等退避计时器也未必准。回前台直接看一眼 `readyState`，
+  /// 断了就立刻重连 —— 比等计时器及时得多，而且能赶在老师发题之前修好。
+  void _ensureWebSocketAlive() {
+    if (_wsClosedByUs) return;
+
+    final ws = _ws;
+    if (ws != null && ws.readyState == WebSocket.open) return;
+
+    AppLogger.i('WebSocket', '回到前台发现连接不可用，立即重连');
+    _wsReconnectTimer?.cancel();
+    _wsReconnectTimer = null;
+    _wsRetryCount = 0;
+    unawaited(_connectWebSocket());
+  }
+
+  /// 重连后补查「断线期间老师是不是刚发了题」
+  ///
+  /// 判定逻辑在纯函数 [pickResyncProblemId] 里（有单测覆盖），这里只负责
+  /// 把页面状态喂进去，再把结果落到日志和自动提交队列。
+  void _resyncProblemFromTimeline(List timeline) {
+    final decision = pickResyncProblemId(
+      timeline: timeline,
+      now: DateTime.now(),
+      currentLessonSlideIndex: _currentLessonSlideIndex,
+      alreadySubmitted: _autoSubmitted,
+    );
+
+    AppLogger.i('自动答题', '重连补查：${decision.reason}');
+
+    final problemId = decision.problemId;
+    if (problemId == null) return;
+    unawaited(_maybeAutoSubmit(problemId));
   }
 
   void _toSlide(int slideIndex, {bool animate = true}) {
@@ -1085,6 +1218,12 @@ class _PresentationPageState extends State<PresentationPage>
 
           if (timeline != null) {
             _addTimelineEvents(timeline);
+
+            // 只有**重连**才补查（第一次连接不用：那时还没断过线，
+            // 而且刚进课堂时若把历史题当成新题补交会交错）。
+            if (_wsGeneration > 1) {
+              _resyncProblemFromTimeline(timeline);
+            }
           }
 
           setState(() {

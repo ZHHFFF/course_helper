@@ -293,6 +293,82 @@ class RCCourseApi extends Api {
     return response?.data['data'];
   }
 
+  /// 答题请求的请求头。
+  ///
+  /// ⚠️⚠️ `Content-Type` 必须显式写成 JSON，**不能省**。
+  ///
+  /// 踩过的坑（真机 bug：多选题预选了多个，实际只提交了一个）：
+  /// 这里原来只有 `authorization`，Dio 看到 body 是 `Map` 又没有 JSON
+  /// content-type，就按 `application/x-www-form-urlencoded` 编码。于是
+  /// `result: ['A','B']` 被展平成 `result=A&result=B`（重复参数），
+  /// 服务端按标量绑定 `result` → **只取到第一个 'A'**，第二个选项直接丢了。
+  ///
+  /// 单选之所以一直正常，是因为 `result=['A']` 编成 `result=A`，
+  /// 表单和 JSON 两种写法服务端都能吃 —— 所以这个坑只在多选暴露。
+  ///
+  /// 实测（`test/rc_answer_body_test.dart` 钉住了这个行为）：
+  /// ```text
+  /// 不加 → problemId=p1&dt=...&problemType=2&result=A&result=B
+  /// 加了 → {"problemId":"p1","dt":...,"problemType":2,"result":["A","B"]}
+  /// ```
+  /// 后者才和已知可用的雨课堂实现一致（`result` 是选项字母数组）。
+  ///
+  /// 抽成静态方法是为了能被单测直接断言 —— 这行漏掉的表现是「静默少交选项」，
+  /// 界面上完全看不出来，只能靠测试兜。
+  static Map<String, String> answerHeaders(String bearerToken) => {
+        'authorization': 'Bearer $bearerToken',
+        'Content-Type': 'application/json',
+      };
+
+  /// 构造答题请求体（纯函数，便于单测）。
+  ///
+  /// 选择题（含多选）的 `result` 必须是**选项 key 的数组**，不能是拼接字符串 ——
+  /// 服务端就是按数组解析的。`retry` 时外面再包一层 `{'problems': [...]}`。
+  static Map<String, dynamic> buildAnswerBody({
+    required String problemId,
+    required int problemType,
+    required int timestampMs,
+    List<String>? options,
+    String? content,
+    List<String>? imageUrls,
+    bool retry = false,
+  }) {
+    dynamic result;
+    if (problemType == 5) {
+      // 简答题：content + 图片
+      var pics = <Map<String, String>>[];
+      if (imageUrls != null) {
+        for (final imageUrl in imageUrls) {
+          pics.add({
+            'pic': imageUrl,
+            'thumb': '$imageUrl?imageView2/2/w/568',
+          });
+        }
+      } else {
+        pics = [
+          {'pic': '', 'thumb': ''}
+        ];
+      }
+      result = {'content': content ?? '', 'pics': pics, 'videos': []};
+    } else {
+      result = options;
+    }
+
+    Map<String, dynamic> jsonData = {
+      'problemId': problemId,
+      'dt': timestampMs,
+      'problemType': problemType,
+      'result': result,
+    };
+    if (retry) {
+      jsonData['retry_times'] = null;
+      jsonData = {
+        'problems': [jsonData]
+      };
+    }
+    return jsonData;
+  }
+
   /// 提交答案
   Future<Map<String, dynamic>?> answer(String problemId, int problemType,
       {bool retry = false, int? time, List<String>? options, String? content, List<String>? imageUrls}) async {
@@ -301,35 +377,16 @@ class RCCourseApi extends Api {
     if (bearerToken == null) {
       return null;
     }
-    final headers = {'authorization': 'Bearer $bearerToken'};
-    final timeStampMS = time ?? DateTime.now().millisecondsSinceEpoch;
-    late dynamic result;
-    if (problemType == 5) {
-      var pics = [];
-      if (imageUrls != null) {
-        for (var imageUrl in imageUrls) {
-          pics.add({
-            'pic': imageUrl,
-            'thumb': '$imageUrl?imageView2/2/w/568'
-          });
-        }
-      } else {
-        pics = [{'pic': '', 'thumb': ''}];
-      }
-      result = {'content': content ?? '', 'pics': pics, 'videos': []};
-    } else {
-      result = options;
-    }
-    var jsonData = {
-      'problemId': problemId,
-      'dt': timeStampMS,
-      'problemType': problemType,
-      'result': result
-    };
-    if (retry) {
-      jsonData['retry_times'] = null;
-      jsonData = {'problems': [jsonData]};
-    }
+    final headers = answerHeaders(bearerToken!);
+    final jsonData = buildAnswerBody(
+      problemId: problemId,
+      problemType: problemType,
+      timestampMs: time ?? DateTime.now().millisecondsSinceEpoch,
+      options: options,
+      content: content,
+      imageUrls: imageUrls,
+      retry: retry,
+    );
     final response = await ApiService.sendRequest(url, method: 'POST', headers: headers, body: jsonData, userId: user?.uid);
     return response?.data;
   }

@@ -21,6 +21,8 @@ import 'package:flutter_miuix/miuix.dart';
 import '../../cache/answer_cache.dart';
 import '../../cache/ppt_cache.dart';
 import '../../cache/course_cache.dart';
+// [新增] 卡片内容的标准内边距（MiuixCard 默认是 0，裸用会贴边）
+import 'miuix_card_metrics.dart';
 
 class CacheManagerPage extends StatefulWidget {
   const CacheManagerPage({super.key});
@@ -288,6 +290,8 @@ class _CacheManagerPageState extends State<CacheManagerPage> {
     final colors = MiuixTheme.of(context).colors;
 
     return MiuixCard(
+      // MiuixCard 默认无内边距（= 0），不显式给会让「当前占用」贴到卡片边缘
+      insideMargin: kMiuixCardInsideMargin,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -318,6 +322,8 @@ class _CacheManagerPageState extends State<CacheManagerPage> {
     final textStyles = MiuixTheme.of(context).textStyles;
 
     return MiuixCard(
+      // 同上：裸 MiuixCard 默认无内边距
+      insideMargin: kMiuixCardInsideMargin,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

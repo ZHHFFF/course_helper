@@ -15,6 +15,8 @@ import 'package:share_plus/share_plus.dart';
 import 'package:flutter_miuix/miuix.dart';
 
 import '../../utils/app_logger.dart';
+// [新增] 卡片内容的标准内边距（MiuixCard 默认是 0，裸用会贴边）
+import 'miuix_card_metrics.dart';
 
 class LogViewerPage extends StatefulWidget {
   const LogViewerPage({super.key});
@@ -258,6 +260,9 @@ class _LogViewerPageState extends State<LogViewerPage> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
       child: MiuixCard(
+        // MiuixCard 默认无内边距（`MiuixCardDefaults.insideMargin` = 0），
+        // 不显式给会让卡片里的文字贴到边缘。详见 miuix_card_metrics.dart
+        insideMargin: kMiuixCardInsideMargin,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

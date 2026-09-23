@@ -18,6 +18,8 @@ import 'package:flutter_miuix/miuix.dart';
 
 import '../../utils/app_logger.dart';
 import '../../utils/keep_alive_service.dart';
+// [新增] 卡片内容的标准内边距（MiuixCard 默认是 0，裸用会贴边）
+import 'miuix_card_metrics.dart';
 
 class KeepAliveCheckerPage extends StatefulWidget {
   const KeepAliveCheckerPage({super.key});
@@ -151,8 +153,13 @@ class _KeepAliveCheckerPageState extends State<KeepAliveCheckerPage> {
   // ---------------------------------------------------------------------------
 
   Widget _statusCard(BuildContext context, MiuixColors colors) {
-    // MiuixCard 自带 16dp 内边距（`insideMargin`），不需要再套 Padding
+    // ⚠️ 这里原来写着「MiuixCard 自带 16dp 内边距，不需要再套 Padding」——
+    // 那是**错的**。`MiuixCardDefaults.insideMargin` 实际是 `EdgeInsets.zero`，
+    // 裸用会让卡片里的文字贴到卡片左边缘（真机截图已确认）。
+    // 必须显式传 16，才能和各 preference 的 `MiuixBasicComponentDefaults.insideMargin`
+    // （16）对齐。详见 miuix_card_metrics.dart。
     return MiuixCard(
+      insideMargin: kMiuixCardInsideMargin,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -291,6 +298,7 @@ class _KeepAliveCheckerPageState extends State<KeepAliveCheckerPage> {
 
   Widget _helpCard(BuildContext context, MiuixColors colors) {
     return MiuixCard(
+      insideMargin: kMiuixCardInsideMargin,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -335,6 +343,7 @@ class _KeepAliveCheckerPageState extends State<KeepAliveCheckerPage> {
     final tail = logs.length > 20 ? logs.sublist(logs.length - 20) : logs;
 
     return MiuixCard(
+      insideMargin: kMiuixCardInsideMargin,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
