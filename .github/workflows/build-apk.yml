@@ -19,11 +19,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ⚠️ `cache: gradle` 必须开（2026-09-24 加）。
+      #
+      # 不开的话每次 run 都要从零下载全部 Gradle 依赖 + 重跑全量编译：
+      # 实测 `Build release APK` 步骤 9.48 分钟，其中 Gradle 自己就占 567 秒。
+      # 开了之后 `~/.gradle/caches` 和 wrapper 会跨 run 复用
+      # （Gradle 的 build-cache-1 也在 `~/.gradle/caches` 里，一并覆盖）。
+      #
+      # 配合 `android/gradle.properties` 里的 `org.gradle.caching=true`
+      # 才能连 task 输出一起复用（只缓存依赖的话编译还是要重跑）。
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: 'gradle'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
