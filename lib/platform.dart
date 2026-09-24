@@ -50,6 +50,10 @@ class PlatformManager {
   static const _serverKey = 'current_server';
   PlatformType _currentPlatform = PlatformType.chaoxing;
 
+  /// 平台变更通知器，供 UI 层（如 CoursewarePage）即时监听
+  final ValueNotifier<PlatformType> platformNotifier =
+      ValueNotifier<PlatformType>(PlatformType.chaoxing);
+
   /// 雨课堂服务器的**新装默认值**。
   ///
   /// 2026-09-22 用户要求「雨课堂默认为长江雨课堂」。
@@ -60,8 +64,14 @@ class PlatformManager {
   /// 获取当前平台
   PlatformType get currentPlatform => _currentPlatform;
 
+  /// 当前平台别名（兼容 currentPlatform 与契约调用）
+  PlatformType get platform => _currentPlatform;
+
   bool get isChaoxing => _currentPlatform == PlatformType.chaoxing;
   bool get isRainClassroom => _currentPlatform == PlatformType.rainClassroom;
+
+  /// 雨课堂平台判定别名（兼容 isRainClassroom 与历史/契约调用）
+  bool get isYuketang => isRainClassroom;
   
   /// 获取当前雨课堂服务器
   RainClassroomServerType get currentServer => _currentServer;
@@ -81,6 +91,7 @@ class PlatformManager {
             break;
         }
       }
+      platformNotifier.value = _currentPlatform;
       
       // 加载雨课堂服务器设置
       final serverStr = StorageManager.prefs.getString(_serverKey);
@@ -102,7 +113,7 @@ class PlatformManager {
       }
       
       // 触发平台变化回调，初始化 headers
-      ApiService.onPlatformChange!();
+      ApiService.onPlatformChange?.call();
     } catch (e) {
       debugPrint('加载平台失败：$e');
     }
@@ -115,12 +126,16 @@ class PlatformManager {
     if (oldPlatform != platform) {
       _currentPlatform = platform;
       try {
-        StorageManager.prefs.setString(_platformKey, _currentPlatform.name);
-      } catch (e) {
-        debugPrint('保存平台失败：$e');
+        try {
+          StorageManager.prefs.setString(_platformKey, _currentPlatform.name);
+        } catch (e) {
+          debugPrint('保存平台失败：$e');
+        }
+        ApiService.onPlatformChange?.call();
+        await AccountManager.switchToPlatformAccounts();
+      } finally {
+        platformNotifier.value = platform;
       }
-      ApiService.onPlatformChange?.call();
-      await AccountManager.switchToPlatformAccounts();
     }
   }
   
@@ -135,5 +150,13 @@ class PlatformManager {
       }
       ApiService.onPlatformChange?.call();
     }
+  }
+
+  /// 测试用：重置平台管理器状态至默认值（防止单测间状态污染）
+  @visibleForTesting
+  static void debugReset() {
+    _instance._currentPlatform = PlatformType.chaoxing;
+    _instance._currentServer = RainClassroomServerType.changjiang;
+    _instance.platformNotifier.value = PlatformType.chaoxing;
   }
 }

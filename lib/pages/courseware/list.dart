@@ -136,16 +136,44 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
   final MiuixSnackbarHostState _snackbarHost = MiuixSnackbarHostState();
 
+  /// 请求防竞态版本号：快速切换平台或重复触发时，保证只有最后一次请求生效
+  int _loadToken = 0;
+
   @override
   void initState() {
     super.initState();
+    PlatformManager().platformNotifier.addListener(_onPlatformChanged);
     _loadCourses();
   }
 
   @override
   void dispose() {
+    PlatformManager().platformNotifier.removeListener(_onPlatformChanged);
     _snackbarHost.dispose();
     super.dispose();
+  }
+
+  void _onPlatformChanged() {
+    if (!mounted) return;
+    AppLogger.i(_tag, '平台发生变更（${PlatformManager().currentPlatform.name}），重置课件页状态');
+    _loadToken++;
+    setState(() {
+      _stage = _Stage.courseList;
+      _topBarInset = 0;
+      _entries = [];
+      _entry = null;
+      _pptLoading = false;
+      _presentations = [];
+      _viewerPpt = null;
+      _activities = [];
+      _activitiesLoading = false;
+      _crawlingIds.clear();
+      _batchCrawling = false;
+      _pendingDelete = null;
+      _showDeleteSheet = false;
+      _loading = true;
+    });
+    _loadCourses();
   }
 
   void _toast(String message) {
@@ -156,149 +184,160 @@ class _CoursewarePageState extends State<CoursewarePage> {
   // ── 第一层：全部课程 ──────────────────────────────────────────────────
 
   Future<void> _loadCourses() async {
+    final token = ++_loadToken;
     setState(() => _loading = true);
 
-    // ① 本地：已缓存的课。这是「哪门课有课件」的唯一可靠来源，离线也能用。
-    List<CachedLesson> cached = const [];
     try {
-      cached = await CourseCache.listLessons();
-    } catch (e) {
-      AppLogger.w(_tag, '读取本地缓存失败：$e');
-    }
-
-    // ② 远程：全部课程。失败不影响本页可用（只是列表少一些、没有教师名）。
-    List<Course> remote = const [];
-    // 在课的课 → lessonId。`getAllCourses()` 刻意不 join「正在上课」，
-    // 所以那边 `Course.lessonId` 恒为 null；只有 `getCoursesList()` 带得出来。
-    // v4.8.8 之前的缓存没有 meta.json，只能靠这个把缓存目录名对上课程。
-    final onLessonIdByCourse = <String, String>{};
-    if (AccountManager.hasActiveSession()) {
+      // ① 本地：已缓存的课。这是「哪门课有课件」的唯一可靠来源，离线也能用。
+      List<CachedLesson> cached = const [];
       try {
-        final list = PlatformManager().isChaoxing
-            ? await CXCourseApi.getCoursesList()
-            : await RCCourseApi.getAllCourses();
-        remote = list ?? const [];
+        cached = await CourseCache.listLessons();
       } catch (e) {
-        AppLogger.w(_tag, '读取课程列表失败：$e');
+        AppLogger.w(_tag, '读取本地缓存失败：$e');
       }
+      if (!mounted || token != _loadToken) return;
 
-      if (!PlatformManager().isChaoxing) {
+      // ② 远程：全部课程。失败不影响本页可用（只是列表少一些、没有教师名）。
+      List<Course> remote = const [];
+      // 在课的课 → lessonId。`getAllCourses()` 刻意不 join「正在上课」，
+      // 所以那边 `Course.lessonId` 恒为 null；只有 `getCoursesList()` 带得出来。
+      // v4.8.8 之前的缓存没有 meta.json，只能靠这个把缓存目录名对上课程。
+      final onLessonIdByCourse = <String, String>{};
+      if (AccountManager.hasActiveSession()) {
         try {
-          final onLesson = await RCCourseApi.getCoursesList();
-          for (final c in onLesson ?? const <Course>[]) {
-            final lid = c.lessonId?.trim() ?? '';
-            if (c.courseId.isNotEmpty && lid.isNotEmpty) {
-              onLessonIdByCourse[c.courseId] = lid;
-            }
-          }
+          final list = PlatformManager().isChaoxing
+              ? await CXCourseApi.getCoursesList()
+              : await RCCourseApi.getAllCourses();
+          remote = list ?? const [];
         } catch (e) {
-          // 拿不到不影响本页 —— 只是老缓存少一条兜底关联路径
-          AppLogger.w(_tag, '读取在课列表失败（不影响课件列表）：$e');
+          AppLogger.w(_tag, '读取课程列表失败：$e');
         }
+        if (!mounted || token != _loadToken) return;
+
+        if (!PlatformManager().isChaoxing) {
+          try {
+            final onLesson = await RCCourseApi.getCoursesList();
+            for (final c in onLesson ?? const <Course>[]) {
+              final lid = c.lessonId?.trim() ?? '';
+              if (c.courseId.isNotEmpty && lid.isNotEmpty) {
+                onLessonIdByCourse[c.courseId] = lid;
+              }
+            }
+          } catch (e) {
+            // 拿不到不影响本页 —— 只是老缓存少一条兜底关联路径
+            AppLogger.w(_tag, '读取在课列表失败（不影响课件列表）：$e');
+          }
+        }
+        if (!mounted || token != _loadToken) return;
+      }
+
+      final byCourse = <String, List<CachedLesson>>{};
+      for (final lesson in cached) {
+        byCourse.putIfAbsent(lesson.courseId, () => []).add(lesson);
+      }
+      final lessonIdsByCourseId = <String, List<String>>{
+        for (final e in byCourse.entries)
+          e.key: [for (final l in e.value) l.lessonId],
+      };
+      // 目录名 → CachedLesson：兜底关联和计数都要用
+      final cachedByDirName = <String, CachedLesson>{
+        for (final l in cached) l.lessonId: l,
+      };
+      // 已经被某门课认领的 lessonId —— 别在第三档「未关联」里再列一遍
+      final absorbed = <String>{};
+
+      final entries = <_CourseEntry>[];
+      final seen = <String>{};
+
+      // 远程课程（主）
+      for (final course in remote) {
+        final courseKey = course.classId.isNotEmpty ? course.classId : course.courseId;
+        if (courseKey.isEmpty || !seen.add(courseKey)) continue;
+        if (course.courseId.isNotEmpty) seen.add(course.courseId);
+        if (course.classId.isNotEmpty) seen.add(course.classId);
+
+        final ids = resolveLessonIdsForCourse(
+          courseId: course.courseId,
+          lessonIdsByCourseId: lessonIdsByCourseId,
+          cachedDirNames: cachedByDirName.keys.toSet(),
+          onLessonId: onLessonIdByCourse[course.courseId],
+        );
+        absorbed.addAll(ids);
+
+        entries.add(_CourseEntry(
+          courseId: course.courseId,
+          name: course.name,
+          teacher: course.teacher,
+          classId: course.classId,
+          cpi: course.cpi ?? '',
+          lessonIds: ids.toList(),
+          presentationCount: ids.fold(
+              0, (sum, id) => sum + (cachedByDirName[id]?.presentationCount ?? 0)),
+          fromCache: false,
+          isArchived: !course.state,
+        ));
+      }
+
+      // 有缓存、但远程列表里没有的（离线 / 退课 / 换了平台）也要列出来
+      for (final lesson in cached) {
+        if (lesson.courseId.isEmpty || seen.contains(lesson.courseId)) continue;
+        seen.add(lesson.courseId);
+        final lessons = byCourse[lesson.courseId]!;
+        absorbed.addAll(lessons.map((l) => l.lessonId));
+        entries.add(_CourseEntry(
+          courseId: lesson.courseId,
+          name: lesson.name,
+          teacher: '',
+          lessonIds: [for (final l in lessons) l.lessonId],
+          presentationCount:
+              lessons.fold(0, (sum, l) => sum + l.presentationCount),
+          fromCache: true,
+        ));
+      }
+
+      // 没有 courseId 的旧版缓存（meta.json 是 v4.8.8 才有的）：单独列出来，
+      // 用 lessonId 当身份，至少能看、能删。
+      // ⚠️ 已经被上面按「在课 lessonId」认领走的不再列一遍，否则同一份课件会出现两次。
+      for (final lesson in cached) {
+        if (lesson.courseId.isNotEmpty) continue;
+        if (absorbed.contains(lesson.lessonId)) continue;
+        entries.add(_CourseEntry(
+          courseId: '',
+          name: lesson.name,
+          teacher: '未关联课程 · 进一次这门课即可自动关联',
+          lessonIds: [lesson.lessonId],
+          presentationCount: lesson.presentationCount,
+          fromCache: true,
+        ));
+      }
+
+      // 有课件的排前面 —— 用户进这一页十有八九是冲着已缓存的课件来的。
+      // ⚠️ 不用 `sort` 拼比较函数：`List.sort` 不保证稳定，同组内顺序会被打乱。
+      final withCache = entries.where((e) => e.presentationCount > 0).toList();
+      withCache.sort((a, b) {
+        if (!a.isArchived && b.isArchived) return -1;
+        if (a.isArchived && !b.isArchived) return 1;
+        return 0;
+      });
+      final without = entries.where((e) => e.presentationCount == 0).toList();
+      without.sort((a, b) {
+        if (!a.isArchived && b.isArchived) return -1;
+        if (a.isArchived && !b.isArchived) return 1;
+        return 0;
+      });
+
+      if (!mounted || token != _loadToken) return;
+
+      setState(() {
+        _entries = [...withCache, ...without];
+        _loading = false;
+      });
+    } catch (e, st) {
+      AppLogger.w(_tag, '加载课程列表异常：$e\n$st');
+      if (mounted && token == _loadToken) {
+        setState(() => _loading = false);
       }
     }
-
-    if (!mounted) return;
-
-    final byCourse = <String, List<CachedLesson>>{};
-    for (final lesson in cached) {
-      byCourse.putIfAbsent(lesson.courseId, () => []).add(lesson);
-    }
-    final lessonIdsByCourseId = <String, List<String>>{
-      for (final e in byCourse.entries)
-        e.key: [for (final l in e.value) l.lessonId],
-    };
-    // 目录名 → CachedLesson：兜底关联和计数都要用
-    final cachedByDirName = <String, CachedLesson>{
-      for (final l in cached) l.lessonId: l,
-    };
-    // 已经被某门课认领的 lessonId —— 别在第三档「未关联」里再列一遍
-    final absorbed = <String>{};
-
-    final entries = <_CourseEntry>[];
-    final seen = <String>{};
-
-    // 远程课程（主）
-    for (final course in remote) {
-      final courseKey = course.classId.isNotEmpty ? course.classId : course.courseId;
-      if (courseKey.isEmpty || !seen.add(courseKey)) continue;
-      if (course.courseId.isNotEmpty) seen.add(course.courseId);
-      if (course.classId.isNotEmpty) seen.add(course.classId);
-
-      final ids = resolveLessonIdsForCourse(
-        courseId: course.courseId,
-        lessonIdsByCourseId: lessonIdsByCourseId,
-        cachedDirNames: cachedByDirName.keys.toSet(),
-        onLessonId: onLessonIdByCourse[course.courseId],
-      );
-      absorbed.addAll(ids);
-
-      entries.add(_CourseEntry(
-        courseId: course.courseId,
-        name: course.name,
-        teacher: course.teacher,
-        classId: course.classId,
-        cpi: course.cpi ?? '',
-        lessonIds: ids.toList(),
-        presentationCount: ids.fold(
-            0, (sum, id) => sum + (cachedByDirName[id]?.presentationCount ?? 0)),
-        fromCache: false,
-        isArchived: !course.state,
-      ));
-    }
-
-    // 有缓存、但远程列表里没有的（离线 / 退课 / 换了平台）也要列出来
-    for (final lesson in cached) {
-      if (lesson.courseId.isEmpty || seen.contains(lesson.courseId)) continue;
-      seen.add(lesson.courseId);
-      final lessons = byCourse[lesson.courseId]!;
-      absorbed.addAll(lessons.map((l) => l.lessonId));
-      entries.add(_CourseEntry(
-        courseId: lesson.courseId,
-        name: lesson.name,
-        teacher: '',
-        lessonIds: [for (final l in lessons) l.lessonId],
-        presentationCount:
-            lessons.fold(0, (sum, l) => sum + l.presentationCount),
-        fromCache: true,
-      ));
-    }
-
-    // 没有 courseId 的旧版缓存（meta.json 是 v4.8.8 才有的）：单独列出来，
-    // 用 lessonId 当身份，至少能看、能删。
-    // ⚠️ 已经被上面按「在课 lessonId」认领走的不再列一遍，否则同一份课件会出现两次。
-    for (final lesson in cached) {
-      if (lesson.courseId.isNotEmpty) continue;
-      if (absorbed.contains(lesson.lessonId)) continue;
-      entries.add(_CourseEntry(
-        courseId: '',
-        name: lesson.name,
-        teacher: '未关联课程 · 进一次这门课即可自动关联',
-        lessonIds: [lesson.lessonId],
-        presentationCount: lesson.presentationCount,
-        fromCache: true,
-      ));
-    }
-
-    // 有课件的排前面 —— 用户进这一页十有八九是冲着已缓存的课件来的。
-    // ⚠️ 不用 `sort` 拼比较函数：`List.sort` 不保证稳定，同组内顺序会被打乱。
-    final withCache = entries.where((e) => e.presentationCount > 0).toList();
-    withCache.sort((a, b) {
-      if (!a.isArchived && b.isArchived) return -1;
-      if (a.isArchived && !b.isArchived) return 1;
-      return 0;
-    });
-    final without = entries.where((e) => e.presentationCount == 0).toList();
-    without.sort((a, b) {
-      if (!a.isArchived && b.isArchived) return -1;
-      if (a.isArchived && !b.isArchived) return 1;
-      return 0;
-    });
-
-    setState(() {
-      _entries = [...withCache, ...without];
-      _loading = false;
-    });
   }
 
   Future<void> _openCourse(_CourseEntry entry) async {
@@ -339,7 +378,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
     }
     all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
 
-    if (!mounted) return;
+    if (!mounted || _entry != entry) return;
     setState(() {
       _presentations = all;
       _pptLoading = false;
@@ -356,7 +395,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
     setState(() => _activitiesLoading = true);
     try {
       final list = await RCCourseApi.getCourseActivities(targetId);
-      if (!mounted) return;
+      if (!mounted || _entry != entry) return;
       setState(() {
         _activities = list ?? [];
         _activitiesLoading = false;
@@ -366,7 +405,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
       }
     } catch (e) {
       AppLogger.w(_tag, '拉取雨课堂教学活动失败：$e');
-      if (mounted) setState(() => _activitiesLoading = false);
+      if (mounted && _entry == entry) setState(() => _activitiesLoading = false);
     }
   }
 
@@ -406,7 +445,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
         activity: act,
       );
 
-      if (!mounted) return;
+      if (!mounted || _entry != entry) return;
       if (pres != null) {
         _toast('抓取成功：${pres.title.isNotEmpty ? pres.title : act.title}（${pres.slides.length} 页）');
         if (act.coursewareId.isNotEmpty && !entry.lessonIds.contains(act.coursewareId)) {
@@ -423,10 +462,12 @@ class _CoursewarePageState extends State<CoursewarePage> {
           all.addAll(await CourseCache.listPresentations(lid));
         }
         all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
-        setState(() {
-          _presentations = all;
-          entry.presentationCount = all.length;
-        });
+        if (mounted && _entry == entry) {
+          setState(() {
+            _presentations = all;
+            entry.presentationCount = all.length;
+          });
+        }
       } else {
         _toast('未抓取到有效 PPT（可能老师未上传或该活动无课件）');
       }
@@ -504,18 +545,20 @@ class _CoursewarePageState extends State<CoursewarePage> {
       }
     }
 
-    if (mounted) {
+    if (mounted && _entry == entry) {
       final all = <CachedPresentation>[];
       for (final lid in entry.lessonIds) {
         all.addAll(await CourseCache.listPresentations(lid));
       }
       all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
-      setState(() {
-        _presentations = all;
-        entry.presentationCount = all.length;
-        _batchCrawling = false;
-      });
-      _toast('批量抓取完成：成功 $successCount / ${targets.length} 份');
+      if (mounted && _entry == entry) {
+        setState(() {
+          _presentations = all;
+          entry.presentationCount = all.length;
+          _batchCrawling = false;
+        });
+        _toast('批量抓取完成：成功 $successCount / ${targets.length} 份');
+      }
     }
   }
 
@@ -579,7 +622,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
       for (final lessonId in entry.lessonIds) {
         total += (await CourseCache.listPresentations(lessonId)).length;
       }
-      if (!mounted) return;
+      if (!mounted || _entry != entry) return;
       setState(() => entry.presentationCount = total);
     }
 
