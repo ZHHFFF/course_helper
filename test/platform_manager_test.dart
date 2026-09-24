@@ -274,5 +274,34 @@ void main() {
       await PlatformManager().setPlatform(PlatformType.rainClassroom);
       expect(PlatformManager().currentPlatform, equals(PlatformType.rainClassroom));
     });
+
+    testWidgets('高频往复并发切换平台（50次压力测试）保持最终一致性且无死锁', (tester) async {
+      await tester.pumpWidget(
+        MiuixTheme(
+          data: MiuixThemeData.light(),
+          child: const MaterialApp(
+            home: Scaffold(
+              body: CoursewarePage(),
+            ),
+          ),
+        ),
+      );
+      await pumpUntilSettled(tester);
+
+      final futures = <Future<void>>[];
+      for (int i = 0; i < 50; i++) {
+        final target = i.isEven ? PlatformType.rainClassroom : PlatformType.chaoxing;
+        futures.add(PlatformManager().setPlatform(target));
+      }
+
+      await Future.wait(futures);
+      await pumpUntilSettled(tester);
+
+      // 第 49 次 (i=49 为奇数) 为 chaoxing
+      expect(PlatformManager().currentPlatform, equals(PlatformType.chaoxing));
+      expect(PlatformManager().platformNotifier.value, equals(PlatformType.chaoxing));
+      expect(find.byType(CoursewarePage), findsOneWidget);
+    });
   });
 }
+
