@@ -1,9 +1,13 @@
 import 'package:flutter/foundation.dart';
 
 import 'api_service.dart';
+import 'rc_crawler.dart';
 import '../utils/encrypt.dart';
 import '../models/active.dart';
 import '../models/course.dart';
+import '../models/presentation.dart';
+import '../models/rc_activity.dart';
+import '../session/account.dart';
 
 class CXCourseApi extends Api {
   CXCourseApi([super.user]);
@@ -150,12 +154,25 @@ class RCCourseApi extends Api {
   static final Map<String, List<String>> _tokens = {};
 
   /// 获取当前用户的 bearerToken
-  String? get bearerToken => _tokens[user!.uid]?[0];
+  String? get bearerToken {
+    final uid = user?.uid ?? AccountManager.currentSessionId;
+    if (uid == null || uid.isEmpty) return null;
+    final token = _tokens[uid]?[0];
+    return (token != null && token.isNotEmpty) ? token : null;
+  }
 
-  String? get lessonToken => _tokens[user!.uid]?[1];
+  String? get lessonToken {
+    final uid = user?.uid ?? AccountManager.currentSessionId;
+    if (uid == null || uid.isEmpty) return null;
+    final token = _tokens[uid]?[1];
+    return (token != null && token.isNotEmpty) ? token : null;
+  }
 
   void _setToken(String bearerToken, String lessonToken) {
-    _tokens[user!.uid] = [bearerToken, lessonToken];
+    final uid = user?.uid ?? AccountManager.currentSessionId;
+    if (uid != null && uid.isNotEmpty) {
+      _tokens[uid] = [bearerToken, lessonToken];
+    }
   }
 
   static Future<Map<String, dynamic>?> getCourses() async {
@@ -226,40 +243,91 @@ class RCCourseApi extends Api {
   /// 才有）。课件页与缓存目录的关联必须**走 `courseId`**，见
   /// `CourseCache.findLessonIdsByCourseId`。
   static Future<List<Course>?> getAllCourses() async {
-    final courses = await getCourses();
-    if (courses == null) return null;
+    // 爬虫能力：并行抓取移动端学习列表、Web 端在修课程与 Web 端历史归档结课课程
+    try {
+      final results = await Future.wait([
+        getCourses(),
+        RCCrawler.getWebCourses(),
+        RCCrawler.getArchivedCourses(),
+      ]);
 
-    final data = courses['data'];
-    if (data is! List || data.isEmpty) return null;
+      final learningList = results[0] as Map<String, dynamic>?;
+      final webCourses = results[1] as List<Map<String, dynamic>>?;
+      final archivedCourses = results[2] as List<Map<String, dynamic>>?;
 
-    final list = <Course>[];
-    for (final item in data) {
-      if (item is! Map) continue;
-      try {
-        list.add(Course.fromRCJson(Map<String, dynamic>.from(item)));
-      } catch (e) {
-        debugPrint('解析课程失败：$e');
+      final merged = RCCrawler.mergeCourses(
+        learningList: learningList?['data'] is List ? learningList!['data'] as List : null,
+        webCourses: webCourses,
+        archivedCourses: archivedCourses,
+      );
+
+      return merged.isEmpty ? null : merged;
+    } catch (e) {
+      debugPrint('获取课程失败，尝试退回单一接口：$e');
+      final courses = await getCourses();
+      if (courses == null) return null;
+      final data = courses['data'];
+      if (data is! List || data.isEmpty) return null;
+      final list = <Course>[];
+      for (final item in data) {
+        if (item is! Map) continue;
+        try {
+          list.add(Course.fromRCJson(Map<String, dynamic>.from(item)));
+        } catch (_) {}
       }
+      return list.isEmpty ? null : list;
     }
-    return list.isEmpty ? null : list;
   }
 
-  Future<int?> checkIn(String lessonId) async {
+  /// 获取指定班级的教学活动与课件日志
+  static Future<List<RCActivity>?> getCourseActivities(String classroomId) =>
+      RCCrawler.getCourseActivities(classroomId);
+
+  /// 抓取指定历史课堂的课件 PPT 并落盘
+  static Future<Presentation?> crawlLessonPresentation({
+    required String lessonId,
+    required String courseId,
+    required String courseName,
+    String? classroomId,
+    String? presentationId,
+    List<String>? presentationIds,
+    RCActivity? activity,
+  }) =>
+      RCCrawler.crawlLessonPresentation(
+        lessonId: lessonId,
+        courseId: courseId,
+        courseName: courseName,
+        classroomId: classroomId,
+        presentationId: presentationId,
+        presentationIds: presentationIds,
+        activity: activity,
+      );
+
+  Future<int?> checkIn(String lessonId, {String? classroomId}) async {
     final url = '/api/v3/lesson/checkin';
-    final jsonData = {
-      'source': 21,
+    final jsonData = <String, dynamic>{
       'lessonId': lessonId,
-      'joinIfNotIn': true
+      if (classroomId != null && classroomId.isNotEmpty) 'classroomId': classroomId,
     };
-    final response = await ApiService.sendRequest(url, method: 'POST', body: jsonData, userId: user?.uid);
+    if (classroomId == null || classroomId.isEmpty) {
+      jsonData['source'] = 21;
+      jsonData['joinIfNotIn'] = true;
+    }
+    final headers = {
+      'xtbz': 'ykt',
+      'content-type': 'application/json',
+    };
+    final response = await ApiService.sendRequest(url, method: 'POST', body: jsonData, headers: headers, userId: user?.uid);
     if (response == null) return null;
     
     final data = response.data;
-    final int code = data['code'];
+    final int? code = data is Map ? data['code'] : null;
     if (code == 0) {
-      final bearerToken = response.headers.value('set-auth')!;
-      final lessonToken = data['data']['lessonToken'];
-      _setToken(bearerToken, lessonToken);
+      final bearerToken = response.headers.value('set-auth') ?? '';
+      final lessonToken = data['data']?['lessonToken']?.toString() ?? '';
+      if (bearerToken.isNotEmpty || lessonToken.isNotEmpty) {
+        _setToken(bearerToken, lessonToken);
+      }
       return 0;
     } else {
       return code;
@@ -273,9 +341,9 @@ class RCCourseApi extends Api {
     if (response == null) return null;
     
     final data = response.data;
-    final int code = data['code'];
+    final int? code = data is Map ? data['code'] : null;
     if (code == 0) {
-      final lessonId = data['data']['value'];
+      final lessonId = data['data']?['value']?.toString() ?? '';
       final response = await checkIn(lessonId);
       return response;
     } else {
@@ -285,12 +353,136 @@ class RCCourseApi extends Api {
 
   Future<Map<String, dynamic>?> getPresentation(String presentationId) async {
     final url = '/api/v3/lesson/presentation/fetch?presentation_id=$presentationId';
-    if (bearerToken == null) {
-      return null;
-    }
-    final headers = {'authorization': 'Bearer $bearerToken'};
+    final token = bearerToken;
+    final headers = <String, String>{
+      'xtbz': 'ykt',
+      if (token != null && token.isNotEmpty) 'authorization': 'Bearer $token',
+    };
     final response = await ApiService.sendRequest(url, headers: headers, userId: user?.uid);
-    return response?.data['data'];
+    if (response?.data is Map) {
+      final code = response!.data['code'];
+      if (code == 0 || code == null) {
+        final data = response.data['data'];
+        if (data is Map) return Map<String, dynamic>.from(data);
+      }
+    }
+    return null;
+  }
+
+  /// 获取学生端课堂总结与课件列表
+  Future<Map<String, dynamic>?> getLessonSummary(String lessonId) async {
+    final url = '/api/v3/lesson-summary/student?lesson_id=$lessonId';
+    final token = bearerToken;
+    final headers = <String, String>{
+      'xtbz': 'ykt',
+      if (token != null && token.isNotEmpty) 'authorization': 'Bearer $token',
+    };
+    final response = await ApiService.sendRequest(url, headers: headers, userId: user?.uid);
+    if (response?.data is Map && (response!.data['code'] == 0 || response.data['code'] == null)) {
+      final data = response.data['data'];
+      if (data is Map) return Map<String, dynamic>.from(data);
+    }
+    return null;
+  }
+
+  /// 从课堂总结中获取指定课件详情
+  Future<Map<String, dynamic>?> getLessonSummaryPresentation(String presentationId, String lessonId) async {
+    final url = '/api/v3/lesson-summary/student/presentation?presentation_id=$presentationId&lesson_id=$lessonId';
+    final token = bearerToken;
+    final headers = <String, String>{
+      'xtbz': 'ykt',
+      if (token != null && token.isNotEmpty) 'authorization': 'Bearer $token',
+    };
+    final response = await ApiService.sendRequest(url, headers: headers, userId: user?.uid);
+    if (response?.data is Map && (response!.data['code'] == 0 || response.data['code'] == null)) {
+      final data = response.data['data'];
+      if (data is Map) return Map<String, dynamic>.from(data);
+    }
+    return null;
+  }
+
+  /// 获取学生课堂报告中的课程/课件信息
+  Future<Map<String, dynamic>?> getClassroomReportLessonInfo(String lessonId) async {
+    final url = '/api/v3/classroom-report/student/lesson-info?lesson_id=$lessonId&lessonId=$lessonId';
+    final token = bearerToken;
+    final headers = <String, String>{
+      'xtbz': 'ykt',
+      if (token != null && token.isNotEmpty) 'authorization': 'Bearer $token',
+    };
+    final response = await ApiService.sendRequest(url, headers: headers, userId: user?.uid);
+    if (response?.data is Map && (response!.data['code'] == 0 || response.data['code'] == null)) {
+      final data = response.data['data'];
+      if (data is Map) return Map<String, dynamic>.from(data);
+    }
+    return null;
+  }
+
+  /// 获取课堂活跃课件
+  Future<Map<String, dynamic>?> getActivePresentation(String lessonId) async {
+    for (final path in ['/api/v3/lesson/presentation/active', '/api/v3/lesson/presentation/current', '/api/v3/lesson/presentation']) {
+      final url = '$path?lessonId=$lessonId';
+      final token = bearerToken;
+      final headers = <String, String>{
+        'xtbz': 'ykt',
+        if (token != null && token.isNotEmpty) 'authorization': 'Bearer $token',
+      };
+      final response = await ApiService.sendRequest(url, headers: headers, userId: user?.uid);
+      if (response?.data is Map && (response!.data['code'] == 0 || response.data['code'] == null)) {
+        final data = response.data['data'];
+        if (data is Map) return Map<String, dynamic>.from(data);
+      }
+    }
+    return null;
+  }
+
+  /// Web 端历史课程课后课件列表
+  Future<List<Map<String, dynamic>>?> getLessonAfterPresentations(String lessonId, String classroomId) async {
+    final url = '/v2/api/web/lessonafter/$lessonId/presentation?classroom_id=$classroomId';
+    final token = bearerToken;
+    final headers = <String, String>{
+      'xtbz': 'ykt',
+      if (token != null && token.isNotEmpty) 'authorization': 'Bearer $token',
+    };
+    final response = await ApiService.sendRequest(url, headers: headers, userId: user?.uid);
+    if (response?.data is Map && (response!.data['code'] == 0 || response.data['code'] == null)) {
+      final data = response.data['data'];
+      if (data is List) {
+        return data.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList();
+      }
+    }
+    return null;
+  }
+
+  /// Web 端历史课件详情
+  Future<Map<String, dynamic>?> getLessonAfterPresentationDetail(String presentationId, String classroomId) async {
+    final url = '/v2/api/web/lessonafter/presentation/$presentationId?classroom_id=$classroomId';
+    final token = bearerToken;
+    final headers = <String, String>{
+      'xtbz': 'ykt',
+      if (token != null && token.isNotEmpty) 'authorization': 'Bearer $token',
+    };
+    final response = await ApiService.sendRequest(url, headers: headers, userId: user?.uid);
+    if (response?.data is Map && (response!.data['code'] == 0 || response.data['code'] == null)) {
+      final data = response.data['data'];
+      if (data is Map) return Map<String, dynamic>.from(data);
+    }
+    return null;
+  }
+
+  /// Web 端课件资料卡片详情（Type 2）
+  Future<Map<String, dynamic>?> getCardsDetList(String coursewareId, String classroomId) async {
+    final url = '/v2/api/web/cards/detlist/$coursewareId?classroom_id=$classroomId';
+    final token = bearerToken;
+    final headers = <String, String>{
+      'xtbz': 'ykt',
+      if (token != null && token.isNotEmpty) 'authorization': 'Bearer $token',
+    };
+    final response = await ApiService.sendRequest(url, headers: headers, userId: user?.uid);
+    if (response?.data is Map && (response!.data['code'] == 0 || response.data['code'] == null)) {
+      final data = response.data['data'];
+      if (data is Map) return Map<String, dynamic>.from(data);
+    }
+    return null;
   }
 
   /// 答题请求的请求头。

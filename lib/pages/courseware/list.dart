@@ -30,16 +30,20 @@
 
 import 'dart:async';
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_miuix/miuix.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../api/course.dart';
 import '../../cache/course_cache.dart';
 import '../../models/course.dart';
+import '../../models/rc_activity.dart';
 import '../../platform.dart';
 import '../../session/account.dart';
 import '../../utils/app_logger.dart';
 import '../courses/content.dart';
+import '../presentation.dart';
 import '../widget/miuix_nav_metrics.dart';
 import 'viewer.dart';
 
@@ -62,6 +66,7 @@ class _CourseEntry {
     required this.fromCache,
     this.classId = '',
     this.cpi = '',
+    this.isArchived = false,
   });
 
   /// 空字符串 = 没有 meta.json 的旧版缓存（只能按 lessonId 定位）
@@ -82,6 +87,9 @@ class _CourseEntry {
   /// 学习通跳课程内容页要用
   final String classId;
   final String cpi;
+
+  /// 是否为已结课课程
+  final bool isArchived;
 }
 
 class CoursewarePage extends StatefulWidget {
@@ -113,6 +121,14 @@ class _CoursewarePageState extends State<CoursewarePage> {
   List<CachedPresentation> _presentations = [];
 
   CachedPresentation? _viewerPpt;
+
+  /// 云端教学活动与课件（来自雨课堂爬虫）
+  List<RCActivity> _activities = [];
+  bool _activitiesLoading = false;
+
+  /// 正在抓取课件的 lessonId / coursewareId 集合
+  final Set<String> _crawlingIds = {};
+  bool _batchCrawling = false;
 
   /// 待确认删除的课件（配合 `MiuixWindowBottomSheet`）
   CachedPresentation? _pendingDelete;
@@ -204,7 +220,10 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
     // 远程课程（主）
     for (final course in remote) {
-      if (course.courseId.isEmpty || !seen.add(course.courseId)) continue;
+      final courseKey = course.classId.isNotEmpty ? course.classId : course.courseId;
+      if (courseKey.isEmpty || !seen.add(courseKey)) continue;
+      if (course.courseId.isNotEmpty) seen.add(course.courseId);
+      if (course.classId.isNotEmpty) seen.add(course.classId);
 
       final ids = resolveLessonIdsForCourse(
         courseId: course.courseId,
@@ -224,6 +243,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
         presentationCount: ids.fold(
             0, (sum, id) => sum + (cachedByDirName[id]?.presentationCount ?? 0)),
         fromCache: false,
+        isArchived: !course.state,
       ));
     }
 
@@ -263,7 +283,17 @@ class _CoursewarePageState extends State<CoursewarePage> {
     // 有课件的排前面 —— 用户进这一页十有八九是冲着已缓存的课件来的。
     // ⚠️ 不用 `sort` 拼比较函数：`List.sort` 不保证稳定，同组内顺序会被打乱。
     final withCache = entries.where((e) => e.presentationCount > 0).toList();
+    withCache.sort((a, b) {
+      if (!a.isArchived && b.isArchived) return -1;
+      if (a.isArchived && !b.isArchived) return 1;
+      return 0;
+    });
     final without = entries.where((e) => e.presentationCount == 0).toList();
+    without.sort((a, b) {
+      if (!a.isArchived && b.isArchived) return -1;
+      if (a.isArchived && !b.isArchived) return 1;
+      return 0;
+    });
 
     setState(() {
       _entries = [...withCache, ...without];
@@ -298,6 +328,8 @@ class _CoursewarePageState extends State<CoursewarePage> {
       _stage = _Stage.pptList;
       _pptLoading = true;
       _presentations = [];
+      _activities = [];
+      _activitiesLoading = false;
       _topBarInset = 0;
     });
 
@@ -312,6 +344,219 @@ class _CoursewarePageState extends State<CoursewarePage> {
       _presentations = all;
       _pptLoading = false;
     });
+
+    // 自动拉取该课程的云端教学活动与课件
+    _loadActivities(entry);
+  }
+
+  Future<void> _loadActivities(_CourseEntry entry) async {
+    final targetId = entry.classId.isNotEmpty ? entry.classId : entry.courseId;
+    if (PlatformManager().isChaoxing || targetId.isEmpty) return;
+
+    setState(() => _activitiesLoading = true);
+    try {
+      final list = await RCCourseApi.getCourseActivities(targetId);
+      if (!mounted) return;
+      setState(() {
+        _activities = list ?? [];
+        _activitiesLoading = false;
+      });
+      if (list != null && list.isNotEmpty) {
+        AppLogger.i(_tag, '成功从雨课堂拉取 ${list.length} 个教学活动');
+      }
+    } catch (e) {
+      AppLogger.w(_tag, '拉取雨课堂教学活动失败：$e');
+      if (mounted) setState(() => _activitiesLoading = false);
+    }
+  }
+
+  /// 查找活动对应的本地已缓存课件
+  CachedPresentation? _findCachedPresentation(RCActivity act) {
+    return _presentations.firstWhereOrNull((p) =>
+        p.lessonId == act.coursewareId ||
+        p.lessonId == act.id ||
+        (act.presentationId != null && (p.presentationId == act.presentationId || p.lessonId == act.presentationId)) ||
+        act.presentationIds.contains(p.presentationId) ||
+        act.presentationIds.contains(p.lessonId) ||
+        p.presentationId == act.coursewareId ||
+        p.presentationId == act.id);
+  }
+
+  /// 判定活动是否已有本地缓存
+  bool _isActivityCached(RCActivity act) => _findCachedPresentation(act) != null;
+
+  /// 抓取单个活动对应的课件 PPT
+  Future<void> _crawlActivity(RCActivity act) async {
+    final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
+    if (_crawlingIds.contains(crawlKey)) return;
+    final entry = _entry;
+    if (entry == null) return;
+
+    setState(() => _crawlingIds.add(crawlKey));
+    _toast('正在抓取「${act.title}」课件 PPT...');
+
+    try {
+      final pres = await RCCourseApi.crawlLessonPresentation(
+        lessonId: act.coursewareId,
+        courseId: entry.courseId,
+        courseName: entry.name,
+        classroomId: entry.classId.isNotEmpty ? entry.classId : act.classroomId,
+        presentationId: act.presentationId,
+        presentationIds: act.presentationIds,
+        activity: act,
+      );
+
+      if (!mounted) return;
+      if (pres != null) {
+        _toast('抓取成功：${pres.title.isNotEmpty ? pres.title : act.title}（${pres.slides.length} 页）');
+        if (act.coursewareId.isNotEmpty && !entry.lessonIds.contains(act.coursewareId)) {
+          entry.lessonIds.add(act.coursewareId);
+        }
+        if (act.id.isNotEmpty && !entry.lessonIds.contains(act.id)) {
+          entry.lessonIds.add(act.id);
+        }
+        if (act.presentationId != null && act.presentationId!.isNotEmpty && !entry.lessonIds.contains(act.presentationId!)) {
+          entry.lessonIds.add(act.presentationId!);
+        }
+        final all = <CachedPresentation>[];
+        for (final lid in entry.lessonIds) {
+          all.addAll(await CourseCache.listPresentations(lid));
+        }
+        all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+        setState(() {
+          _presentations = all;
+          entry.presentationCount = all.length;
+        });
+      } else {
+        _toast('未抓取到有效 PPT（可能老师未上传或该活动无课件）');
+      }
+    } catch (e) {
+      AppLogger.w(_tag, '抓取课件失败：$e');
+      _toast('抓取课件失败：$e');
+    } finally {
+      if (mounted) {
+        setState(() => _crawlingIds.remove(crawlKey));
+      }
+    }
+  }
+
+  /// 批量抓取所有未缓存的历史课堂课件（支持课堂教学 Type 14 与课件资料 Type 2）
+  Future<void> _crawlAllUncached() async {
+    if (_batchCrawling) return;
+    final entry = _entry;
+    if (entry == null) return;
+
+    final targets = _activities.where((a) => (a.isLesson || a.isCourseware) && !_isActivityCached(a)).toList();
+
+    if (targets.isEmpty) {
+      _toast('没有需要抓取的课件（全部已缓存或暂无课件活动）');
+      return;
+    }
+
+    setState(() => _batchCrawling = true);
+    _toast('开始批量抓取 ${targets.length} 份课件...');
+
+    var successCount = 0;
+    for (final act in targets) {
+      if (!mounted || _entry != entry) break;
+      final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
+      setState(() => _crawlingIds.add(crawlKey));
+      try {
+        final pres = await RCCourseApi.crawlLessonPresentation(
+          lessonId: act.coursewareId,
+          courseId: entry.courseId,
+          courseName: entry.name,
+          classroomId: entry.classId.isNotEmpty ? entry.classId : act.classroomId,
+          presentationId: act.presentationId,
+          presentationIds: act.presentationIds,
+          activity: act,
+        );
+        if (pres != null) {
+          successCount++;
+          if (act.coursewareId.isNotEmpty && !entry.lessonIds.contains(act.coursewareId)) {
+            entry.lessonIds.add(act.coursewareId);
+          }
+          if (act.id.isNotEmpty && !entry.lessonIds.contains(act.id)) {
+            entry.lessonIds.add(act.id);
+          }
+          if (act.presentationId != null && act.presentationId!.isNotEmpty && !entry.lessonIds.contains(act.presentationId!)) {
+            entry.lessonIds.add(act.presentationId!);
+          }
+          // 实时增量更新已缓存列表与计数，给用户即时反馈
+          final all = <CachedPresentation>[];
+          for (final lid in entry.lessonIds) {
+            all.addAll(await CourseCache.listPresentations(lid));
+          }
+          all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+          if (mounted && _entry == entry) {
+            setState(() {
+              _presentations = all;
+              entry.presentationCount = all.length;
+            });
+          }
+        }
+      } catch (e) {
+        AppLogger.w(_tag, '批量抓取课件出错 $crawlKey：$e');
+      } finally {
+        if (mounted) {
+          setState(() => _crawlingIds.remove(crawlKey));
+        }
+      }
+    }
+
+    if (mounted) {
+      final all = <CachedPresentation>[];
+      for (final lid in entry.lessonIds) {
+        all.addAll(await CourseCache.listPresentations(lid));
+      }
+      all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+      setState(() {
+        _presentations = all;
+        entry.presentationCount = all.length;
+        _batchCrawling = false;
+      });
+      _toast('批量抓取完成：成功 $successCount / ${targets.length} 份');
+    }
+  }
+
+  void _showReplayDialog(RCActivity act) {
+    final replayUrl = act.replayUrl ?? '';
+    final colors = MiuixTheme.of(context).colors;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('课堂回放视频流'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('活动：${act.title}', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            const Text('回放/直播流地址：', style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 4),
+            SelectableText(
+              replayUrl,
+              style: TextStyle(fontSize: 12, color: colors.primary),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              // ignore: deprecated_member_use
+              Share.share(replayUrl, subject: '雨课堂回放：${act.title}');
+            },
+            child: const Text('分享 / 复制'),
+          ),
+        ],
+      ),
+    );
   }
 
   // ── 第二层：某门课的课件列表 ──────────────────────────────────────────
@@ -368,6 +613,8 @@ class _CoursewarePageState extends State<CoursewarePage> {
         case _Stage.pptList:
           _stage = _Stage.courseList;
           _entry = null;
+          _activities = [];
+          _activitiesLoading = false;
         case _Stage.courseList:
           break;
       }
@@ -412,6 +659,36 @@ class _CoursewarePageState extends State<CoursewarePage> {
                   onPressed: _goBack,
                   child: const Icon(Icons.arrow_back_ios_new, size: 20),
                 ),
+          actions: _stage == _Stage.pptList && !PlatformManager().isChaoxing
+              ? [
+                  if (_activities.isNotEmpty)
+                    MiuixIconButton(
+                      onPressed: _batchCrawling ? null : _crawlAllUncached,
+                      child: _batchCrawling
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.download_for_offline_outlined),
+                    ),
+                  MiuixIconButton(
+                    onPressed: _activitiesLoading
+                        ? null
+                        : () {
+                            final entry = _entry;
+                            if (entry != null) _loadActivities(entry);
+                          },
+                    child: _activitiesLoading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh),
+                  ),
+                ]
+              : null,
         ),
         snackbarHost: MiuixSnackbarHost(
           state: _snackbarHost,
@@ -525,12 +802,36 @@ class _CoursewarePageState extends State<CoursewarePage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    MiuixText(
-                      entry.name,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: MiuixText(
+                            entry.name,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (entry.isArchived) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colors.secondaryContainer,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: MiuixText(
+                              '已结课',
+                              fontSize: 11,
+                              color: colors.onSecondaryContainer,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     if (entry.teacher.isNotEmpty) ...[
                       const SizedBox(height: 4),
@@ -569,22 +870,449 @@ class _CoursewarePageState extends State<CoursewarePage> {
   Widget _buildPptList(BuildContext context, EdgeInsets contentPadding) {
     if (_pptLoading) return const Center(child: CircularProgressIndicator());
 
-    if (_presentations.isEmpty) {
-      return _buildEmpty(
+    final entry = _entry;
+    final extraCached = _presentations
+        .where((p) => !_activities.any((a) =>
+            p.lessonId == a.coursewareId ||
+            p.lessonId == a.id ||
+            (a.presentationId != null && (p.presentationId == a.presentationId || p.lessonId == a.presentationId)) ||
+            a.presentationIds.contains(p.presentationId) ||
+            a.presentationIds.contains(p.lessonId) ||
+            p.presentationId == a.coursewareId ||
+            p.presentationId == a.id))
+        .toList();
+
+    final hasContent = _activities.isNotEmpty || _presentations.isNotEmpty;
+
+    final items = <Widget>[];
+
+    if (entry != null) {
+      items.add(_buildCourseSummaryCard(context, entry));
+    }
+
+    if (_activitiesLoading && _activities.isEmpty) {
+      items.add(
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 40),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    } else if (_activities.isNotEmpty) {
+      items.add(_buildSectionHeader(context, '教学活动与课件 (${_activities.length})'));
+      for (final act in _activities) {
+        final cachedPpt = _findCachedPresentation(act);
+        items.add(_buildActivityTile(context, act, cachedPpt));
+      }
+    }
+
+    if (extraCached.isNotEmpty) {
+      items.add(_buildSectionHeader(
         context,
-        title: '这门课还没有缓存课件',
-        summary: '进课堂打开 PPT 时会自动缓存到本地，之后断网也能看',
+        _activities.isNotEmpty ? '其他本地已缓存课件 (${extraCached.length})' : '已缓存课件 (${extraCached.length})',
+      ));
+      for (final ppt in extraCached) {
+        items.add(_buildPptTile(context, ppt));
+      }
+    }
+
+    if (!hasContent && !_activitiesLoading) {
+      items.add(const SizedBox(height: 32));
+      items.add(
+        _buildEmpty(
+          context,
+          title: '这门课暂无课件与教学活动',
+          summary: '进课堂或点击右上角刷新可拉取云端活动与课件',
+        ),
       );
     }
 
-    return ListView.builder(
-      itemCount: _presentations.length,
-      padding: EdgeInsets.only(
-        top: _topBarInset,
-        bottom: contentPadding.bottom + 16,
+    return RefreshIndicator(
+      onRefresh: () async {
+        if (entry != null) await _loadActivities(entry);
+      },
+      child: ListView(
+        padding: EdgeInsets.only(
+          top: _topBarInset,
+          bottom: contentPadding.bottom + 16,
+        ),
+        children: items,
       ),
-      itemBuilder: (context, index) =>
-          _buildPptTile(context, _presentations[index]),
+    );
+  }
+
+  Widget _buildCourseSummaryCard(BuildContext context, _CourseEntry entry) {
+    final colors = MiuixTheme.of(context).colors;
+    final totalActs = _activities.length;
+    final uncachedLessons = _activities
+        .where((a) => (a.isLesson || a.isCourseware) && !_isActivityCached(a))
+        .length;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: MiuixCard(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        MiuixText(
+                          entry.name,
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        if (entry.teacher.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          MiuixText(
+                            entry.teacher,
+                            fontSize: 13,
+                            color: colors.onSurfaceVariantSummary,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (entry.isArchived)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: colors.secondaryContainer,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: MiuixText(
+                        '已结课',
+                        fontSize: 11,
+                        color: colors.onSecondaryContainer,
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  _buildStatChip(
+                    context,
+                    label: '${entry.presentationCount} 份已缓存',
+                    isHighlight: entry.presentationCount > 0,
+                  ),
+                  if (!PlatformManager().isChaoxing && entry.classId.isNotEmpty) ...[
+                    if (_activitiesLoading)
+                      _buildStatChip(context, label: '正在拉取云端活动...', isHighlight: false)
+                    else
+                      _buildStatChip(
+                        context,
+                        label: '$totalActs 个云端活动',
+                        isHighlight: false,
+                      ),
+                  ],
+                ],
+              ),
+              if (!PlatformManager().isChaoxing &&
+                  entry.classId.isNotEmpty &&
+                  uncachedLessons > 0) ...[
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    MiuixButton(
+                      onPressed: _batchCrawling ? null : _crawlAllUncached,
+                      colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_batchCrawling) ...[
+                            const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            ),
+                            const SizedBox(width: 6),
+                          ] else ...[
+                            const Icon(Icons.download_for_offline_outlined, size: 16),
+                            const SizedBox(width: 4),
+                          ],
+                          MiuixText(
+                            _batchCrawling ? '正在批量抓取...' : '抓取全部未缓存 ($uncachedLessons 份)',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatChip(
+    BuildContext context, {
+    required String label,
+    required bool isHighlight,
+  }) {
+    final colors = MiuixTheme.of(context).colors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: isHighlight ? colors.primaryContainer : colors.secondaryContainer,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: MiuixText(
+        label,
+        fontSize: 11,
+        color: isHighlight ? colors.onPrimaryContainer : colors.onSecondaryContainer,
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(BuildContext context, String title) {
+    final colors = MiuixTheme.of(context).colors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+      child: MiuixText(
+        title,
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        color: colors.onSurfaceVariantSummary,
+      ),
+    );
+  }
+
+  Widget _buildActivityTile(
+    BuildContext context,
+    RCActivity act,
+    CachedPresentation? cachedPpt,
+  ) {
+    final colors = MiuixTheme.of(context).colors;
+    final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
+    final isCrawling = _crawlingIds.contains(crawlKey);
+    final isCached = cachedPpt != null;
+
+    IconData typeIcon;
+    Color iconColor;
+
+    if (act.isLesson) {
+      typeIcon = Icons.co_present_outlined;
+      iconColor = colors.primary;
+    } else if (act.isCourseware) {
+      typeIcon = Icons.description_outlined;
+      iconColor = const Color(0xFF26A69A);
+    } else if (act.hasReplay) {
+      typeIcon = Icons.play_circle_outline;
+      iconColor = const Color(0xFFAB47BC);
+    } else {
+      typeIcon = Icons.event_note_outlined;
+      iconColor = colors.onSurfaceVariantActions;
+    }
+
+    final dateStr = act.createdAt > 0
+        ? _formatDate(act.createdAt)
+        : '';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: MiuixCard(
+        feedbackType: MiuixPressFeedbackType.sink,
+        onPressed: isCached
+            ? () => _openViewer(cachedPpt)
+            : (act.isLesson || act.isCourseware
+                ? () => _crawlActivity(act)
+                : (act.hasReplay ? () => _showReplayDialog(act) : null)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: iconColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: Icon(typeIcon, size: 20, color: iconColor),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 5,
+                                vertical: 1.5,
+                              ),
+                              decoration: BoxDecoration(
+                                color: iconColor.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: MiuixText(
+                                act.typeName,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: iconColor,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            if (isCached)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                  vertical: 1.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: colors.primaryContainer,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: MiuixText(
+                                  '已缓存',
+                                  fontSize: 10,
+                                  color: colors.onPrimaryContainer,
+                                ),
+                              )
+                            else
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                  vertical: 1.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: colors.secondaryContainer,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: MiuixText(
+                                  '未缓存',
+                                  fontSize: 10,
+                                  color: colors.onSecondaryContainer,
+                                ),
+                              ),
+                            if (act.hasReplay) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                  vertical: 1.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFAB47BC).withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: const MiuixText(
+                                  '含回放',
+                                  fontSize: 10,
+                                  color: Color(0xFFAB47BC),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        MiuixText(
+                          act.title.isNotEmpty ? act.title : '未命名活动',
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 4),
+                        MiuixText(
+                          isCached
+                              ? '${cachedPpt.slideCount} 页 · ${_formatDate(cachedPpt.savedAt)} · ${_formatBytes(cachedPpt.bytes)}'
+                              : (dateStr.isNotEmpty ? dateStr : '点击可抓取课件到本地'),
+                          fontSize: 12,
+                          color: colors.onSurfaceVariantSummary,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (act.hasReplay)
+                    MiuixTextButton(
+                      '回放视频',
+                      onPressed: () => _showReplayDialog(act),
+                    ),
+                  if (isCached) ...[
+                    MiuixTextButton(
+                      '查看课件',
+                      onPressed: () => _openViewer(cachedPpt),
+                    ),
+                    MiuixIconButton(
+                      onPressed: () => _askDelete(cachedPpt),
+                      child: Icon(
+                        Icons.delete_outline,
+                        size: 20,
+                        color: colors.onSurfaceVariantActions,
+                      ),
+                    ),
+                  ] else if (isCrawling) ...[
+                    const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 8),
+                    MiuixText(
+                      '正在抓取...',
+                      fontSize: 12,
+                      color: colors.primary,
+                    ),
+                    const SizedBox(width: 8),
+                  ] else if (act.isLesson || act.isCourseware) ...[
+                    MiuixTextButton(
+                      '抓取课件',
+                      onPressed: () => _crawlActivity(act),
+                    ),
+                  ],
+                  if (act.isLesson && !PlatformManager().isChaoxing) ...[
+                    MiuixIconButton(
+                      onPressed: () {
+                        final entry = _entry;
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => PresentationPage(
+                              lessonId: act.coursewareId,
+                              title: act.title,
+                              courseId: entry?.courseId ?? '',
+                            ),
+                          ),
+                        );
+                      },
+                      child: Icon(
+                        Icons.open_in_new,
+                        size: 19,
+                        color: colors.onSurfaceVariantActions,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

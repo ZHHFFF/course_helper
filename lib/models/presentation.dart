@@ -50,15 +50,31 @@ class Presentation {
   });
 
   factory Presentation.fromJson(Map<String, dynamic> json) {
+    final presInfo = json['presentation'] is Map ? json['presentation'] as Map : null;
+    final rawSlides = json['slides'] ?? json['Slides'] ?? json['slide_list'] ?? json['slideList'] ?? presInfo?['slides'];
+
+    List<PresentationSlide> slidesList = [];
+    if (rawSlides is List) {
+      for (final s in rawSlides) {
+        if (s is Map) {
+          try {
+            slidesList.add(PresentationSlide.fromJson(Map<String, dynamic>.from(s)));
+          } catch (_) {}
+        }
+      }
+    }
+
+    final rawTitle = json['title'] ?? json['name'] ?? presInfo?['title'] ?? presInfo?['name'] ?? '';
+    final rawWidth = json['width'] ?? presInfo?['width'] ?? 720;
+    final rawHeight = json['height'] ?? presInfo?['height'] ?? 540;
+    final rawVersion = json['version'] ?? presInfo?['version'] ?? '1.0';
+
     return Presentation(
-      title: json['title'] ?? '',
-      width: json['width'] ?? 720,
-      height: json['height'] ?? 540,
-      version: json['version'] ?? '1.0',
-      slides: (json['slides'] as List?)
-              ?.map((s) => PresentationSlide.fromJson(s))
-              .toList() ??
-          [],
+      title: rawTitle.toString(),
+      width: (rawWidth as num?)?.toInt() ?? int.tryParse(rawWidth.toString()) ?? 720,
+      height: (rawHeight as num?)?.toInt() ?? int.tryParse(rawHeight.toString()) ?? 540,
+      version: rawVersion.toString(),
+      slides: slidesList,
     );
   }
 }
@@ -85,18 +101,25 @@ class PresentationSlide {
   });
 
   factory PresentationSlide.fromJson(Map<String, dynamic> json) {
+    final rawId = json['id'] ?? json['slide_id'] ?? json['slideId'] ?? '';
+    final rawIndex = json['index'] ?? json['Index'] ?? 0;
+    final rawCover = json['cover'] ?? json['Cover'] ?? json['cover_url'] ?? json['image'] ?? json['thumbnail'] ?? '';
+    final rawCoverAlt = json['coverAlt'] ?? json['cover_alt'] ?? '';
+    final rawThumb = json['thumbnail'] ?? json['thumbnail_url'] ?? rawCover;
+
     return PresentationSlide(
-      id: json['id'] ?? '',
-      index: json['index'] ?? 0,
-      cover: json['cover'] ?? '',
-      coverAlt: json['coverAlt'] ?? '',
-      thumbnail: json['thumbnail'] ?? '',
+      id: rawId.toString(),
+      index: (rawIndex as num?)?.toInt() ?? int.tryParse(rawIndex.toString()) ?? 0,
+      cover: rawCover.toString(),
+      coverAlt: rawCoverAlt.toString(),
+      thumbnail: rawThumb.toString(),
       shapes: (json['shapes'] as List?)
-              ?.map((s) => Shape.fromJson(s))
+              ?.map((s) => s is Map ? Shape.fromJson(Map<String, dynamic>.from(s)) : null)
+              .whereType<Shape>()
               .toList() ??
           [],
-      note: json['note'] ?? '',
-      problem: json['problem'] != null ? Problem.fromJson(json['problem']) : null,
+      note: (json['note'] ?? '').toString(),
+      problem: json['problem'] is Map ? Problem.fromJson(Map<String, dynamic>.from(json['problem'])) : null,
     );
   }
 }

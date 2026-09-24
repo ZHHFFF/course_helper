@@ -437,14 +437,14 @@ class CourseCache {
           final json = await readJson(entity);
           if (json == null) continue;
           final data = json['data'];
-          final slides = data is Map ? data['slides'] : null;
+          final slides = data is Map ? (data['slides'] ?? data['Slides'] ?? data['presentation']?['slides']) : null;
 
           result.add(CachedPresentation(
             lessonId: lessonId,
             presentationId: (json['presentationId'] ??
                     p.basenameWithoutExtension(entity.path))
                 .toString(),
-            title: (data is Map ? (data['title'] ?? '') : '').toString(),
+            title: (data is Map ? (data['title'] ?? data['name'] ?? data['presentation']?['title'] ?? data['presentation']?['name'] ?? '') : '').toString(),
             slideCount: slides is List ? slides.length : 0,
             savedAt: (json['savedAt'] as num?)?.toInt() ?? 0,
             bytes: await entity.length(),
