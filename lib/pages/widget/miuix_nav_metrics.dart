@@ -64,11 +64,3 @@ double miuixNavBarOccupied(BuildContext context) {
   final safeBottom = MediaQuery.viewPaddingOf(context).bottom;
   return safeBottom + miuixNavBarContentHeight;
 }
-
-/// 页面滚动列表底部需要预留的留白高度（= 底栏占位 + 16dp 呼吸间距）。
-///
-/// 提示：能塞进 `MiuixScaffold.bottomBar` 的页面优先用 [miuixNavBarOccupied] ——
-/// 脚手架会把 `contentPadding.bottom` 与 FAB 抬高一起算好，只有一个数据来源；
-/// 本函数是给「不方便用脚手架槽位」的页面兜底（例如自定义 `Stack` 布局）。
-double miuixNavBarClearance(BuildContext context) =>
-    miuixNavBarOccupied(context) + 16;

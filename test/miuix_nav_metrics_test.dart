@@ -1,11 +1,13 @@
 // Miuix 模糊底栏的几何契约测试。
 //
 // 背景：底栏是 `Stack` + `Positioned` 贴边叠加的，**不占** Scaffold 的
-// `bottomNavigationBar` 槽位。因此有三处要依赖「底栏占位高度」这一个数据：
-//   1. 页面滚动内容底部留白（避免最后一项被盖）→ miuixNavBarClearance
-//   2. 页面塞进 `MiuixScaffold.bottomBar` 的透明占位 → miuixNavBarOccupied
-//   3. 全局 `MediaQuery.padding.bottom` 注入（让 SnackBar / BottomSheet
+// `bottomNavigationBar` 槽位。因此有两处要依赖「底栏占位高度」这一个数据：
+//   1. 页面塞进 `MiuixScaffold.bottomBar` 的透明占位 → miuixNavBarOccupied
+//   2. 全局 `MediaQuery.padding.bottom` 注入（让 SnackBar / BottomSheet
 //      自动抬到底栏之上）                  → miuixNavBarOccupiedHeight
+//
+// （原先还有第 3 处 `miuixNavBarClearance`，但它在 `lib/` 里零调用、
+//   只有本测试在测它自己 —— 2026-09-24 的马尾辫审查确认后连同用例一起删除。）
 //
 // 本测试锁定三者的数值关系，并守住踩过的坑：
 //   - 计算必须读 `viewPadding`，**不能**读被 `_GlassNavInsets` 撑大过的 `padding`；
@@ -108,27 +110,6 @@ void main() {
       // 只算一次 64，而不是 16 + 64 + 64
       expect(occupied, 16 + miuixNavBarOccupiedHeight);
       expect(occupied, isNot(16 + miuixNavBarOccupiedHeight * 2));
-    });
-  });
-
-  group('miuixNavBarClearance', () {
-    testWidgets('等于 占位高度 + 16 呼吸间距', (tester) async {
-      const mq = MediaQueryData(viewPadding: EdgeInsets.only(bottom: 16));
-
-      final occupied = await _inMediaQuery(tester, mq, miuixNavBarOccupied);
-      final clearance = await _inMediaQuery(tester, mq, miuixNavBarClearance);
-
-      expect(clearance, occupied + 16);
-      expect(clearance, 16 + miuixNavBarOccupiedHeight + 16);
-    });
-
-    testWidgets('无安全区时 = 占位高度 + 16', (tester) async {
-      final clearance = await _inMediaQuery(
-        tester,
-        const MediaQueryData(),
-        miuixNavBarClearance,
-      );
-      expect(clearance, miuixNavBarOccupiedHeight + 16);
     });
   });
 }

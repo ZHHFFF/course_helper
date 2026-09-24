@@ -415,6 +415,15 @@ enum AnswerSourceType {
   aiProvider,
 }
 
+/// ⚠️ **这个 extension 是活的，不要删！**
+///
+/// 2026-09-24 的马尾辫审查曾把它判为「零引用死代码」并删除 —— **误判**。
+/// 原因是扫描器只搜了 extension 的**类名** `AnswerSourceTypeExtension`，
+/// 而调用点写的是**成员名** `sourceType.label`：
+///   - `pages/widget/suggested_answer_card.dart:182`
+///   - `test/answer_search_test.dart:241-242`
+///
+/// 教训：**判定 extension 是否死掉，必须搜它的成员名，不能只搜类名。**
 extension AnswerSourceTypeExtension on AnswerSourceType {
   String get label {
     switch (this) {
