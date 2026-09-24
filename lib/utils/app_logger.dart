@@ -17,10 +17,48 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// 日志级别
-///
-/// 注：这里曾经有一个 `extension LogLevelLabel on LogLevel`（`label` 文案 +
-/// `weight` 筛选权重），但全仓库**零调用** —— 2026-09-24 的马尾辫审查确认后删除。
 enum LogLevel { debug, info, warn, error }
+
+/// ⚠️ **这个 extension 是活的，不要删！**
+///
+/// 2026-09-24 的马尾辫审查曾把它判为「零引用死代码」并删除 —— **误判**。
+/// 原因是扫描器只搜了 extension 的**类名** `LogLevelLabel`，
+/// 而调用点写的是**成员名** `level.label` / `level.weight`。
+///
+/// 实际调用点（还原时已核实）：
+///   - `label`：本文件 2 处、`log_viewer.dart:369`、
+///     `keep_alive_checker.dart:368`、`test/app_logger_test.dart` 4 处
+///   - `weight`：本文件 `matches()`、`test/app_logger_test.dart` 6 处
+///
+/// 教训：**判定 extension 是否死掉，必须搜它的成员名，不能只搜类名。**
+extension LogLevelLabel on LogLevel {
+  String get label {
+    switch (this) {
+      case LogLevel.debug:
+        return 'DEBUG';
+      case LogLevel.info:
+        return 'INFO';
+      case LogLevel.warn:
+        return 'WARN';
+      case LogLevel.error:
+        return 'ERROR';
+    }
+  }
+
+  /// 用于筛选的权重，越大越严重
+  int get weight {
+    switch (this) {
+      case LogLevel.debug:
+        return 0;
+      case LogLevel.info:
+        return 1;
+      case LogLevel.warn:
+        return 2;
+      case LogLevel.error:
+        return 3;
+    }
+  }
+}
 
 /// 一条日志
 class LogEntry {

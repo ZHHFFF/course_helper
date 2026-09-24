@@ -2,8 +2,13 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:crypto/crypto.dart';
-// ⚠️ `export.dart` 已包含 `pointycastle.dart` 的全部导出 —— 两行都写是冗余
-// （2026-09-24 马尾辫审查发现，已合并为一行）
+// ⚠️ 这两行**不是冗余，不能合并**！
+// `export.dart` 和 `pointycastle.dart` 的导出集合**并不互相包含** ——
+// `ASN1Parser` / `ASN1Sequence` / `ASN1BitString` / `ASN1Integer`
+// （下面 `_parsePublicKey` 在用）只在 `pointycastle.dart` 里导出。
+// 2026-09-24 马尾辫审查时误判为「双 import 冗余」并合并，导致 6 个编译错误，
+// 同日已还原。详见 docs/马尾辫审查_第二轮_2026-09-24.md。
+import 'package:pointycastle/pointycastle.dart';
 import 'package:pointycastle/export.dart';
 import 'package:convert/convert.dart';
 import 'package:uuid/uuid.dart';

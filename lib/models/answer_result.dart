@@ -407,14 +407,30 @@ class AnswerSearchResult {
 }
 
 /// 答案来源类型
-///
-/// 注：这里曾经有一个 `extension AnswerSourceTypeExtension on AnswerSourceType`
-/// （把枚举转成「内置答案」/「AI检索」文案），但全仓库**零调用** ——
-/// 2026-09-24 的马尾辫审查确认后删除。
 enum AnswerSourceType {
   /// 内置答案 - 从服务器返回数据中提取（学习通 isanswer=true）
   builtin,
 
   /// AI 检索 - 通过 AI API 获取
   aiProvider,
+}
+
+/// ⚠️ **这个 extension 是活的，不要删！**
+///
+/// 2026-09-24 的马尾辫审查曾把它判为「零引用死代码」并删除 —— **误判**。
+/// 原因是扫描器只搜了 extension 的**类名** `AnswerSourceTypeExtension`，
+/// 而调用点写的是**成员名** `sourceType.label`：
+///   - `pages/widget/suggested_answer_card.dart:182`
+///   - `test/answer_search_test.dart:241-242`
+///
+/// 教训：**判定 extension 是否死掉，必须搜它的成员名，不能只搜类名。**
+extension AnswerSourceTypeExtension on AnswerSourceType {
+  String get label {
+    switch (this) {
+      case AnswerSourceType.builtin:
+        return '内置答案';
+      case AnswerSourceType.aiProvider:
+        return 'AI检索';
+    }
+  }
 }
