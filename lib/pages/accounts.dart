@@ -157,10 +157,33 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     );
   }
 
-  /// 先收起抽屉再执行动作：抽屉若还开着，新页面的入场动画会和抽屉的退场动画打架。
+  VoidCallback? _pendingAddAccountAction;
+
+  /// 先收起抽屉，待抽屉退场动画完全播完并从 rootOverlay 销毁节点后再执行跳转动作。
+  ///
+  /// ⚠️ 核心根因：若在抽屉退场中同步执行 push，新路由会将本页 TickerMode 置为 false，
+  /// 导致 MiuixWindowBottomSheet 退出弹簧动画冻结在半途，残留在 rootOverlay 上的全屏
+  /// 遮罩节点（带 opaque GestureDetector）永远无法销毁，拦截了新页面上所有点击，
+  /// 表现为登录页所有按钮与输入框「点击一点响应没有」。
   void _closeAddSheetThen(VoidCallback action) {
+    _pendingAddAccountAction = action;
     setState(() => _showAddAccountSheet = false);
-    action();
+    // 双保险保护：600ms 兜底执行（Miuix 弹簧退场周期约 200ms，避开慢速设备竞争）
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (mounted && _pendingAddAccountAction != null) {
+        final act = _pendingAddAccountAction;
+        _pendingAddAccountAction = null;
+        act!();
+      }
+    });
+  }
+
+  void _onAddSheetDismissFinished() {
+    if (_pendingAddAccountAction != null) {
+      final act = _pendingAddAccountAction;
+      _pendingAddAccountAction = null;
+      act!();
+    }
   }
 
   /// 「添加账号」底部抽屉：三种登录方式。
@@ -195,6 +218,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       // 加上行自己的 16dp 正好 28dp，与本页账号卡片的缩进观感一致。
       insideMargin: const Size(12, 0),
       onDismissRequest: () => setState(() => _showAddAccountSheet = false),
+      onDismissFinished: _onAddSheetDismissFinished,
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [

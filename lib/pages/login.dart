@@ -798,29 +798,21 @@ class _LoginPageState extends State<LoginPage> {
       builder: (field) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              if (!_passwordFocusNode.hasFocus) {
-                _passwordFocusNode.requestFocus();
-              }
-            },
-            child: MiuixTextField(
-              controller: _passwordController,
-              focusNode: _passwordFocusNode,
-              label: '密码',
-              obscureText: !_showPassword,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _login(),
-              // ⚠️ `MiuixTextField.trailingIcon` 只是被放进 Row 的普通 Widget，
-              // 不接管手势。这里放 `MiuixIconButton`（自带 `MiuixPressable`），
-              // 它与输入框是**兄弟**关系且绘制在上层，命中测试时先入手势竞技场
-              // → 点击能正常落到按钮上。
-              trailingIcon: MiuixIconButton(
-                onPressed: () => setState(() => _showPassword = !_showPassword),
-                child: Icon(
-                  _showPassword ? Icons.visibility : Icons.visibility_off,
-                ),
+          MiuixTextField(
+            controller: _passwordController,
+            focusNode: _passwordFocusNode,
+            label: '密码',
+            obscureText: !_showPassword,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _login(),
+            // ⚠️ `MiuixTextField.trailingIcon` 只是被放进 Row 的普通 Widget，
+            // 不接管手势。这里放 `MiuixIconButton`（自带 `MiuixPressable`），
+            // 它与输入框是**兄弟**关系且绘制在上层，命中测试时先入手势竞技场
+            // → 点击能正常落到按钮上。
+            trailingIcon: MiuixIconButton(
+              onPressed: () => setState(() => _showPassword = !_showPassword),
+              child: Icon(
+                _showPassword ? Icons.visibility : Icons.visibility_off,
               ),
             ),
           ),
@@ -889,83 +881,86 @@ class _LoginPageState extends State<LoginPage> {
         ? '验证码登录'
         : '二维码登录';
 
-    return MiuixScaffold(
-      topBar: MiuixTopAppBar(
-        title: title,
-        largeTitle: title,
-        blurred: true,
-        // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
-        // 与底栏是同一套玻璃口径（见 widget/miuix_glass_spec.dart）。
-        scrollBehavior: _topBarBehavior,
-        // ⚠️ `MiuixTopAppBar` **没有** `onBack`，返回键要用 `navigationIcon`。
-        // 原来的 Material `AppBar` 靠 `automaticallyImplyLeading` 自动加返回键。
-        navigationIcon: MiuixIconButton(
-          onPressed: () => Navigator.of(context).maybePop(),
-          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+    return Material(
+      color: Colors.transparent,
+      child: MiuixScaffold(
+        topBar: MiuixTopAppBar(
+          title: title,
+          largeTitle: title,
+          blurred: true,
+          // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
+          // 与底栏是同一套玻璃口径（见 widget/miuix_glass_spec.dart）。
+          scrollBehavior: _topBarBehavior,
+          // ⚠️ `MiuixTopAppBar` **没有** `onBack`，返回键要用 `navigationIcon`。
+          // 原来的 Material `AppBar` 靠 `automaticallyImplyLeading` 自动加返回键。
+          navigationIcon: MiuixIconButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+            child: const Icon(Icons.arrow_back_ios_new, size: 20),
+          ),
         ),
-      ),
-      snackbarHost: MiuixSnackbarHost(
-        state: _snackbarHost,
-        blurSigma: 30,
-        blurBackgroundAlpha: 0.55,
-      ),
-      content: (contentPadding) {
-        // 只记最大高度，不跟随折叠回缩 —— 原因见 `_topBarInset` 的注释
-        if (contentPadding.top > _topBarInset) {
-          _topBarInset = contentPadding.top;
-        }
-        final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
-        return MiuixScrollBehaviorListener(
-          behavior: _topBarBehavior,
-          child: SingleChildScrollView(
-            // 顶部让开顶栏、底部让开安全区与软键盘弹出高度（彻底解决 IME 弹窗遮挡下半区导致密码框点不开）
-            padding: EdgeInsets.fromLTRB(
-              24,
-              _topBarInset + 16,
-              24,
-              contentPadding.bottom + bottomInset + 24,
-            ),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildAccountField(colors),
-                  const SizedBox(height: 16),
-                  if (_currentLoginType == '1')
-                    _buildPasswordField(colors)
-                  else
-                    _buildCaptchaRow(colors),
-                  const SizedBox(height: 24),
-                  if (_isLoading)
-                    const Center(child: MiuixCircularProgressIndicator())
-                  else
-                    SizedBox(
-                      height: 50,
-                      child: MiuixButton(
-                        // 原来的 `ElevatedButton` 是主色底，`MiuixButton` 默认
-                        // 走次级色，所以这里必须显式给 `buttonColorsPrimary`
-                        colors: MiuixButtonDefaults.buttonColorsPrimary(context),
-                        onPressed: _currentLoginType == '3'
-                            ? _showQRCodeLogin
-                            : _login,
-                        child: MiuixText(
-                          _currentLoginType == '1'
-                              ? '登录'
-                              : _currentLoginType == '2'
-                              ? '验证码登录'
-                              : '二维码登录',
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
+        snackbarHost: MiuixSnackbarHost(
+          state: _snackbarHost,
+          blurSigma: 30,
+          blurBackgroundAlpha: 0.55,
+        ),
+        content: (contentPadding) {
+          // 只记最大高度，不跟随折叠回缩 —— 原因见 `_topBarInset` 的注释
+          if (contentPadding.top > _topBarInset) {
+            _topBarInset = contentPadding.top;
+          }
+          final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+          return MiuixScrollBehaviorListener(
+            behavior: _topBarBehavior,
+            child: SingleChildScrollView(
+              // 顶部让开顶栏、底部让开安全区与软键盘弹出高度（彻底解决 IME 弹窗遮挡下半区导致密码框点不开）
+              padding: EdgeInsets.fromLTRB(
+                24,
+                _topBarInset + 16,
+                24,
+                contentPadding.bottom + bottomInset + 24,
+              ),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildAccountField(colors),
+                    const SizedBox(height: 16),
+                    if (_currentLoginType == '1')
+                      _buildPasswordField(colors)
+                    else
+                      _buildCaptchaRow(colors),
+                    const SizedBox(height: 24),
+                    if (_isLoading)
+                      const Center(child: MiuixCircularProgressIndicator())
+                    else
+                      SizedBox(
+                        height: 50,
+                        child: MiuixButton(
+                          // 原来的 `ElevatedButton` 是主色底，`MiuixButton` 默认
+                          // 走次级色，所以这里必须显式给 `buttonColorsPrimary`
+                          colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                          onPressed: _currentLoginType == '3'
+                              ? _showQRCodeLogin
+                              : _login,
+                          child: MiuixText(
+                            _currentLoginType == '1'
+                                ? '登录'
+                                : _currentLoginType == '2'
+                                ? '验证码登录'
+                                : '二维码登录',
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }

@@ -19,12 +19,8 @@ import'./pages/courseware/list.dart';
 import'./pages/settings/settings.dart';
 // [新增] 玻璃底栏的几何契约（占位高度 / 页面留白）
 import'./pages/widget/miuix_nav_metrics.dart';
-// [新增] 贴边玻璃底栏本体（Miuix 标准底栏 + BackdropFilter）。
-// 2026-09-22 用户拍板：取消液态玻璃与悬浮底栏，改用 Miuix 标准样式的固定底栏，
-// 但顶栏底栏都要保留模糊。所以这里只是「包里的 MiuixNavigationBar + 一层玻璃」，
-// 几何/字号/按压反馈/动画时长全部由库定义，不自造。
-import'./pages/widget/miuix_blur_navigation_bar.dart';
-import'./pages/widget/miuix_tab_bounce.dart';
+// [新增] 液态玻璃底栏（MiuixLiquidGlassNavigationBar）
+import './pages/widget/miuix_liquid_glass_nav_bar.dart';
 // [新增] 深浅色外观设置（原「悬浮底栏」开关作废，见 setting/theme_setting.dart）
 import'./setting/theme_setting.dart';
 import'./api/api_service.dart';
@@ -403,6 +399,15 @@ class _MainPageState extends State<MainPage> {
   /// 0 课程 / 1 账号 / 2 课件 / 3 设置
   int _selectedIndex = 0;
 
+  late final PageController _pageController =
+      PageController(initialPage: _selectedIndex);
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
   // [移除] 底栏几何常量（_kNavSideMargin / _kNavBottomGap / _kNavBarHeight /
   // _kNavBlurRadius）。
   //
@@ -574,49 +579,26 @@ class _MainPageState extends State<MainPage> {
         children: [
           // ── Tab 内容 ─────────────────────────────────────────────────
           //
-          // 保活策略（底栏 4 个 Tab 全部使用 Offstage 保活）：
-          //   课程页 / 账号页 / 课件页 / 设置页 → `Offstage` 常驻，切 Tab 不销毁 State
-          //
-          // ⚠️ `Offstage` 必须包在 `Positioned.fill` 里：`RenderOffstage` 在
-          // offstage 时 `size = constraints.smallest`，而 `Stack` 给非定位子节点
-          // 的是 **loose** 约束（min 为 0）→ 直接放进去会塌成 0×0。
-          // 用 `Positioned.fill` 给 tight 约束后 `smallest` 才是满屏。
+          // 滑动切换 + 保活策略：
+          //   使用 PageView 承载 4 个 Tab（课程 / 账号 / 课件 / 设置），
+          //   配合 BouncingScrollPhysics 实现极其细腻的左右滑动手感。
+          //   每个 Tab 通过 _KeepAliveTab (AutomaticKeepAliveClientMixin)
+          //   永久保活，切页不销毁 State，各列表位置与输入状态完美保留。
           Positioned.fill(
-            child: Offstage(
-              offstage: _selectedIndex != 0,
-              child: CoursesPage(key: coursesPageKey),
-            ),
-          ),
-          Positioned.fill(
-            child: Offstage(
-              offstage: _selectedIndex != 1,
-              child: const AccountsPage(),
-            ),
-          ),
-          Positioned.fill(
-            child: Offstage(
-              offstage: _selectedIndex != 2,
-              child: const CoursewarePage(),
-            ),
-          ),
-          Positioned.fill(
-            child: Offstage(
-              offstage: _selectedIndex != 3,
-              child: const SettingsPage(),
+            child: PageView(
+              controller: _pageController,
+              physics: const BouncingScrollPhysics(),
+              onPageChanged: _onPageChanged,
+              children: [
+                _KeepAliveTab(child: CoursesPage(key: coursesPageKey)),
+                const _KeepAliveTab(child: AccountsPage()),
+                const _KeepAliveTab(child: CoursewarePage()),
+                const _KeepAliveTab(child: SettingsPage()),
+              ],
             ),
           ),
 
-          // ── 玻璃底栏（贴边叠加）──────────────────────────────────────
-          //
-          // 2026-09-22 用户拍板：取消液态玻璃与悬浮底栏，改用 Miuix 标准样式的
-          // 固定底栏，但**顶栏底栏都要保留模糊**。所以这里 = 包里的
-          // `MiuixNavigationBar`（几何 / 字号 / 按压 / 动画全由库定义）
-          // + 一层 `BackdropFilter` 玻璃，见
-          // `widget/miuix_blur_navigation_bar.dart`。
-          //
-          // 玻璃铺满整条含手势区 → 历史 bug「小白条区域显示为黑块」不复存在
-          // （那个黑块来自旧代码用 `ColoredBox(colors.surface)` 补手势区，
-          //  而深色下 surface 是纯黑 `#000000`，与上面的玻璃之间出现硬边）。
+          // ── 液态玻璃底栏（贴边叠加）──────────────────────────────────────
           Positioned(
             left: 0,
             right: 0,
@@ -628,12 +610,9 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
-  /// 贴边玻璃底栏（4 个 Tab：课程 / 账号 / 课件 / 设置）。
-  ///
-  /// 几何、字号、按压反馈、选中动画时长全部由包里的
-  /// `MiuixNavigationBarDefaults` 定义（item 高 64 / 图标 26 / 字号 12 /
-  /// 动画 300ms），我们只补一层玻璃。
+  /// 贴边液态玻璃底栏（4 个 Tab：课程 / 账号 / 课件 / 设置）。
   Widget _buildNavBar(BuildContext context) {
+    final safeBottom = MediaQuery.viewPaddingOf(context).bottom;
     // 图标：选中态用实心，未选中用描边（Miuix 底栏的常规做法）
     const items = <(IconData, IconData, String)>[
       (Icons.school, Icons.school_outlined, '课程'),
@@ -642,29 +621,68 @@ class _MainPageState extends State<MainPage> {
       (Icons.settings, Icons.settings_outlined, '设置'),
     ];
 
-    return MiuixBlurNavigationBar(
-      children: [
+    return MiuixLiquidGlassNavigationBar(
+      items: [
         for (var i = 0; i < items.length; i++)
-          MiuixNavigationBarItem(
-            selected: _selectedIndex == i,
-            onPressed: () => _onNavTap(i),
-            // 包装在 `MiuixTabBounce` 内，点击与切换触发细腻的弹性回弹微动（Spring Bounce）
-            icon: MiuixTabBounce(
-              selected: _selectedIndex == i,
-              child: Icon(_selectedIndex == i ? items[i].$1 : items[i].$2),
-            ),
+          MiuixLiquidGlassNavItem(
+            icon: Icon(_selectedIndex == i ? items[i].$1 : items[i].$2),
             label: items[i].$3,
+            contentDescription: items[i].$3,
           ),
       ],
+      selectedIndex: _selectedIndex,
+      onSelect: _onNavTap,
+      height: miuixNavBarContentHeight,
+      bottomPadding: safeBottom,
+      pageController: _pageController,
+      shape: const MiuixGlassShape(cornerRadius: 0),
+      shadow: const MiuixGlassShadow(radius: 0, color: Color(0x00000000)),
     );
   }
 
-  /// 底栏点击统一入口（切页 + 通知课程页可见性变化）
+  void _onPageChanged(int index) {
+    if (_selectedIndex != index) {
+      setState(() {
+        _selectedIndex = index;
+      });
+      (coursesPageKey.currentState as dynamic)?.onVisibilityChanged(index == 0);
+    }
+  }
+
+  /// 底栏点击统一入口（切页 + 动画平滑滚动 PageView + 通知课程页可见性变化）
   void _onNavTap(int index) {
     if (index == _selectedIndex) return;
     setState(() {
       _selectedIndex = index;
     });
+    if (_pageController.hasClients) {
+      _pageController.animateToPage(
+        index,
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutCubic,
+      );
+    }
     (coursesPageKey.currentState as dynamic)?.onVisibilityChanged(index == 0);
+  }
+}
+
+/// 保持 Tab 页面状态不销毁的保活包装器
+class _KeepAliveTab extends StatefulWidget {
+  const _KeepAliveTab({required this.child});
+  final Widget child;
+
+  @override
+  State<_KeepAliveTab> createState() => _KeepAliveTabState();
+}
+
+class _KeepAliveTabState extends State<_KeepAliveTab>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
   }
 }
