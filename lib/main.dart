@@ -564,12 +564,8 @@ class _MainPageState extends State<MainPage> {
         children: [
           // ── Tab 内容 ─────────────────────────────────────────────────
           //
-          // 保活策略（用户要求「课件如果打开了，就要保活，切回去还是那个页面」）：
-          //   课程页 / 课件页 → `Offstage` 常驻，切 Tab 不销毁 State
-          //   账号页 / 设置页 → `if` 条件挂载，切走即释放
-          //
-          // 为什么课程页也要保活：它有个 3 秒轮询在跑「正在上课」状态，
-          // 重建会打断轮询；滚动位置也不该被重置。
+          // 保活策略（底栏 4 个 Tab 全部使用 Offstage 保活）：
+          //   课程页 / 账号页 / 课件页 / 设置页 → `Offstage` 常驻，切 Tab 不销毁 State
           //
           // ⚠️ `Offstage` 必须包在 `Positioned.fill` 里：`RenderOffstage` 在
           // offstage 时 `size = constraints.smallest`，而 `Stack` 给非定位子节点
@@ -583,12 +579,22 @@ class _MainPageState extends State<MainPage> {
           ),
           Positioned.fill(
             child: Offstage(
+              offstage: _selectedIndex != 1,
+              child: const AccountsPage(),
+            ),
+          ),
+          Positioned.fill(
+            child: Offstage(
               offstage: _selectedIndex != 2,
               child: const CoursewarePage(),
             ),
           ),
-          if (_selectedIndex == 1) const AccountsPage(),
-          if (_selectedIndex == 3) const SettingsPage(),
+          Positioned.fill(
+            child: Offstage(
+              offstage: _selectedIndex != 3,
+              child: const SettingsPage(),
+            ),
+          ),
 
           // ── 玻璃底栏（贴边叠加）──────────────────────────────────────
           //
