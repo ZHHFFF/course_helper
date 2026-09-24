@@ -42,6 +42,7 @@ import '../../models/rc_activity.dart';
 import '../../platform.dart';
 import '../../session/account.dart';
 import '../../utils/app_logger.dart';
+import '../../utils/storage.dart';
 import '../courses/content.dart';
 import '../presentation.dart';
 import '../widget/miuix_nav_metrics.dart';
@@ -90,6 +91,11 @@ class _CourseEntry {
 
   /// 是否为已结课课程
   final bool isArchived;
+
+  /// 用于置顶与去重的唯一身份标识
+  String get key => courseId.isNotEmpty
+      ? courseId
+      : (classId.isNotEmpty ? classId : (lessonIds.isNotEmpty ? lessonIds.first : name));
 }
 
 class CoursewarePage extends StatefulWidget {
@@ -136,6 +142,57 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
   final MiuixSnackbarHostState _snackbarHost = MiuixSnackbarHostState();
 
+  /// 缓存课件查看器 Key，供顶栏 action 调用全屏与导出
+  final GlobalKey<CoursewareViewerState> _viewerKey = GlobalKey();
+
+  /// 置顶课程的唯一标识集合
+  Set<String> _pinnedKeys = {};
+
+  String get _pinStorageKey =>
+      'pinned_courses_${PlatformManager().currentPlatform.name}';
+
+  void _loadPinnedKeys() {
+    try {
+      final list = StorageManager.prefs.getStringList(_pinStorageKey) ?? [];
+      _pinnedKeys = list.toSet();
+    } catch (e) {
+      AppLogger.w(_tag, '读取课程置顶配置失败：$e');
+      _pinnedKeys = {};
+    }
+  }
+
+  Future<void> _togglePin(_CourseEntry entry) async {
+    final key = entry.key;
+    final isPinned = _pinnedKeys.contains(key);
+    setState(() {
+      if (isPinned) {
+        _pinnedKeys.remove(key);
+      } else {
+        _pinnedKeys.add(key);
+      }
+      _sortEntries();
+    });
+    try {
+      await StorageManager.prefs.setStringList(_pinStorageKey, _pinnedKeys.toList());
+      _toast(isPinned ? '已取消置顶' : '已置顶');
+    } catch (e) {
+      AppLogger.w(_tag, '保存课程置顶配置失败：$e');
+    }
+  }
+
+  void _sortEntries() {
+    final pinned = <_CourseEntry>[];
+    final unpinned = <_CourseEntry>[];
+    for (final e in _entries) {
+      if (_pinnedKeys.contains(e.key)) {
+        pinned.add(e);
+      } else {
+        unpinned.add(e);
+      }
+    }
+    _entries = [...pinned, ...unpinned];
+  }
+
   /// 请求防竞态版本号：快速切换平台或重复触发时，保证只有最后一次请求生效
   int _loadToken = 0;
 
@@ -143,6 +200,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
   void initState() {
     super.initState();
     PlatformManager().platformNotifier.addListener(_onPlatformChanged);
+    _loadPinnedKeys();
     _loadCourses();
   }
 
@@ -173,6 +231,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
       _showDeleteSheet = false;
       _loading = true;
     });
+    _loadPinnedKeys();
     _loadCourses();
   }
 
@@ -326,10 +385,15 @@ class _CoursewarePageState extends State<CoursewarePage> {
         return 0;
       });
 
+      final all = [...withCache, ...without];
+      // 置顶课程排在最最前面
+      final pinned = all.where((e) => _pinnedKeys.contains(e.key)).toList();
+      final unpinned = all.where((e) => !_pinnedKeys.contains(e.key)).toList();
+
       if (!mounted || token != _loadToken) return;
 
       setState(() {
-        _entries = [...withCache, ...without];
+        _entries = [...pinned, ...unpinned];
         _loading = false;
       });
     } catch (e, st) {
@@ -731,7 +795,18 @@ class _CoursewarePageState extends State<CoursewarePage> {
                         : const Icon(Icons.refresh),
                   ),
                 ]
-              : null,
+              : (_stage == _Stage.viewer
+                  ? [
+                      MiuixIconButton(
+                        onPressed: () => _viewerKey.currentState?.openFullscreen(),
+                        child: const Icon(Icons.fullscreen),
+                      ),
+                      MiuixIconButton(
+                        onPressed: () => _viewerKey.currentState?.exportPdfAction(),
+                        child: const Icon(Icons.picture_as_pdf_outlined),
+                      ),
+                    ]
+                  : null),
         ),
         snackbarHost: MiuixSnackbarHost(
           state: _snackbarHost,
@@ -772,6 +847,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
         final ppt = _viewerPpt;
         if (ppt == null) return const SizedBox.shrink();
         return CoursewareViewer(
+          key: _viewerKey,
           lessonId: ppt.lessonId,
           presentationId: ppt.presentationId,
           title: ppt.displayTitle,
@@ -809,6 +885,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
   Widget _buildCourseTile(BuildContext context, _CourseEntry entry) {
     final colors = MiuixTheme.of(context).colors;
     final hasCache = entry.presentationCount > 0;
+    final isPinned = _pinnedKeys.contains(entry.key);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -847,6 +924,32 @@ class _CoursewarePageState extends State<CoursewarePage> {
                   children: [
                     Row(
                       children: [
+                        if (isPinned) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            margin: const EdgeInsets.only(right: 6),
+                            decoration: BoxDecoration(
+                              color: colors.primaryContainer,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.push_pin, size: 10, color: colors.onPrimaryContainer),
+                                const SizedBox(width: 2),
+                                MiuixText(
+                                  '置顶',
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: colors.onPrimaryContainer,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                         Expanded(
                           child: MiuixText(
                             entry.name,
@@ -897,6 +1000,14 @@ class _CoursewarePageState extends State<CoursewarePage> {
                           : colors.onSurfaceVariantSummary,
                     ),
                   ],
+                ),
+              ),
+              MiuixIconButton(
+                onPressed: () => _togglePin(entry),
+                child: Icon(
+                  isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                  size: 20,
+                  color: isPinned ? colors.primary : colors.onSurfaceVariantActions,
                 ),
               ),
               Icon(

@@ -24,6 +24,7 @@ import'./pages/widget/miuix_nav_metrics.dart';
 // 但顶栏底栏都要保留模糊。所以这里只是「包里的 MiuixNavigationBar + 一层玻璃」，
 // 几何/字号/按压反馈/动画时长全部由库定义，不自造。
 import'./pages/widget/miuix_blur_navigation_bar.dart';
+import'./pages/widget/miuix_tab_bounce.dart';
 // [新增] 深浅色外观设置（原「悬浮底栏」开关作废，见 setting/theme_setting.dart）
 import'./setting/theme_setting.dart';
 import'./api/api_service.dart';
@@ -641,10 +642,11 @@ class _MainPageState extends State<MainPage> {
           MiuixNavigationBarItem(
             selected: _selectedIndex == i,
             onPressed: () => _onNavTap(i),
-            // 裸 `Icon` 即可：`MiuixNavigationBarItem` 内部用 `IconTheme.merge`
-            // 注入尺寸与状态色（选中 `onSurfaceContainer`，未选中同色 @ 40%），
-            // 不需要自己算颜色。
-            icon: Icon(_selectedIndex == i ? items[i].$1 : items[i].$2),
+            // 包装在 `MiuixTabBounce` 内，点击与切换触发细腻的弹性回弹微动（Spring Bounce）
+            icon: MiuixTabBounce(
+              selected: _selectedIndex == i,
+              child: Icon(_selectedIndex == i ? items[i].$1 : items[i].$2),
+            ),
             label: items[i].$3,
           ),
       ],
