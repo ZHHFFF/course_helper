@@ -200,6 +200,8 @@ class _LoginPageState extends State<LoginPage> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   final _captchaController = TextEditingController();
+  final _usernameFocusNode = FocusNode();
+  final _passwordFocusNode = FocusNode();
   final _captchaFocusNode = FocusNode();
   bool _isLoading = false;
   bool _showPassword = false;
@@ -243,8 +245,10 @@ class _LoginPageState extends State<LoginPage> {
     _usernameController.dispose();
     _passwordController.dispose();
     _captchaController.dispose();
-    _countdownTimer?.cancel();
+    _usernameFocusNode.dispose();
+    _passwordFocusNode.dispose();
     _captchaFocusNode.dispose();
+    _countdownTimer?.cancel();
     _snackbarHost.dispose();
     super.dispose();
   }
@@ -334,7 +338,7 @@ class _LoginPageState extends State<LoginPage> {
         },
       );
 
-      return completer.future;
+      return await completer.future;
     } catch (e) {
       if (mounted) {
         _snackbarHost.showSnackbar('验证异常：$e');
@@ -403,8 +407,8 @@ class _LoginPageState extends State<LoginPage> {
             _currentLoginType == '2' ? 3 : 2, // 1: 密码登录 2: 邮箱登录 3: 验证码登录
             _usernameController.text,
             _currentLoginType == '2' ? _captchaController.text : _passwordController.text,
-            _ticket!,
-            _randstr!,
+            _currentLoginType == '2' ? '' : (_ticket ?? ''),
+            _currentLoginType == '2' ? '' : (_randstr ?? ''),
           );
 
           // 非验证码模式清空验证码凭证
@@ -766,9 +770,20 @@ class _LoginPageState extends State<LoginPage> {
         children: [
           MiuixTextField(
             controller: _usernameController,
-            keyboardType: TextInputType.number,
+            focusNode: _usernameFocusNode,
+            keyboardType: _currentLoginType == '2'
+                ? TextInputType.phone
+                : TextInputType.text,
             autofocus: true,
             label: '账号',
+            textInputAction: TextInputAction.next,
+            onSubmitted: (_) {
+              if (_currentLoginType == '1') {
+                _passwordFocusNode.requestFocus();
+              } else {
+                _captchaFocusNode.requestFocus();
+              }
+            },
           ),
           if (field.hasError) _buildFieldError(field.errorText!, colors),
         ],
@@ -783,18 +798,29 @@ class _LoginPageState extends State<LoginPage> {
       builder: (field) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          MiuixTextField(
-            controller: _passwordController,
-            label: '密码',
-            obscureText: !_showPassword,
-            // ⚠️ `MiuixTextField.trailingIcon` 只是被放进 Row 的普通 Widget，
-            // 不接管手势。这里放 `MiuixIconButton`（自带 `MiuixPressable`），
-            // 它与输入框是**兄弟**关系且绘制在上层，命中测试时先入手势竞技场
-            // → 点击能正常落到按钮上。
-            trailingIcon: MiuixIconButton(
-              onPressed: () => setState(() => _showPassword = !_showPassword),
-              child: Icon(
-                _showPassword ? Icons.visibility : Icons.visibility_off,
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              if (!_passwordFocusNode.hasFocus) {
+                _passwordFocusNode.requestFocus();
+              }
+            },
+            child: MiuixTextField(
+              controller: _passwordController,
+              focusNode: _passwordFocusNode,
+              label: '密码',
+              obscureText: !_showPassword,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _login(),
+              // ⚠️ `MiuixTextField.trailingIcon` 只是被放进 Row 的普通 Widget，
+              // 不接管手势。这里放 `MiuixIconButton`（自带 `MiuixPressable`），
+              // 它与输入框是**兄弟**关系且绘制在上层，命中测试时先入手势竞技场
+              // → 点击能正常落到按钮上。
+              trailingIcon: MiuixIconButton(
+                onPressed: () => setState(() => _showPassword = !_showPassword),
+                child: Icon(
+                  _showPassword ? Icons.visibility : Icons.visibility_off,
+                ),
               ),
             ),
           ),
@@ -822,6 +848,8 @@ class _LoginPageState extends State<LoginPage> {
                   focusNode: _captchaFocusNode,
                   keyboardType: TextInputType.number,
                   label: '验证码',
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _login(),
                 ),
                 if (field.hasError) _buildFieldError(field.errorText!, colors),
               ],
@@ -886,15 +914,16 @@ class _LoginPageState extends State<LoginPage> {
         if (contentPadding.top > _topBarInset) {
           _topBarInset = contentPadding.top;
         }
+        final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
         return MiuixScrollBehaviorListener(
           behavior: _topBarBehavior,
           child: SingleChildScrollView(
-            // 顶部让开顶栏、底部让开安全区，都由脚手架算好
+            // 顶部让开顶栏、底部让开安全区与软键盘弹出高度（彻底解决 IME 弹窗遮挡下半区导致密码框点不开）
             padding: EdgeInsets.fromLTRB(
               24,
               _topBarInset + 16,
               24,
-              contentPadding.bottom + 24,
+              contentPadding.bottom + bottomInset + 24,
             ),
             child: Form(
               key: _formKey,
