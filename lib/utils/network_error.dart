@@ -82,11 +82,7 @@ RequestErrorInfo describeError(Object error) {
   }
 
   final text = error.toString();
-  if (text.contains('SocketException') ||
-      text.contains('Connection refused') ||
-      text.contains('Connection timed out') ||
-      text.contains('Failed host lookup') ||
-      text.contains('Network is unreachable')) {
+  if (_looksLikeNetworkError(text)) {
     return RequestErrorInfo(
       kind: RequestErrorKind.network,
       message: '网络不可用，请检查手机网络连接',
@@ -190,8 +186,7 @@ RequestErrorInfo _fromDio(DioException e) {
         );
       }
       final text = (inner ?? e).toString();
-      if (text.contains('SocketException') ||
-          text.contains('Failed host lookup')) {
+      if (_looksLikeNetworkError(text)) {
         return RequestErrorInfo(
           kind: RequestErrorKind.network,
           message: '网络不可用，请检查手机网络连接',
@@ -212,3 +207,18 @@ RequestErrorInfo _fromDio(DioException e) {
       );
   }
 }
+
+/// 网络层失败的**字符串兜底判定**。
+///
+/// 为什么需要兜底：`DioExceptionType` 覆盖不全（例如被包装成 `unknown` 的
+/// `SocketException`），只能再按异常文本判一次。
+///
+/// 2026-09-24 马尾辫审查：这段判定原先在 `describeError()` 与 `_fromDio()` 的
+/// default 分支里**各写了一份**，而且关键字列表不一致（后者只判 2 个）——
+/// 现在统一到这里两处共用（顺带修掉了后者的漏判）。
+bool _looksLikeNetworkError(String text) =>
+    text.contains('SocketException') ||
+    text.contains('Connection refused') ||
+    text.contains('Connection timed out') ||
+    text.contains('Failed host lookup') ||
+    text.contains('Network is unreachable');

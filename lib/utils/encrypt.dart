@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:crypto/crypto.dart';
-import 'package:pointycastle/pointycastle.dart';
+// ⚠️ `export.dart` 已包含 `pointycastle.dart` 的全部导出 —— 两行都写是冗余
+// （2026-09-24 马尾辫审查发现，已合并为一行）
 import 'package:pointycastle/export.dart';
 import 'package:convert/convert.dart';
 import 'package:uuid/uuid.dart';
@@ -252,10 +253,11 @@ class EncryptionUtil {
     return encParams;
   }
 
-  static String getUuid() {
-    var uuid = Uuid();
-    return uuid.v4();
-  }
+  /// `Uuid` 无状态，提成常量避免每次调用都 new 一个实例
+  /// （2026-09-24 马尾辫审查）
+  static const Uuid _uuid = Uuid();
+
+  static String getUuid() => _uuid.v4();
 
   /// 获取文件的CRC（非标准）
   static Future<String> getCRC(File file) async {

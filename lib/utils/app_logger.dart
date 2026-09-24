@@ -17,36 +17,10 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// 日志级别
+///
+/// 注：这里曾经有一个 `extension LogLevelLabel on LogLevel`（`label` 文案 +
+/// `weight` 筛选权重），但全仓库**零调用** —— 2026-09-24 的马尾辫审查确认后删除。
 enum LogLevel { debug, info, warn, error }
-
-extension LogLevelLabel on LogLevel {
-  String get label {
-    switch (this) {
-      case LogLevel.debug:
-        return 'DEBUG';
-      case LogLevel.info:
-        return 'INFO';
-      case LogLevel.warn:
-        return 'WARN';
-      case LogLevel.error:
-        return 'ERROR';
-    }
-  }
-
-  /// 用于筛选的权重，越大越严重
-  int get weight {
-    switch (this) {
-      case LogLevel.debug:
-        return 0;
-      case LogLevel.info:
-        return 1;
-      case LogLevel.warn:
-        return 2;
-      case LogLevel.error:
-        return 3;
-    }
-  }
-}
 
 /// 一条日志
 class LogEntry {

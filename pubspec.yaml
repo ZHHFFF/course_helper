@@ -32,10 +32,13 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
+  # [2026-09-24 清理] 删掉 7 个「零 import」依赖（马尾辫审查结论）：
+  #   cupertino_icons / flutter_speed_dial / camera / time / http_parser /
+  #   dynamic_color / sqflite
+  # 其中 dynamic_color（已取消 Monet 取色）与 flutter_speed_dial（已换 Miuix）
+  # 是迁移后遗留的，代码注释里都有记录。
+  # 复查方法：grep -rhoE "package:[a-z_0-9]+" lib | sed 's/package://' | sort -u
   package_info_plus: ^10.2.1
-  cupertino_icons: ^1.0.8
   dio: ^5.9.1
   pretty_dio_logger: ^1.4.0
   cookie_jar: ^4.0.8
@@ -45,18 +48,13 @@ dependencies:
   pointycastle: ^3.9.1
   convert: ^3.1.2
   uuid: ^4.5.1
-  flutter_speed_dial: ^7.0.0
-  camera: ^0.12.0+2
   mobile_scanner: 7.2.0
   permission_handler: ^13.0.2
-  time: ^2.1.3
-  http_parser: ^4.0.0
   path: ^1.9.0
   flutter_baidu_mapapi_map: ^4.0.2
   flutter_baidu_mapapi_base: ^4.0.2
   flutter_baidu_mapapi_search: ^4.0.2
   flutter_bmflocation: ^3.8.5
-  dynamic_color: ^1.9.0
   # Miuix：小米 HyperOS 设计语言（Compose Multiplatform）的 Flutter 移植版。
   # 45+ 组件，自带超椭圆圆角、Folme 弹簧动效、液态玻璃与 Monet 动态取色。
   # 用于替代自研液态玻璃底栏（MiuixGlassNavigationBar 默认高 54，
@@ -69,7 +67,6 @@ dependencies:
   path_provider: ^2.1.3
   photo_manager: ^3.6.2
   flutter_cache_manager: ^3.3.1
-  sqflite: ^2.4.2+1
   # flutter_tencent_captcha: ^0.1.2
   flutter_tencent_captcha:
     git:

@@ -407,21 +407,14 @@ class AnswerSearchResult {
 }
 
 /// 答案来源类型
+///
+/// 注：这里曾经有一个 `extension AnswerSourceTypeExtension on AnswerSourceType`
+/// （把枚举转成「内置答案」/「AI检索」文案），但全仓库**零调用** ——
+/// 2026-09-24 的马尾辫审查确认后删除。
 enum AnswerSourceType {
   /// 内置答案 - 从服务器返回数据中提取（学习通 isanswer=true）
   builtin,
 
   /// AI 检索 - 通过 AI API 获取
   aiProvider,
-}
-
-extension AnswerSourceTypeExtension on AnswerSourceType {
-  String get label {
-    switch (this) {
-      case AnswerSourceType.builtin:
-        return '内置答案';
-      case AnswerSourceType.aiProvider:
-        return 'AI检索';
-    }
-  }
 }
