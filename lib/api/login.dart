@@ -195,7 +195,7 @@ class RCLoginApi extends Api {
   }
 
   /// 验证码 密码登录
-  static Future<Map<String, dynamic>?> login(int loginType, String account, String code, String ticket, String rand) async {
+  static Future<Map<String, dynamic>?> login(int loginType, String account, String code, [String ticket = '', String rand = '']) async {
     final url = '/api/v3/user/login/app';
 
     final jsonData = {
@@ -219,6 +219,9 @@ class RCLoginApi extends Api {
     } else if (loginType == 3) {
       jsonData['phoneNumber'] = account;
       jsonData['code'] = code;
+      // 验证码登录凭短信验证码鉴权，不透传旧滑块 ticket/rand，避免二次核销失败
+      jsonData['ticket'] = '';
+      jsonData['rand'] = '';
     }
 
     final response = await ApiService.sendRequest(url, method: 'POST', body: jsonData, userId: '');
