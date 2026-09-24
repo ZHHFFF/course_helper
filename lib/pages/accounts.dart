@@ -75,8 +75,6 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   /// 展开式迷你 FAB）。换成 Miuix 的「FAB 点开底部抽屉」范式：
   /// `MiuixFloatingActionButton` + `MiuixOverlayBottomSheet`。
   /// 抽屉和弹窗一样是**声明式**的，必须常驻挂载、用 `show` 切换显隐。
-  bool _showAddAccountSheet = false;
-
   /// Miuix 的 Snackbar 走「host + state」模型，不是 `ScaffoldMessenger`。
   final MiuixSnackbarHostState _snackbarHost = MiuixSnackbarHostState();
 
@@ -157,81 +155,117 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     );
   }
 
-  VoidCallback? _pendingAddAccountAction;
-
-  /// 先收起抽屉，待抽屉退场动画完全播完并从 rootOverlay 销毁节点后再执行跳转动作。
-  ///
-  /// ⚠️ 核心根因：若在抽屉退场中同步执行 push，新路由会将本页 TickerMode 置为 false，
-  /// 导致 MiuixWindowBottomSheet 退出弹簧动画冻结在半途，残留在 rootOverlay 上的全屏
-  /// 遮罩节点（带 opaque GestureDetector）永远无法销毁，拦截了新页面上所有点击，
-  /// 表现为登录页所有按钮与输入框「点击一点响应没有」。
-  void _closeAddSheetThen(VoidCallback action) {
-    _pendingAddAccountAction = action;
-    setState(() => _showAddAccountSheet = false);
-    // 双保险保护：600ms 兜底执行（Miuix 弹簧退场周期约 200ms，避开慢速设备竞争）
-    Future.delayed(const Duration(milliseconds: 600), () {
-      if (mounted && _pendingAddAccountAction != null) {
-        final act = _pendingAddAccountAction;
-        _pendingAddAccountAction = null;
-        act!();
-      }
-    });
-  }
-
-  void _onAddSheetDismissFinished() {
-    if (_pendingAddAccountAction != null) {
-      final act = _pendingAddAccountAction;
-      _pendingAddAccountAction = null;
-      act!();
-    }
-  }
-
   /// 「添加账号」底部抽屉：三种登录方式。
   ///
-  /// ⚠️ 必须用 `MiuixWindowBottomSheet`（窗口级），**不能**用
-  /// `MiuixOverlayBottomSheet`（页内级）。原因见 `main.dart` 里底栏的挂法：
-  /// 玻璃底栏是 `MyHomePage` 的 `body: Stack` 里 `Positioned` 悬浮叠加的，
-  /// 画在页面之上；而页内级抽屉走的是本页 `MiuixScaffold` 的 `MiuixPopupHost`，
-  /// 层级低于底栏 → 抽屉最后一行会被底栏压住（实测「密码登录」正好被吞掉）。
-  /// 窗口级抽屉用 `Overlay.maybeOf(context, rootOverlay: true)` 插到**根 Overlay**，
-  /// 位于整个 Navigator 之上，连带底栏一起被遮罩盖住，才是正确的模态观感。
-  ///
-  /// 用 `MiuixArrowPreference`（= `MiuixBasicComponent` + 末尾右箭头）承载每一行，
-  /// 它的默认取色正好是为 `colors.background` 底调的（抽屉默认底色就是
-  /// `colors.background`）：标题 `onBackground`、摘要 `onSurfaceVariantSummary`、
-  /// 箭头 `onSurfaceVariantActions`，深色下都是浅色文字，不需要手动覆盖。
-  ///
-  /// 起始图标必须显式给 `tint`：`MiuixIcon` 未指定时取
-  /// `MiuixContentColor.of(context)`，而抽屉内部**没有** `MiuixContentColor`
-  /// 提供者，会静默回退到黑色 `0xFF000000` —— 在 `#242424` 的深色抽屉上等于隐形。
-  Widget _buildAddAccountSheet(BuildContext context) {
-    final colors = MiuixTheme.of(context).colors;
-    final entries = <(IconData, String, String, VoidCallback)>[
-      (Icons.qr_code, '二维码登录', '扫码即可登录，适合在手机端快速添加', _showQRCodeLoginDialog),
-      (Icons.sms, '验证码登录', '用手机号 + 短信验证码登录', _navigateToCaptchaLogin),
-      (Icons.password, '密码登录', '用手机号 + 密码登录', _navigateToPasswordLogin),
-    ];
-    return MiuixWindowBottomSheet(
-      show: _showAddAccountSheet,
-      title: '添加账号',
-      // 抽屉自带 24dp 左右内边距，这里收到 12dp，
-      // 加上行自己的 16dp 正好 28dp，与本页账号卡片的缩进观感一致。
-      insideMargin: const Size(12, 0),
-      onDismissRequest: () => setState(() => _showAddAccountSheet = false),
-      onDismissFinished: _onAddSheetDismissFinished,
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final (icon, title, summary, action) in entries)
-            MiuixArrowPreference(
-              title: title,
-              summary: summary,
-              startAction: MiuixIcon(icon: icon, size: 22, tint: colors.primary),
-              onClick: () => _closeAddSheetThen(action),
+  /// 改用 `showModalBottomSheet(useRootNavigator: true)` 承载：
+  /// 1. 彻底规避 `MiuixWindowBottomSheet` 挂载在 `rootOverlay` 且未管理路由生命周期的问题
+  ///    （原实现在新路由 push 时导致退出动画冻结，残留的全屏透明遮罩无差别拦截深层页面的所有点击）；
+  /// 2. 彻底解决 `didUpdateWidget` 中 `_windowEntry.markNeedsBuild()` 引起的 `setState during build` 异常；
+  /// 3. 使用 `useRootNavigator: true` 保证抽屉浮在液态玻璃底栏之上，并保留 Miuix 圆角与视觉规范。
+  Future<void> _openAddAccountSheet(BuildContext context) async {
+    final theme = MiuixTheme.of(context);
+    final colors = theme.colors;
+
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      useRootNavigator: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: colors.windowDimming,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return MiuixTheme(
+          data: theme,
+          child: Container(
+            decoration: ShapeDecoration(
+              color: colors.surfaceContainer,
+              shape: const RoundedRectangleBorder(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              ),
             ),
-        ],
-      ),
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // 顶部拖拽手柄
+                    Container(
+                      margin: const EdgeInsets.only(top: 10, bottom: 8),
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: colors.onSurfaceVariantSummary.withValues(alpha: 0.35),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 8, 24, 12),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: MiuixText(
+                          '添加账号',
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          MiuixArrowPreference(
+                            title: '二维码登录',
+                            summary: '扫码即可登录，适合在手机端快速添加',
+                            startAction: MiuixIcon(
+                              icon: Icons.qr_code,
+                              size: 22,
+                              tint: colors.primary,
+                            ),
+                            onClick: () => Navigator.of(sheetContext).pop('qrcode'),
+                          ),
+                          MiuixArrowPreference(
+                            title: '验证码登录',
+                            summary: '用手机号 + 短信验证码登录',
+                            startAction: MiuixIcon(
+                              icon: Icons.sms,
+                              size: 22,
+                              tint: colors.primary,
+                            ),
+                            onClick: () => Navigator.of(sheetContext).pop('captcha'),
+                          ),
+                          MiuixArrowPreference(
+                            title: '密码登录',
+                            summary: '用手机号 + 密码登录',
+                            startAction: MiuixIcon(
+                              icon: Icons.password,
+                              size: 22,
+                              tint: colors.primary,
+                            ),
+                            onClick: () => Navigator.of(sheetContext).pop('password'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
+
+    if (!mounted || action == null) return;
+
+    if (action == 'qrcode') {
+      await _showQRCodeLoginDialog();
+    } else if (action == 'captcha') {
+      await _navigateToCaptchaLogin();
+    } else if (action == 'password') {
+      await _navigateToPasswordLogin();
+    }
   }
 
   @override
@@ -756,8 +790,6 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
             // 弹出菜单常驻挂载（用 `show` 控制显隐），关闭动画才能播完。
             // `MiuixPopupLayout` 的 build 返回 `SizedBox.shrink()`，不占布局。
             _buildMoreMenu(context),
-            // 底部抽屉同理：常驻挂载，靠 `show` 开合，退场动画才播得完。
-            _buildAddAccountSheet(context),
           ],
         );
       },
@@ -768,7 +800,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       //    floatingActionButtonLocation。
       bottomBar: SizedBox(height: miuixNavBarOccupied(context)),
       floatingActionButton: MiuixFloatingActionButton(
-        onPressed: () => setState(() => _showAddAccountSheet = true),
+        onPressed: () => _openAddAccountSheet(context),
         // 用 `MiuixIcon` 而不是裸 `Icon`：`MiuixFloatingActionButton` 内部会
         // 通过 `MiuixContentColor` 注入 `colors.onSurface`，而裸 `Icon` 不读这个
         // InheritedWidget（只有 `MiuixText` / `MiuixIcon` 读），会掉到环境

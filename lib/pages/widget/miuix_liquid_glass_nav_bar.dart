@@ -395,9 +395,12 @@ class _MiuixLiquidGlassNavigationBarState
             if (!widget.visible && progress < .001) {
               return SizedBox(width: width, height: widget.height + widget.bottomPadding);
             }
+            final effectiveLeft = !_positioned ? leftOf(_index) : _left.value;
+            final effectiveRight =
+                !_positioned ? leftOf(_index) + _slot + 10 : _right.value;
             final bounds = miuixGlassNavigationIndicatorBounds(
-              _left.value,
-              _right.value,
+              effectiveLeft,
+              effectiveRight,
               width,
               3,
             );

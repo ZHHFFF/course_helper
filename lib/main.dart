@@ -640,7 +640,17 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
+  int? _targetNavIndex;
+
   void _onPageChanged(int index) {
+    if (_targetNavIndex != null) {
+      if (index == _targetNavIndex) {
+        _targetNavIndex = null;
+      } else {
+        // 正在通过点击底栏进行长距离跨页平滑滚动，忽略中间过渡页的触发，防止底栏图标与指示器在过渡期来回抽搐抖动
+        return;
+      }
+    }
     if (_selectedIndex != index) {
       setState(() {
         _selectedIndex = index;
@@ -652,6 +662,7 @@ class _MainPageState extends State<MainPage> {
   /// 底栏点击统一入口（切页 + 动画平滑滚动 PageView + 通知课程页可见性变化）
   void _onNavTap(int index) {
     if (index == _selectedIndex) return;
+    _targetNavIndex = index;
     setState(() {
       _selectedIndex = index;
     });
@@ -660,7 +671,11 @@ class _MainPageState extends State<MainPage> {
         index,
         duration: const Duration(milliseconds: 320),
         curve: Curves.easeOutCubic,
-      );
+      ).then((_) {
+        if (_targetNavIndex == index) {
+          _targetNavIndex = null;
+        }
+      });
     }
     (coursesPageKey.currentState as dynamic)?.onVisibilityChanged(index == 0);
   }

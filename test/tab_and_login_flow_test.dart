@@ -3,6 +3,8 @@ import 'package:flutter_miuix/miuix.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:course_helper/main.dart';
+import 'package:course_helper/pages/accounts.dart';
 import 'package:course_helper/pages/login.dart';
 import 'package:course_helper/pages/widget/miuix_liquid_glass_nav_bar.dart';
 
@@ -83,6 +85,83 @@ void main() {
       await tester.pumpAndSettle();
 
       // 点击登录按钮
+      await tester.tap(loginBtnFinder);
+      await tester.pumpAndSettle();
+
+      expect(find.text('请输入账号'), findsOneWidget);
+    });
+  });
+
+  group('账号页添加账号与路由跳转回归测试 (AccountsSheet & Route Transition)', () {
+    testWidgets('从账号页点击加号，再点击密码登录，能够顺利进入 LoginPage 并且点击登录按钮有响应', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MiuixTheme(
+            data: MiuixThemeData.light(),
+            child: const AccountsPage(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 找到 FAB 并点击
+      final fabFinder = find.byType(MiuixFloatingActionButton);
+      expect(fabFinder, findsOneWidget);
+      await tester.tap(fabFinder);
+      await tester.pumpAndSettle();
+
+      // 检查抽屉是否出现
+      final passwordPrefFinder = find.text('密码登录');
+      expect(passwordPrefFinder, findsOneWidget);
+
+      // 点击密码登录
+      await tester.tap(passwordPrefFinder);
+      await tester.pumpAndSettle();
+
+      // 应该已经进入了 LoginPage
+      expect(find.byType(LoginPage), findsOneWidget);
+
+      // 找到登录按钮
+      final loginBtnFinder = find.widgetWithText(MiuixButton, '登录');
+      expect(loginBtnFinder, findsOneWidget);
+
+      // 点击登录按钮
+      await tester.tap(loginBtnFinder);
+      await tester.pumpAndSettle();
+
+      // 校验失败显示提示「请输入账号」，表明手势完全未被遮挡
+      expect(find.text('请输入账号'), findsOneWidget);
+    });
+
+    testWidgets('从账号页点击加号，再点击验证码登录，能够顺利进入 LoginPage 并且获取验证码与登录按钮均可交互', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MiuixTheme(
+            data: MiuixThemeData.light(),
+            child: const AccountsPage(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final fabFinder = find.byType(MiuixFloatingActionButton);
+      await tester.tap(fabFinder);
+      await tester.pumpAndSettle();
+
+      final smsPrefFinder = find.text('验证码登录');
+      expect(smsPrefFinder, findsOneWidget);
+
+      await tester.tap(smsPrefFinder);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(LoginPage), findsOneWidget);
+      expect(find.text('获取验证码'), findsOneWidget);
+
+      final sendCodeBtn = find.widgetWithText(MiuixButton, '获取验证码');
+      await tester.tap(sendCodeBtn);
+      await tester.pumpAndSettle();
+
+      final loginBtnFinder = find.widgetWithText(MiuixButton, '验证码登录');
       await tester.tap(loginBtnFinder);
       await tester.pumpAndSettle();
 
@@ -194,6 +273,34 @@ void main() {
 
       expect(find.text('Page 1'), findsOneWidget);
       expect(selected, equals(1));
+    });
+
+    testWidgets('MainPage 点击远距离 Tab，中间切页过程中底栏 selectedIndex 稳定不抖动', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: MainPage(),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('设置'), findsOneWidget);
+
+      // 点击设置 Tab
+      await tester.tap(find.text('设置'));
+
+      final observedIndices = <int>[];
+      for (int i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 35));
+        final navBar = tester.widget<MiuixLiquidGlassNavigationBar>(find.byType(MiuixLiquidGlassNavigationBar));
+        observedIndices.add(navBar.selectedIndex);
+      }
+
+      await tester.pump(const Duration(milliseconds: 400));
+      final finalNavBar = tester.widget<MiuixLiquidGlassNavigationBar>(find.byType(MiuixLiquidGlassNavigationBar));
+      observedIndices.add(finalNavBar.selectedIndex);
+
+      // 验证过程中绝无跳变回 1 或 2，全程稳定为 3
+      expect(observedIndices.every((idx) => idx == 3), isTrue);
     });
   });
 }
