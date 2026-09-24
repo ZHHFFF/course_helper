@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
 
 import '../../../api/api_service.dart';
 import '../../../api/quiz.dart';
@@ -195,42 +196,51 @@ class _VotePageState extends State<VotePage> {
   }
 
   Widget _buildOptionCard(Map<String, dynamic> option, int index) {
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: RadioListTile<String>(
-        title: Text(
-          '${option['content']}',
-          style: const TextStyle(fontSize: 16),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: MiuixCard(
+        child: RadioListTile<String>(
+          title: Text(
+            '${option['content']}',
+            style: const TextStyle(fontSize: 16),
+          ),
+          value: option['name'],
+          activeColor: MiuixTheme.of(context).colors.primary,
+          controlAffinity: ListTileControlAffinity.trailing,
+          toggleable: true,
         ),
-        value: option['name'],
-        activeColor: Theme.of(context).colorScheme.primary,
-        controlAffinity: ListTileControlAffinity.trailing,
-        toggleable: true,
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.active.name),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return MiuixScaffold(
+      topBar: MiuixTopAppBar(
+        title: widget.active.name,
+        blurred: true,
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
       ),
-      body: Stack(
+      content: (contentPadding) => Stack(
         fit: StackFit.expand,
         children: [
           SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.only(
+              top: contentPadding.top + 16,
+              bottom: contentPadding.bottom + 80,
+              left: 16,
+              right: 16,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 if (_isLoading)
                   const Center(child: CircularProgressIndicator())
                 else if (_errorMessage != null)
-                  Card(
-                    color: Theme.of(context).colorScheme.errorContainer,
+                  MiuixCard(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
                       child: Column(
@@ -238,22 +248,19 @@ class _VotePageState extends State<VotePage> {
                           Icon(
                             Icons.error_outline,
                             size: 48,
-                            color: Theme.of(context).colorScheme.error,
+                            color: MiuixTheme.of(context).colors.error,
                           ),
                           const SizedBox(height: 16),
-                          Text(
+                          MiuixText(
                             _errorMessage!,
-                            style: const TextStyle(fontSize: 16),
+                            fontSize: 16,
                             textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 16),
-                          ElevatedButton(
+                          MiuixButton(
                             onPressed: _loadVoteData,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Theme.of(context).colorScheme.primary,
-                              foregroundColor: Colors.white,
-                            ),
-                            child: const Text('重新加载'),
+                            colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                            child: const MiuixText('重新加载', fontSize: 16),
                           ),
                         ],
                       ),
@@ -269,23 +276,21 @@ class _VotePageState extends State<VotePage> {
                           padding: const EdgeInsets.all(12),
                           margin: const EdgeInsets.only(bottom: 16),
                           decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.primaryContainer,
+                            color: MiuixTheme.of(context).colors.primaryContainer.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Row(
                             children: [
                               Icon(
                                 Icons.person_off,
-                                color: Theme.of(context).colorScheme.primary,
+                                color: MiuixTheme.of(context).colors.primary,
                                 size: 20,
                               ),
                               const SizedBox(width: 8),
-                              Text(
+                              MiuixText(
                                 '匿名投票',
-                                style: TextStyle(
-                                  color: Theme.of(context).colorScheme.primary,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                color: MiuixTheme.of(context).colors.primary,
+                                fontWeight: FontWeight.bold,
                               ),
                             ],
                           ),
@@ -319,7 +324,7 @@ class _VotePageState extends State<VotePage> {
                         initialSelected: _initialSelectedAccounts,
                       ),
                       
-                      const SizedBox(height: 80),
+                      const SizedBox(height: 20),
                     ],
                   ),
               ],
@@ -333,24 +338,15 @@ class _VotePageState extends State<VotePage> {
               right: 0,
               bottom: 0,
               child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).cardColor,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.1),
-                      blurRadius: 4,
-                      offset: const Offset(0, -2),
-                    ),
-                  ],
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                  bottom: contentPadding.bottom > 0 ? contentPadding.bottom : 16,
                 ),
-                child: ElevatedButton(
+                child: MiuixButton(
                   onPressed: _isSubmitting ? null : _submitForAllAccounts,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(double.infinity, 48),
-                  ),
+                  colors: MiuixButtonDefaults.buttonColorsPrimary(context),
                   child: _isSubmitting
                       ? const Row(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -364,10 +360,10 @@ class _VotePageState extends State<VotePage> {
                               ),
                             ),
                             SizedBox(width: 12),
-                            Text('提交中...'),
+                            MiuixText('提交中...', fontSize: 16),
                           ],
                         )
-                      : const Text('提交投票', style: TextStyle(fontSize: 16)),
+                      : const MiuixText('提交投票', fontSize: 16),
                 ),
               ),
             ),

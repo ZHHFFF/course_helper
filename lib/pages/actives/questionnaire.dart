@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
 import 'package:flutter_html/flutter_html.dart';
 
 import '../../../api/api_service.dart';
@@ -132,14 +133,18 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.active.name),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return MiuixScaffold(
+      topBar: MiuixTopAppBar(
+        title: widget.active.name,
+        blurred: true,
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
       ),
-      body: Column(
+      content: (contentPadding) => Column(
         children: [
+          SizedBox(height: contentPadding.top),
           // 主要内容
           Expanded(
             child: _isLoading
@@ -152,22 +157,19 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
                       Icon(
                         Icons.error_outline,
                         size: 48,
-                        color: Theme.of(context).colorScheme.error,
+                        color: MiuixTheme.of(context).colors.error,
                       ),
                       const SizedBox(height: 16),
-                      Text(
+                      MiuixText(
                         _errorMessage!,
-                        style: const TextStyle(fontSize: 16),
+                        fontSize: 16,
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 16),
-                      ElevatedButton(
+                      MiuixButton(
                         onPressed: _loadQuestionnaireData,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Theme.of(context).colorScheme.primary,
-                          foregroundColor: Colors.white,
-                        ),
-                        child: const Text('重新加载'),
+                        colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                        child: const MiuixText('重新加载', fontSize: 16),
                       ),
                     ],
                   ),
@@ -179,6 +181,7 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
                         // 题目列表
                         Expanded(
                           child: ListView.builder(
+                            padding: EdgeInsets.zero,
                             itemCount: _questionList.length,
                             itemBuilder: (context, index) {
                               return _buildQuestionItem(_questionList[index], index);
@@ -201,14 +204,15 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
                         
                         // 提交按钮
                         Container(
-                          padding: const EdgeInsets.all(16),
-                          child: ElevatedButton(
+                          padding: EdgeInsets.only(
+                            left: 16,
+                            right: 16,
+                            top: 16,
+                            bottom: contentPadding.bottom > 0 ? contentPadding.bottom : 16,
+                          ),
+                          child: MiuixButton(
                             onPressed: _isSubmitting ? null : _submitAnswersForAllAccounts,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Theme.of(context).colorScheme.primary,
-                              foregroundColor: Colors.white,
-                              minimumSize: const Size(double.infinity, 48),
-                            ),
+                            colors: MiuixButtonDefaults.buttonColorsPrimary(context),
                             child: _isSubmitting
                                 ? const Row(
                                     mainAxisAlignment: MainAxisAlignment.center,
@@ -222,10 +226,10 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
                                         ),
                                       ),
                                       SizedBox(width: 12),
-                                      Text('提交中...'),
+                                      MiuixText('提交中...', fontSize: 16),
                                     ],
                                   )
-                                : const Text('提交', style: TextStyle(fontSize: 16)),
+                                : const MiuixText('提交', fontSize: 16),
                           ),
                         ),
                       ],
@@ -240,9 +244,10 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
     final questionType = question['type'];
     final isMust = question['ismust'] == 1;
     
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Padding(
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: MiuixCard(
+        child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -300,6 +305,7 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
           ],
         ),
       ),
+    ),
     );
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
 import 'package:flutter/services.dart';
 
 import '../../../api/api_service.dart';
@@ -235,9 +236,10 @@ class _EvaluatePageState extends State<EvaluatePage> {
     final maxScore = int.parse(norm['score']);
     final content = norm['content'];
     
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Padding(
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: MiuixCard(
+        child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(
           children: [
@@ -292,30 +294,38 @@ class _EvaluatePageState extends State<EvaluatePage> {
           ],
         ),
       ),
+    ),
     );
   }
   
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.active.name),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return MiuixScaffold(
+      topBar: MiuixTopAppBar(
+        title: widget.active.name,
+        blurred: true,
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
       ),
-      body: Stack(
+      content: (contentPadding) => Stack(
         fit: StackFit.expand,
         children: [
           SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
+            padding: EdgeInsets.only(
+              top: contentPadding.top + 16,
+              bottom: contentPadding.bottom + 80,
+              left: 16,
+              right: 16,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 if (_isLoading)
                   const Center(child: CircularProgressIndicator())
                 else if (_errorMessage != null)
-                  Card(
-                    color: Theme.of(context).colorScheme.errorContainer,
+                  MiuixCard(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
                       child: Column(
@@ -323,22 +333,19 @@ class _EvaluatePageState extends State<EvaluatePage> {
                           Icon(
                             Icons.error_outline,
                             size: 48,
-                            color: Theme.of(context).colorScheme.error,
+                            color: MiuixTheme.of(context).colors.error,
                           ),
                           const SizedBox(height: 16),
-                          Text(
+                          MiuixText(
                             _errorMessage!,
-                            style: const TextStyle(fontSize: 16),
+                            fontSize: 16,
                             textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 16),
-                          ElevatedButton(
+                          MiuixButton(
                             onPressed: _initialize,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Theme.of(context).colorScheme.primary,
-                              foregroundColor: Colors.white,
-                            ),
-                            child: const Text('重新加载'),
+                            colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                            child: const MiuixText('重新加载', fontSize: 16),
                           ),
                         ],
                       ),
@@ -408,7 +415,7 @@ class _EvaluatePageState extends State<EvaluatePage> {
                         initiallyExpanded: true,
                       ),
                       
-                      const SizedBox(height: 80),
+                      const SizedBox(height: 20),
                     ],
                   ),
               ],
@@ -422,24 +429,15 @@ class _EvaluatePageState extends State<EvaluatePage> {
               right: 0,
               bottom: 0,
               child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).cardColor,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.1),
-                      blurRadius: 4,
-                      offset: const Offset(0, -2),
-                    ),
-                  ],
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                  bottom: contentPadding.bottom > 0 ? contentPadding.bottom : 16,
                 ),
-                child: ElevatedButton(
+                child: MiuixButton(
                   onPressed: _isSubmitting ? null : _submitForAllAccounts,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(double.infinity, 48),
-                  ),
+                  colors: MiuixButtonDefaults.buttonColorsPrimary(context),
                   child: _isSubmitting
                       ? const Row(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -453,10 +451,10 @@ class _EvaluatePageState extends State<EvaluatePage> {
                               ),
                             ),
                             SizedBox(width: 12),
-                            Text('提交中...'),
+                            MiuixText('提交中...', fontSize: 16),
                           ],
                         )
-                      : const Text('提交', style: TextStyle(fontSize: 16)),
+                      : const MiuixText('提交', fontSize: 16),
                 ),
               ),
             ),

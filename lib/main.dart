@@ -188,10 +188,10 @@ class MyApp extends StatelessWidget {
     );
   }
 
-  /// 浅色主题：纯白背景 + 紫色主色（seed deepPurple）
+  /// 浅色主题：纯白背景 + Miuix 蓝色主色（seed 0xFF3482FF）
   static ThemeData _buildLightTheme() {
     final base = ColorScheme.fromSeed(
-      seedColor: Colors.deepPurple,
+      seedColor: const Color(0xFF3482FF),
       brightness: Brightness.light,
     );
     return ThemeData(
@@ -218,7 +218,7 @@ class MyApp extends StatelessWidget {
   /// 卡片会和背景糊在一起、层级关系完全丢失。
   static ThemeData _buildDarkTheme() {
     final base = ColorScheme.fromSeed(
-      seedColor: Colors.deepPurple,
+      seedColor: const Color(0xFF3482FF),
       brightness: Brightness.dark,
     );
     return ThemeData(

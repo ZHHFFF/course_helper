@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_baidu_mapapi_base/flutter_baidu_mapapi_base.dart';
@@ -184,14 +185,18 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => Scaffold(
-          appBar: AppBar(
-            title: const Text('选择位置'),
-            backgroundColor: Theme.of(context).colorScheme.primary,
-            foregroundColor: Colors.white,
+        builder: (context) => MiuixScaffold(
+          topBar: MiuixTopAppBar(
+            title: '选择位置',
+            blurred: true,
+            navigationIcon: MiuixIconButton(
+              onPressed: () => Navigator.of(context).maybePop(),
+              child: const Icon(Icons.arrow_back_ios_new, size: 20),
+            ),
           ),
-          body: Column(
+          content: (contentPadding) => Column(
             children: [
+              SizedBox(height: contentPadding.top),
               Expanded(
                 child: BaiduMapWidget(
                   showLocationButton: true,
@@ -202,28 +207,27 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                   },
                 ),
               ),
-              SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () {
-                        setState(() {
-                          _latitudeController.text = selectedCoordinate!.latitude.toStringAsFixed(6);
-                          _longitudeController.text = selectedCoordinate!.longitude.toStringAsFixed(6);
-                          _addressController.text = selectedAddress?.isEmpty ?? true
-                              ? '未知位置'
-                              : selectedAddress!;
-                        });
-                        Navigator.pop(context);
-                      },
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                      child: const Text('确认选择'),
-                    ),
-                  ),
+              Container(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                  bottom: contentPadding.bottom > 0 ? contentPadding.bottom : 16,
+                ),
+                width: double.infinity,
+                child: MiuixButton(
+                  onPressed: () {
+                    setState(() {
+                      _latitudeController.text = selectedCoordinate!.latitude.toStringAsFixed(6);
+                      _longitudeController.text = selectedCoordinate!.longitude.toStringAsFixed(6);
+                      _addressController.text = selectedAddress?.isEmpty ?? true
+                          ? '未知位置'
+                          : selectedAddress!;
+                    });
+                    Navigator.pop(context);
+                  },
+                  colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                  child: const MiuixText('确认选择', fontSize: 16),
                 ),
               ),
             ],
@@ -321,25 +325,31 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('课程设置'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return MiuixScaffold(
+      topBar: MiuixTopAppBar(
+        title: '课程设置',
+        blurred: true,
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
       ),
-      body: _isLoading
+      content: (contentPadding) => _isLoading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.only(
+                top: contentPadding.top + 16,
+                bottom: contentPadding.bottom + 24,
+                left: 16,
+                right: 16,
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  const MiuixText(
                     '位置',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
                   ),
                   const SizedBox(height: 16),
                   TextField(
@@ -348,7 +358,7 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                       labelText: '教室(可选)',
                       hintText: '1教-3211',
                       prefixIcon: Icon(Icons.meeting_room),
-                      border: OutlineInputBorder()
+                      border: OutlineInputBorder(),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -356,10 +366,10 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                     controller: _addressController,
                     decoration: InputDecoration(
                       labelText: '地址',
-                      hintText: '北京市海淀区上地七街1号北京市海淀区上地七街1号',
+                      hintText: '北京市海淀区上地七街1号',
                       prefixIcon: const Icon(Icons.place),
                       border: const OutlineInputBorder(),
-                      errorText: _addressError
+                      errorText: _addressError,
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -373,11 +383,11 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                             hintText: '40.040905',
                             prefixIcon: const Icon(Icons.north),
                             border: const OutlineInputBorder(),
-                            errorText: _latitudeError
+                            errorText: _latitudeError,
                           ),
                           keyboardType: const TextInputType.numberWithOptions(
                             decimal: true,
-                            signed: true
+                            signed: true,
                           ),
                         ),
                       ),
@@ -390,11 +400,11 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                             hintText: '116.318506',
                             prefixIcon: const Icon(Icons.east),
                             border: const OutlineInputBorder(),
-                            errorText: _longitudeError
+                            errorText: _longitudeError,
                           ),
                           keyboardType: const TextInputType.numberWithOptions(
                             decimal: true,
-                            signed: true
+                            signed: true,
                           ),
                         ),
                       ),
@@ -404,23 +414,27 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      IconButton.filled(
+                      MiuixButton(
                         onPressed: _showMapPicker,
-                        icon: const Icon(Icons.map),
-                        tooltip: '选择位置'
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.map, size: 18),
+                            SizedBox(width: 6),
+                            MiuixText('地图选点', fontSize: 14),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 24),
-                  const Text(
+                  const MiuixText(
                     '图片',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
                   ),
                   const SizedBox(height: 16),
-                  Card(
+                  MiuixCard(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
                       child: Column(
@@ -530,15 +544,27 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                             children: [
-                              ElevatedButton.icon(
+                              MiuixButton(
                                 onPressed: () => _pickAndUploadImage(ImageSource.camera),
-                                icon: const Icon(Icons.camera_alt),
-                                label: const Text('拍照'),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.camera_alt, size: 18),
+                                    SizedBox(width: 6),
+                                    MiuixText('拍照', fontSize: 14),
+                                  ],
+                                ),
                               ),
-                              ElevatedButton.icon(
+                              MiuixButton(
                                 onPressed: () => _pickAndUploadImage(ImageSource.gallery),
-                                icon: const Icon(Icons.photo_library),
-                                label: const Text('相册'),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.photo_library, size: 18),
+                                    SizedBox(width: 6),
+                                    MiuixText('相册', fontSize: 14),
+                                  ],
+                                ),
                               ),
                             ],
                           ),
@@ -549,13 +575,16 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                   const SizedBox(height: 24),
                   SizedBox(
                     width: double.infinity,
-                    height: 48,
-                    child: ElevatedButton.icon(
+                    child: MiuixButton(
                       onPressed: _saveSettings,
-                      icon: const Icon(Icons.save),
-                      label: const Text(
-                        '保存设置',
-                        style: TextStyle(fontSize: 16),
+                      colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.save, size: 18),
+                          SizedBox(width: 8),
+                          MiuixText('保存设置', fontSize: 16),
+                        ],
                       ),
                     ),
                   ),

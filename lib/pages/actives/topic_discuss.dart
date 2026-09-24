@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
 import 'dart:async';
 
 import '../../../api/topic_discuss.dart';
@@ -208,9 +209,10 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
   Widget _buildTopicHeader() {
     if (_topicData == null) return const SizedBox.shrink();
     
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      child: Padding(
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: MiuixCard(
+        child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -259,50 +261,53 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
           ],
         ),
       ),
+    ),
     );
   }
 
   Widget _buildReplyItem(Map<String, dynamic> reply) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                AvatarWidget(
-                  key: ValueKey(reply['photo']),
-                  imageUrl: reply['photo'],
-                  size: 48,
-                  borderRadius: 8,
-                  iconSize: 32,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        reply['creater_name'],
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: MiuixCard(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  AvatarWidget(
+                    key: ValueKey(reply['photo']),
+                    imageUrl: reply['photo'],
+                    size: 48,
+                    borderRadius: 8,
+                    iconSize: 32,
                   ),
-                ),
-                Text(
-                  reply['ftime'],
-                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            SelectableText(
-              reply['content'] ?? '',
-              style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-            ),
-          ],
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          reply['creater_name'],
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    reply['ftime'],
+                    style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SelectableText(
+                reply['content'] ?? '',
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -427,18 +432,25 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
     
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      resizeToAvoidBottomInset: true,
-      appBar: AppBar(
-        title: const Text('主题讨论'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return MiuixScaffold(
+      topBar: MiuixTopAppBar(
+        title: '主题讨论',
+        blurred: true,
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
       ),
-      body: Column(
+      content: (contentPadding) => Column(
         children: [
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
+              padding: EdgeInsets.only(
+                top: contentPadding.top + 16,
+                bottom: 16,
+                left: 16,
+                right: 16,
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -446,13 +458,12 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
                     const Center(child: CircularProgressIndicator()),
                   
                   if (_errorMessage != null)
-                    Card(
-                      color: Theme.of(context).colorScheme.errorContainer,
+                    MiuixCard(
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Text(
                           _errorMessage!,
-                          style: TextStyle(color: Theme.of(context).colorScheme.error),
+                          style: TextStyle(color: MiuixTheme.of(context).colors.error),
                         ),
                       ),
                     ),
@@ -466,7 +477,7 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
                         _selectedAccounts = selected;
                       });
                     },
-                    initiallyExpanded: false
+                    initiallyExpanded: false,
                   ),
                   
                   const SizedBox(height: 20),
@@ -479,7 +490,10 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
               ),
             ),
           ),
-          _buildBottomCommentInput(),
+          Padding(
+            padding: EdgeInsets.only(bottom: contentPadding.bottom),
+            child: _buildBottomCommentInput(),
+          ),
         ],
       ),
     );
