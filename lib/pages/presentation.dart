@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
@@ -1852,11 +1853,14 @@ class _PresentationPageState extends State<PresentationPage>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: _isFullScreen ? null : AppBar(
-        title: Text(widget.title),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return MiuixScaffold(
+      topBar: _isFullScreen ? null : MiuixTopAppBar(
+        title: widget.title,
+        blurred: true,
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
         actions: [
           // [新增] 课件缓存进度 + 导出 PDF
           //
@@ -1869,32 +1873,29 @@ class _PresentationPageState extends State<PresentationPage>
                 return Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   child: Center(
-                    child: Text(
+                    child: MiuixText(
                       '缓存中 ${p.label}',
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      fontSize: 12,
                     ),
                   ),
                 );
               }
               if (p.isNotEmpty && !p.isComplete) {
-                return IconButton(
-                  tooltip: '课件缓存不完整（${p.label}），点击重试',
+                return MiuixIconButton(
                   onPressed: _retryPrefetch,
-                  icon: const Icon(Icons.refresh),
+                  child: const Icon(Icons.refresh),
                 );
               }
-              return IconButton(
-                tooltip: p.isComplete ? '导出整份 PPT 为 PDF' : '课件还没开始缓存',
+              return MiuixIconButton(
                 onPressed: (_isExporting || !p.isComplete)
                     ? null
                     : _exportPresentationPdf,
-                icon: _isExporting
+                child: _isExporting
                     ? const SizedBox(
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          color: Colors.white,
                         ),
                       )
                     : const Icon(Icons.picture_as_pdf_outlined),
@@ -1903,7 +1904,9 @@ class _PresentationPageState extends State<PresentationPage>
           ),
         ],
       ),
-      body: _isLoading
+      content: (contentPadding) => Padding(
+        padding: EdgeInsets.only(top: _isFullScreen ? 0 : contentPadding.top),
+        child: _isLoading
           ? const Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -2206,6 +2209,7 @@ class _PresentationPageState extends State<PresentationPage>
                     ),
                   ],
                 ),
+      ),
     );
   }
 

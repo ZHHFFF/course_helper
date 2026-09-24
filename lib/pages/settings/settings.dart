@@ -48,28 +48,21 @@ class _SettingsPageState extends State<SettingsPage> {
   /// `courses/list.dart` 里同名字段的注释。
   double _topBarInset = 0;
 
-  PlatformType _platform = PlatformManager().currentPlatform;
-  RainClassroomServerType _server = PlatformManager().currentServer;
+  PlatformType get _platform => PlatformManager().currentPlatform;
+  RainClassroomServerType get _server => PlatformManager().currentServer;
 
   Future<void> _setPlatform(PlatformType value) async {
     if (_platform == value) return;
-    setState(() => _platform = value);
-    // 切换平台会连带切换账号池（`switchToPlatformAccounts`），
-    // 完成后重新读一次当前值，保证界面与实际状态一致。
     await PlatformManager().setPlatform(value);
     if (!mounted) return;
-    setState(() {
-      _platform = PlatformManager().currentPlatform;
-      _server = PlatformManager().currentServer;
-    });
+    setState(() {});
   }
 
   Future<void> _setServer(RainClassroomServerType value) async {
     if (_server == value) return;
-    setState(() => _server = value);
     await PlatformManager().setServer(value);
     if (!mounted) return;
-    setState(() => _server = PlatformManager().currentServer);
+    setState(() {});
   }
 
   void _open(Widget page) {

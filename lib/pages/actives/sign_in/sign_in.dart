@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
 import 'package:flutter_baidu_mapapi_base/flutter_baidu_mapapi_base.dart';
 import 'dart:async';
 import 'dart:io';
@@ -392,28 +393,39 @@ class SignInPageState extends State<SignInPage> {
   @override
   Widget build(BuildContext context) {
     if (!_isDataLoaded) {
-      return Scaffold(
-        appBar: AppBar(
-          title: Text(widget.active.name),
-          backgroundColor: Theme.of(context).colorScheme.primary,
-          foregroundColor: Colors.white,
+      return MiuixScaffold(
+        topBar: MiuixTopAppBar(
+          title: widget.active.name,
+          blurred: true,
+          navigationIcon: MiuixIconButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+            child: const Icon(Icons.arrow_back_ios_new, size: 20),
+          ),
         ),
-        body: const Center(
-          child: CircularProgressIndicator()
-        )
+        content: (contentPadding) => const Center(
+          child: CircularProgressIndicator(),
+        ),
       );
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.active.name),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return MiuixScaffold(
+      topBar: MiuixTopAppBar(
+        title: widget.active.name,
+        blurred: true,
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
       ),
-      body: Stack(
+      content: (contentPadding) => Stack(
         children: [
           SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
+            padding: EdgeInsets.only(
+              top: contentPadding.top + 20,
+              bottom: contentPadding.bottom + 20,
+              left: 20,
+              right: 20,
+            ),
             child: Column(
               children: [
                 const SizedBox(height: 20),
@@ -868,10 +880,18 @@ class SignLocationUi {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => Scaffold(
-          appBar: AppBar(title: const Text('选择签到位置')),
-          body: Column(
+        builder: (context) => MiuixScaffold(
+          topBar: MiuixTopAppBar(
+            title: '选择签到位置',
+            blurred: true,
+            navigationIcon: MiuixIconButton(
+              onPressed: () => Navigator.of(context).maybePop(),
+              child: const Icon(Icons.arrow_back_ios_new, size: 20),
+            ),
+          ),
+          content: (contentPadding) => Column(
             children: [
+              SizedBox(height: contentPadding.top),
               Expanded(
                 child: BaiduMapWidget(
                   onLocationSelectedWithAddress: (coordinate, address) {
@@ -880,45 +900,44 @@ class SignLocationUi {
                   },
                 ),
               ),
-              SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () {
-                        if (selectedCoordinate != null) {
-                          // 保存位置到签到参数
-                          state.signParams.latitude = selectedCoordinate!.latitude;
-                          state.signParams.longitude = selectedCoordinate!.longitude;
-                          state.signParams.address = selectedAddress?.isEmpty ?? true
-                              ? '未知位置'
-                              : selectedAddress!;
-                          Navigator.pop(context);
+              Container(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                  bottom: contentPadding.bottom > 0 ? contentPadding.bottom : 16,
+                ),
+                width: double.infinity,
+                child: MiuixButton(
+                  onPressed: () {
+                    if (selectedCoordinate != null) {
+                      // 保存位置到签到参数
+                      state.signParams.latitude = selectedCoordinate!.latitude;
+                      state.signParams.longitude = selectedCoordinate!.longitude;
+                      state.signParams.address = selectedAddress?.isEmpty ?? true
+                          ? '未知位置'
+                          : selectedAddress!;
+                      Navigator.pop(context);
 
-                          // 异步保存位置到课程配置
-                          saveLocationToCourse(state);
+                      // 异步保存位置到课程配置
+                      saveLocationToCourse(state);
 
-                          // 返回后刷新UI，显示已选择位置
-                          if (state.mounted) {
-                            (state.context as Element).markNeedsBuild();
-                          }
+                      // 返回后刷新UI，显示已选择位置
+                      if (state.mounted) {
+                        (state.context as Element).markNeedsBuild();
+                      }
 
-                          if (autoSign) {
-                            state.performMultiSign();
-                          }
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('请先点击地图选择位置')),
-                          );
-                        }
-                      },
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                      child: Text(autoSign ? '确认选择并签到' : '确认选择'),
-                    ),
-                  ),
+                      if (autoSign) {
+                        state.performMultiSign();
+                      }
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('请先点击地图选择位置')),
+                      );
+                    }
+                  },
+                  colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                  child: MiuixText(autoSign ? '确认选择并签到' : '确认选择', fontSize: 16),
                 ),
               ),
             ],

@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:flutter_miuix/miuix.dart';
 
 import '../../../api/api_service.dart';
 import '../../../api/quiz.dart';
@@ -773,78 +774,76 @@ class _QuizPageState extends State<QuizPage> {
     final quizType = quiz['type'];
     final isMust = quiz['ismust'] == 1;
 
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  '${index + 1}. ',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-                if (isMust)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    margin: const EdgeInsets.only(right: 8),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.error,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Text(
-                      '必答',
-                      style: TextStyle(color: Colors.white, fontSize: 12),
-                    ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: MiuixCard(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    '${index + 1}. ',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '[${_getQuizTypeName(quizType)}] ',
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  if (isMust)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      margin: const EdgeInsets.only(right: 8),
+                      decoration: BoxDecoration(
+                        color: MiuixTheme.of(context).colors.error,
+                        borderRadius: BorderRadius.circular(4),
                       ),
-                      SelectionArea(
-                        child: Html(
-                          data: quiz['content'] ?? '',
-                          extensions: [
-                            ImageExtension(
-                              builder: (context) {
-                                final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
-                                return Image.network(
-                                  imageUrl,
-                                  headers: HeadersManager.chaoxingHeaders,
-                                  width: 80,
-                                  alignment: Alignment.bottomCenter
-                                );
-                              }
-                            )
-                          ]
+                      child: Text(
+                        '必答',
+                        style: TextStyle(color: MiuixTheme.of(context).colors.onError, fontSize: 12),
+                      ),
+                    ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '[${_getQuizTypeName(quizType)}] ',
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                         ),
-                      ),
-                    ],
+                        SelectionArea(
+                          child: Html(
+                            data: quiz['content'] ?? '',
+                            extensions: [
+                              ImageExtension(
+                                builder: (context) {
+                                  final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
+                                  return Image.network(
+                                    imageUrl,
+                                    headers: HeadersManager.chaoxingHeaders,
+                                    width: 80,
+                                    alignment: Alignment.bottomCenter
+                                  );
+                                }
+                              )
+                            ]
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                // [新增] 搜索答案按钮
-                IconButton(
-                  icon: const Icon(Icons.search, size: 20),
-                  onPressed: () => _searchAnswer(quiz),
-                  tooltip: '搜索答案',
-                  style: IconButton.styleFrom(
-                    foregroundColor: Theme.of(context).colorScheme.primary,
+                  // [新增] 搜索答案按钮
+                  MiuixIconButton(
+                    onPressed: () => _searchAnswer(quiz),
+                    child: Icon(Icons.search, size: 20, color: Theme.of(context).colorScheme.primary),
                   ),
-                ),
-                // [/新增]
-              ],
-            ),
-            // [新增] 答案检索入口（可选位置，在题干下方、选项上方）
-            // 实际通过上方 IconButton 触发，此处不再重复
-            // [/新增]
-            _buildQuizContent(quiz, index),
-          ],
+                  // [/新增]
+                ],
+              ),
+              // [新增] 答案检索入口（可选位置，在题干下方、选项上方）
+              // 实际通过上方 IconButton 触发，此处不再重复
+              // [/新增]
+              _buildQuizContent(quiz, index),
+            ],
+          ),
         ),
       ),
     );
@@ -1389,14 +1388,18 @@ class _QuizPageState extends State<QuizPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.active.name),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return MiuixScaffold(
+      topBar: MiuixTopAppBar(
+        title: widget.active.name,
+        blurred: true,
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
       ),
-      body: Column(
+      content: (contentPadding) => Column(
         children: [
+          SizedBox(height: contentPadding.top),
           if (_activeData != null)
             CountdownDisplay(
               timeNotifier: _remainingTimeNotifier,
@@ -1405,7 +1408,7 @@ class _QuizPageState extends State<QuizPage> {
 
           Expanded(
             child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
+                ? const Center(child: CircularProgressIndicator()) // Using default or MiuixCircularProgressIndicator if available
                 : _errorMessage != null
               ? Center(
                   child: Column(
@@ -1414,22 +1417,18 @@ class _QuizPageState extends State<QuizPage> {
                       Icon(
                         Icons.error_outline,
                         size: 48,
-                        color: Theme.of(context).colorScheme.error,
+                        color: MiuixTheme.of(context).colors.error,
                       ),
                       const SizedBox(height: 16),
-                      Text(
+                      MiuixText(
                         _errorMessage!,
-                        style: const TextStyle(fontSize: 16),
-                        textAlign: TextAlign.center,
+                        fontSize: 16,
                       ),
                       const SizedBox(height: 16),
-                      ElevatedButton(
+                      MiuixButton(
                         onPressed: _loadQuizData,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Theme.of(context).colorScheme.primary,
-                          foregroundColor: Colors.white,
-                        ),
-                        child: const Text('重新加载'),
+                        colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                        child: const MiuixText('重新加载', fontSize: 16),
                       ),
                     ],
                   ),
@@ -1440,6 +1439,7 @@ class _QuizPageState extends State<QuizPage> {
                       children: [
                         Expanded(
                           child: ListView.builder(
+                            padding: EdgeInsets.zero,
                             itemCount: _quizList.length,
                             itemBuilder: (context, index) {
                               return _buildQuizItem(_quizList[index], index);
@@ -1459,31 +1459,33 @@ class _QuizPageState extends State<QuizPage> {
                         const SizedBox(height: 16),
 
                         Container(
-                          padding: const EdgeInsets.all(16),
-                          child: ElevatedButton(
+                          padding: EdgeInsets.only(
+                            left: 16, 
+                            right: 16, 
+                            top: 16, 
+                            bottom: contentPadding.bottom > 0 ? contentPadding.bottom : 16
+                          ),
+                          child: MiuixButton(
                             onPressed: _isSubmitting ? null : _submitAnswersForAllAccounts,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Theme.of(context).colorScheme.primary,
-                              foregroundColor: Colors.white,
-                              minimumSize: const Size(double.infinity, 48),
-                            ),
-                            child: _isSubmitting
-                                ? const Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      SizedBox(
-                                        width: 20,
-                                        height: 20,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                                        ),
+                            colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                            child: _isSubmitting 
+                              ? const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                                       ),
-                                      SizedBox(width: 12),
-                                      Text('提交中...'),
-                                    ],
-                                  )
-                                : const Text('提交', style: TextStyle(fontSize: 16)),
+                                    ),
+                                    SizedBox(width: 12),
+                                    MiuixText('提交中...', fontSize: 16),
+                                  ],
+                                )
+                              : const MiuixText('提交', fontSize: 16),
                           ),
                         ),
                       ],

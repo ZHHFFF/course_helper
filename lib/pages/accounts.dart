@@ -35,7 +35,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   final Set<String> _selectedAccounts = <String>{};
   bool _isMultiSelectMode = false;
   String? _currentAccountId;
-  PlatformType _selectedPlatform = PlatformManager().currentPlatform;
+  PlatformType get _selectedPlatform => PlatformManager().currentPlatform;
   StreamSubscription? _accountChangeSubscription;
 
   /// 顶栏「滚动折叠」的行为对象。必须**只创建一次**（它持有折叠进度，
@@ -130,7 +130,6 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
               selected: _selectedPlatform == platform,
               onClick: () async {
                 setState(() {
-                  _selectedPlatform = platform;
                   _showMoreMenu = false;
                 });
                 await PlatformManager().setPlatform(platform);

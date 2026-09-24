@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
 
 import '../../api/course.dart';
 import '../../models/active.dart';
@@ -78,98 +79,130 @@ class _CourseContentPageState extends State<CourseContentPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.courseName),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    final colors = MiuixTheme.of(context).colors;
+
+    return MiuixScaffold(
+      topBar: MiuixTopAppBar(
+        title: widget.courseName,
+        blurred: true,
+        navigationIcon: MiuixIconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
+          MiuixIconButton(
+            child: const Icon(Icons.settings, size: 20),
             onPressed: () {
               Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder: (context) => CourseSettingsPage(
-                    courseId: widget.courseId
+                    courseId: widget.courseId,
                   ),
                 ),
               );
             },
-            tooltip: '课程设置'
           ),
         ],
       ),
-      body: _isContentLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _activeList.isEmpty
-          ? Center(
-        child: Text(
-          '暂无内容',
-          style: const TextStyle(fontSize: 18, color: Colors.grey)
-        ),
-      )
-          : RefreshIndicator(
-        onRefresh: _loadCourseContent,
-        child: ListView.builder(
-          itemCount: _activeList.length,
-          itemBuilder: (context, index) {
-            var active = _activeList[index];
-            return Card(
-              margin: const EdgeInsets.symmetric(
-                  horizontal: 16, vertical: 8),
-              child: ListTile(
-                leading: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).cardColor,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    active.getIcon(),
-                    color: active.status
-                        ? Theme.of(context).colorScheme.primary
-                        : Colors.grey,
-                    size: 35,
-                  ),
-                ),
-                title: Text(
-                  active.name,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      active.description.isEmpty ?
-                      '手动结束' : active.description,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey,
-                      ),
+      content: (contentPadding) {
+        if (_isContentLoading) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (_activeList.isEmpty) {
+          return Center(
+            child: MiuixText(
+              '暂无内容',
+              fontSize: 18,
+              color: colors.onSurfaceVariantSummary,
+            ),
+          );
+        }
+        return RefreshIndicator(
+          onRefresh: _loadCourseContent,
+          child: ListView.builder(
+            padding: EdgeInsets.only(
+              top: contentPadding.top,
+              bottom: contentPadding.bottom + 16,
+            ),
+            itemCount: _activeList.length,
+            itemBuilder: (context, index) {
+              final active = _activeList[index];
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: MiuixCard(
+                  feedbackType: MiuixPressFeedbackType.sink,
+                  onPressed: () {
+                    CoursesPage.navigateToActive(
+                      context,
+                      active,
+                      widget.courseId,
+                      widget.classId,
+                      widget.cpi,
+                    );
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: active.status
+                                ? colors.primaryContainer.withValues(alpha: 0.2)
+                                : colors.secondaryContainer,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Center(
+                            child: Icon(
+                              active.getIcon(),
+                              color: active.status ? colors.primary : colors.onSurfaceVariantActions,
+                              size: 26,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              MiuixText(
+                                active.name,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 4),
+                              MiuixText(
+                                active.description.isEmpty ? '手动结束' : active.description,
+                                fontSize: 13,
+                                color: colors.onSurfaceVariantSummary,
+                              ),
+                              const SizedBox(height: 2),
+                              MiuixText(
+                                '参与人数：${active.attendNum}',
+                                fontSize: 12,
+                                color: colors.onSurfaceVariantSummary,
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(
+                          Icons.chevron_right,
+                          color: colors.onSurfaceVariantActions,
+                        ),
+                      ],
                     ),
-                    Text(
-                      '参与人数：${active.attendNum}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey
-                      )
-                    )
-                  ],
+                  ),
                 ),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () {
-                  CoursesPage.navigateToActive(context, active, widget.courseId, widget.classId, widget.cpi);
-                },
-              ),
-            );
-          },
-        ),
-      ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }

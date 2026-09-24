@@ -128,9 +128,9 @@ flutter test
 | # | Tab | 页面 | 保活 |
 |---|-----|------|------|
 | 0 | 课程 | `pages/courses/list.dart` | ✅ `Offstage`（3 秒轮询不能断） |
-| 1 | 账号 | `pages/accounts.dart` | ❌ 切走即释放 |
+| 1 | 账号 | `pages/accounts.dart` | ✅ `Offstage`（保持已加载列表与滚动位置） |
 | 2 | 课件 | `pages/courseware/list.dart` | ✅ `Offstage`（要记住打开到哪一层） |
-| 3 | 设置 | `pages/settings/settings.dart` | ❌ 切走即释放 |
+| 3 | 设置 | `pages/settings/settings.dart` | ✅ `Offstage`（保持设置状态与滚动位置） |
 
 **底栏** = `pages/widget/miuix_blur_navigation_bar.dart` 的 `MiuixBlurNavigationBar`
 = 包里的 `MiuixNavigationBar`（几何 / 字号 / 按压反馈 / 选中动画全由库定义）+ 一层
