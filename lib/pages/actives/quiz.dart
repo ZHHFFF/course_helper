@@ -42,14 +42,13 @@ class QuizPage extends StatefulWidget {
   State<QuizPage> createState() => _QuizPageState();
 }
 
-class CountdownDisplay extends StatelessWidget {
+class _CountdownDisplay extends StatelessWidget {
   final ValueNotifier<String> timeNotifier;
   final bool isManualEnd;
 
-  const CountdownDisplay({
-    super.key,
+  const _CountdownDisplay({
     required this.timeNotifier,
-    required this.isManualEnd
+    required this.isManualEnd,
   });
 
   @override
@@ -1401,7 +1400,7 @@ class _QuizPageState extends State<QuizPage> {
         children: [
           SizedBox(height: contentPadding.top),
           if (_activeData != null)
-            CountdownDisplay(
+            _CountdownDisplay(
               timeNotifier: _remainingTimeNotifier,
               isManualEnd: _isManualEnd,
             ),

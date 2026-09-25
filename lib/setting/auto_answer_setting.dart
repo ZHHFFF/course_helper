@@ -79,15 +79,6 @@ class AutoAnswerSetting {
     await _safe(() => StorageManager.prefs.setBool(_keyAutoSubmit, v));
   }
 
-  static Future<void> setDelayRange(int minMs, int maxMs) async {
-    final lo = minMs.clamp(0, 60000);
-    final hi = maxMs.clamp(lo, 60000);
-    delayMinMs.value = lo;
-    delayMaxMs.value = hi;
-    await _safe(() => StorageManager.prefs.setInt(_keyDelayMin, lo));
-    await _safe(() => StorageManager.prefs.setInt(_keyDelayMax, hi));
-  }
-
   /// 生成一个落在区间内的随机延迟
   static Duration randomDelay() {
     final lo = delayMinMs.value;

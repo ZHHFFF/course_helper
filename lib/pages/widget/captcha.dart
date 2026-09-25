@@ -8,7 +8,7 @@ class CaptchaPage extends StatefulWidget {
   const CaptchaPage({super.key, this.referer, this.isSlideCaptcha = false});
 
   @override
-  CaptchaPageState createState() => CaptchaPageState();
+  State<CaptchaPage> createState() => _CaptchaPageState();
 
   static Future<String?> showSlideCaptchaDialog(BuildContext context, {String? referer}) async {
     return showDialog<String?>(
@@ -24,7 +24,7 @@ class CaptchaPage extends StatefulWidget {
   }
 }
 
-class CaptchaPageState extends State<CaptchaPage> {
+class _CaptchaPageState extends State<CaptchaPage> {
   bool _isLoadingSlide = false;
   String? _token;
   String? _shadeImageUrl;
@@ -41,8 +41,6 @@ class CaptchaPageState extends State<CaptchaPage> {
   static final double cutoutWidth = 56.0;
   static final double cutoutHeight = 160.0;
 
-  // 设计尺寸下的最大物理滑动距离
-  static final double designMaxButtonPhysical = backgroundWidth - cutoutWidth; // 264.0
   static final double ratio = 280.0 / 264.0;  // 设计稿中滑块位置到缺口左边界的映射系数
 
   // 实际渲染尺寸（动态获取）

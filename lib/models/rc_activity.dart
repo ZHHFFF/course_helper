@@ -229,6 +229,19 @@ class RCActivity {
     addValid(json['presentationId']);
     addValid(json['presentation_url_id']);
 
+    void scanItems(dynamic list) {
+      if (list is! List) return;
+      for (final item in list) {
+        if (item is Map) {
+          addValid(item['id']);
+          addValid(item['presentation_id']);
+          addValid(item['presentationId']);
+        } else {
+          addValid(item);
+        }
+      }
+    }
+
     // 2. content 内嵌（Map 或 JSON 字符串）
     dynamic content = json['content'];
     if (content is String && content.trim().startsWith('{')) {
@@ -243,56 +256,13 @@ class RCActivity {
       if (content['id'] != null && (json['type'] == 2 || content['type'] == 'presentation')) {
         addValid(content['id']);
       }
-      if (content['presentations'] is List) {
-        for (final p in content['presentations']) {
-          if (p is Map) {
-            addValid(p['id']);
-            addValid(p['presentation_id']);
-            addValid(p['presentationId']);
-          } else {
-            addValid(p);
-          }
-        }
-      }
-      if (content['res_list'] is List) {
-        for (final r in content['res_list']) {
-          if (r is Map) {
-            addValid(r['presentation_id']);
-            addValid(r['presentationId']);
-            addValid(r['id']);
-          } else {
-            addValid(r);
-          }
-        }
-      }
+      scanItems(content['presentations']);
+      scanItems(content['res_list']);
     }
 
-    // 3. 顶层 res_list / resList 资源列表
-    final resList = json['res_list'] ?? json['resList'] ?? json['resources'];
-    if (resList is List) {
-      for (final r in resList) {
-        if (r is Map) {
-          addValid(r['presentation_id']);
-          addValid(r['presentationId']);
-          addValid(r['id']);
-        } else {
-          addValid(r);
-        }
-      }
-    }
-
-    // 4. 顶层 presentations 列表
-    if (json['presentations'] is List) {
-      for (final p in json['presentations']) {
-        if (p is Map) {
-          addValid(p['id']);
-          addValid(p['presentation_id']);
-          addValid(p['presentationId']);
-        } else {
-          addValid(p);
-        }
-      }
-    }
+    // 3. 顶层 res_list / resList 资源列表与 presentations 列表
+    scanItems(json['res_list'] ?? json['resList'] ?? json['resources']);
+    scanItems(json['presentations']);
 
     return ids.toList();
   }

@@ -98,7 +98,7 @@ class _PresentationPageState extends State<PresentationPage>
 
   bool _isLoading = false;
   bool _isInitialized = false;
-  final List<TimelineEvent> _timeline = [];
+  final List<_TimelineEvent> _timeline = [];
 
   Problem? _currentProblem;
   String? _timelineProblemId;
@@ -1322,7 +1322,7 @@ class _PresentationPageState extends State<PresentationPage>
             final dt = eventData['dt'];
             if (code == 'RANDOM_PICK') {
               setState(() {
-                _timeline.add(TimelineEvent(
+                _timeline.add(_TimelineEvent(
                   type: 'randompick',
                   code: 'RANDOM_PICK',
                   title: eventData['title'],
@@ -1342,7 +1342,7 @@ class _PresentationPageState extends State<PresentationPage>
 
             if (code == 'SHOW_FINISH') {
               setState(() {
-                _timeline.add(TimelineEvent(
+                _timeline.add(_TimelineEvent(
                   type: 'event',
                   code: code,
                   title: title,
@@ -1363,7 +1363,7 @@ class _PresentationPageState extends State<PresentationPage>
             if (code == 'LESSON_FINISH') {
               unawaited(CourseCache.markFinished(widget.lessonId));
               setState(() {
-                _timeline.add(TimelineEvent(
+                _timeline.add(_TimelineEvent(
                   type: 'event',
                   code: code,
                   title: title,
@@ -1410,7 +1410,7 @@ class _PresentationPageState extends State<PresentationPage>
         }
 
         setState(() {
-          _timeline.add(TimelineEvent(
+          _timeline.add(_TimelineEvent(
             type: eventType,
             code: code,
             title: eventTitle,
@@ -2213,7 +2213,7 @@ class _PresentationPageState extends State<PresentationPage>
     );
   }
 
-  Widget _buildTimelineItem(TimelineEvent event) {
+  Widget _buildTimelineItem(_TimelineEvent event) {
     Color bgColor;
     IconData icon;
 
@@ -2329,7 +2329,7 @@ class _PresentationPageState extends State<PresentationPage>
     );
   }
 
-  String _getEventTitle(TimelineEvent event) {
+  String _getEventTitle(_TimelineEvent event) {
     switch (event.type) {
       case 'slide':
         return '第 ${event.slideIndex} 页';
@@ -2363,7 +2363,7 @@ class _PresentationPageState extends State<PresentationPage>
     return ProblemType.fromId(type).label;
   }
 
-  Future<void> _handleTimelineProblemClick(TimelineEvent event) async {
+  Future<void> _handleTimelineProblemClick(_TimelineEvent event) async {
     if (event.problemId == null || event.presentationId == null) return;
 
     if (event.presentationId != _currentPresentationId) {
@@ -3020,7 +3020,7 @@ class _PresentationPageState extends State<PresentationPage>
   }
 }
 
-class TimelineEvent {
+class _TimelineEvent {
   final String type;
   final String? code;
   final String? title;
@@ -3032,7 +3032,7 @@ class TimelineEvent {
   final String? presentationId;
   final int? problemDt;
 
-  TimelineEvent({
+  _TimelineEvent({
     required this.type,
     required this.code,
     required this.title,

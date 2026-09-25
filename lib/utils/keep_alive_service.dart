@@ -50,7 +50,7 @@ void _onKeepAliveTaskData(Object data) {
 /// 这个类跑在**后台 isolate**，和主 isolate 的静态状态是两套。
 /// 直接调 `AppLogger` 只会写进后台那边没人读的内存队列，
 /// 所以一律 `sendDataToMain` 交给主 isolate 去记。
-class WebSocketKeepAliveHandler extends TaskHandler {
+class _WebSocketKeepAliveHandler extends TaskHandler {
   static void _report(String event) {
     FlutterForegroundTask.sendDataToMain(event);
   }
@@ -73,7 +73,7 @@ class WebSocketKeepAliveHandler extends TaskHandler {
 
 @pragma('vm:entry-point')
 void keepAliveCallback() {
-  FlutterForegroundTask.setTaskHandler(WebSocketKeepAliveHandler());
+  FlutterForegroundTask.setTaskHandler(_WebSocketKeepAliveHandler());
 }
 
 class KeepAliveService {

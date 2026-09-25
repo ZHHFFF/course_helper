@@ -326,7 +326,7 @@ class _ScanPageState extends State<ScanPage>
                           animation: _animationController,
                           builder: (context, child) {
                             return CustomPaint(
-                              painter: QrScanBoxPainter(
+                              painter: _QrScanBoxPainter(
                                 boxLineColor: scanLineColor,
                                 animationValue: _animationController.value,
                                 isForward: _animationController.status ==
@@ -422,12 +422,12 @@ class _ScanPageState extends State<ScanPage>
   }
 }
 
-class QrScanBoxPainter extends CustomPainter {
+class _QrScanBoxPainter extends CustomPainter {
   final double animationValue;
   final bool isForward;
   final Color boxLineColor;
 
-  QrScanBoxPainter({
+  _QrScanBoxPainter({
     required this.animationValue,
     required this.isForward,
     required this.boxLineColor,
@@ -492,10 +492,10 @@ class QrScanBoxPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(QrScanBoxPainter oldDelegate) =>
+  bool shouldRepaint(_QrScanBoxPainter oldDelegate) =>
       animationValue != oldDelegate.animationValue;
 
   @override
-  bool shouldRebuildSemantics(QrScanBoxPainter oldDelegate) =>
+  bool shouldRebuildSemantics(_QrScanBoxPainter oldDelegate) =>
       animationValue != oldDelegate.animationValue;
 }

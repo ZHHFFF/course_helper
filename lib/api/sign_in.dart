@@ -6,13 +6,13 @@ import '../utils/encrypt.dart';
 import '../models/user.dart';
 
 
-class Location {
+class _Location {
   final User? user;
   final String address;
   final double latitude;
   final double longitude;
 
-  Location({this.user, required this.address, required this.latitude, required this.longitude});
+  _Location({this.user, required this.address, required this.latitude, required this.longitude});
 
   // location
   String toJson() {
@@ -142,7 +142,7 @@ class SignInApi extends Api {
       params['latitude'] = latitude.toStringAsFixed(6);
       params['longitude'] = longitude.toStringAsFixed(6);
 
-      final location = Location(user: user, address: address, latitude: latitude, longitude: longitude);
+      final location = _Location(user: user, address: address, latitude: latitude, longitude: longitude);
       params['location'] = location.toJson();
       params['locationResult'] = location.toResultJson();
     }
@@ -189,7 +189,7 @@ class SignInApi extends Api {
       data['faceEnc'] = faceEnc;
     }
 
-    final location = Location(user: user, address: address, latitude: latitude, longitude: longitude);
+    final location = _Location(user: user, address: address, latitude: latitude, longitude: longitude);
     data['locationResult'] = location.toResultJson();
 
     final response = await ApiService.sendRequest(_signUrl, method: 'POST', body: data, responseType: ResponseType.plain, userId: user?.uid);
@@ -236,7 +236,7 @@ class SignInApi extends Api {
     };
 
     if (address != null && latitude != null && longitude != null) {
-      final location = Location(user: user, address: address, latitude: latitude, longitude: longitude);
+      final location = _Location(user: user, address: address, latitude: latitude, longitude: longitude);
       params['location'] = location.toJson();
       params['locationResult'] = location.toResultJson();
     }

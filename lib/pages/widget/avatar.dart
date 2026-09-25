@@ -4,77 +4,24 @@ import 'package:dio/dio.dart';
 
 import '../../api/api_service.dart';
 
-/// 全局头像缓存类
 class AvatarCache {
   static final Map<String, Future<Uint8List?>> _cache = {};
-  static final Set<String> _loadingUrls = {};
   
-  /// 获取缓存的头像数据
-  static Future<Uint8List?> getImage(String url) async {
-    // 检查是否已有缓存
-    if (_cache.containsKey(url)) {
-      debugPrint('使用缓存的头像: $url');
-      return _cache[url]!;
-    }
-    
-    // 检查是否正在加载
-    if (_loadingUrls.contains(url)) {
-      debugPrint('等待进行中的头像请求: $url');
-      // 等待一小段时间后重试
-      await Future.delayed(const Duration(milliseconds: 50));
-      return getImage(url);
-    }
-    
-    // 创建新的请求
-    debugPrint('发起新的头像请求: $url');
-    _loadingUrls.add(url);
-    
-    final future = _fetchImage(url).whenComplete(() {
-      _loadingUrls.remove(url);
-      // 请求完成后可以从缓存中移除以节省内存
-      // _cache.remove(url);
-    });
-    
-    _cache[url] = future;
-    return future;
+  /// 获取缓存的头像数据（天然合并并发请求）
+  static Future<Uint8List?> getImage(String url) {
+    return _cache.putIfAbsent(url, () => _fetchImage(url));
   }
   
   /// 获取图片
   static Future<Uint8List?> _fetchImage(String url) async {
     try {
       final response = await ApiService.sendRequest(url, responseType: ResponseType.bytes);
-      if (response == null) {
-        debugPrint('头像请求失败: $url');
-        return null;
-      }
-      debugPrint('头像请求成功: $url');
-      return response.data;
+      return response?.data;
     } catch (e) {
       debugPrint('头像请求失败: $url, 错误: $e');
       return null;
     }
   }
-  
-  /// 清空缓存
-  static void clearCache() {
-    _cache.clear();
-    _loadingUrls.clear();
-    debugPrint('头像缓存已清空');
-  }
-  
-  /// 获取缓存统计信息
-  static Map<String, dynamic> getCacheStats() {
-    return {
-      'cacheSize': _cache.length,
-      'loadingCount': _loadingUrls.length,
-      'cachedUrls': _cache.keys.toList(),
-    };
-  }
-}
-
-/// 获取用户头像
-Future<Uint8List?> _getUserAvatar(String url) async {
-  return await AvatarCache.getImage(url);
 }
 
 /// 通用头像组件
@@ -206,7 +153,7 @@ class _AvatarWidgetState extends State<AvatarWidget> {
       }
       
       return FutureBuilder<Uint8List?> (
-        future: _getUserAvatar(widget.imageUrl!),
+        future: AvatarCache.getImage(widget.imageUrl!),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(
