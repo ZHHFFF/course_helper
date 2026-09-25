@@ -18,11 +18,11 @@ import'./pages/courseware/list.dart';
 // [新增] 「设置」Tab（原账号页右上角菜单里的全部入口）
 import'./pages/settings/settings.dart';
 // [新增] 玻璃底栏的几何契约（占位高度 / 页面留白）
-import'./pages/widget/miuix_nav_metrics.dart';
-// [新增] 液态玻璃底栏（MiuixLiquidGlassNavigationBar）
-import './pages/widget/miuix_liquid_glass_nav_bar.dart';
-// [新增] 深浅色外观设置（原「悬浮底栏」开关作废，见 setting/theme_setting.dart）
-import'./setting/theme_setting.dart';
+import './pages/widget/miuix_nav_metrics.dart';
+// [新增] 统一底栏宿主（NavigationBarHost：传统 Miuix / Liquid Glass 动态切换）
+import './pages/widget/navigation_bar_host.dart';
+// [新增] 深浅色外观设置（见 setting/theme_setting.dart）
+import './setting/theme_setting.dart';
 import'./api/api_service.dart';
 import'./session/cookie.dart';
 import'./session/account.dart';
@@ -113,80 +113,41 @@ class MyApp extends StatelessWidget {
     // `ThemeSetting.mode` 重建 —— `themeMode` 是构造参数，不重建切不动。
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: ThemeSetting.mode,
-      builder: (context, themeMode, _) => MaterialApp(
-      navigatorKey: navigatorKey,
-      title: '课程助手',
-      locale: const Locale('zh', 'CN'),
-      supportedLocales: const [
-        Locale('zh', 'CN'),
-        Locale('en', 'US')
-      ],
-      localizationsDelegates: const [
-        GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate
-      ],
-      // [改动] 取消 Material You 动态取色（不再跟随壁纸），改为固定主题色 + 纯白/纯黑背景
-      // 原来的 DynamicColorBuilder 已移除，因此 dynamic_color 依赖不再需要
-      theme: _buildLightTheme(),
-      darkTheme: _buildDarkTheme(),
-      themeMode: themeMode,
-      // [改动] 用 MiuixTheme 包裹整棵树。
-      //
-      // 为什么必须包在最外层：MiuixTheme.of() 在上下文**未被包裹**时不会抛错，
-      // 而是**静默回退到浅色默认值**（MiuixThemeData.light()）。深色模式下会
-      // 表现为「界面莫名变白」且不报任何异常，极难排查。所以这里必须在
-      // MaterialApp 之外就包好，保证所有后代都拿得到正确主题。
-      //
-      // 注意：MiuixThemeData.of(context) 依赖 MediaQuery 判断明暗，
-      // 因此它要在 MaterialApp **内部**才能拿到正确的 platformBrightness，
-      // 但又必须包住 materialApp 的所有后代 —— 故放在 builder 里，
-      // 与 _GlassNavInsets 同层。
-      //
-      // 同时给所有页面的 SnackBar / 底部提示注入底栏高度的内边距。
-      //
-      // 背景：底栏是悬浮的，不占 Scaffold 的 bottomNavigationBar 槽位，
-      // 所以各页面自己的 Scaffold 并不知道底下还压着一层底栏。
-      // SnackBar 默认贴 Scaffold 底部 → 会被玻璃底栏盖住。
-      // 给 MediaQuery 加上底部 padding，框架就会据此把 SnackBar 抬高。
-      //
-      // ⚠️⚠️ 这段补偿**只能在 `MyHomePage` 里做**，绝不能放在 `builder` 里全局生效。
-      // 曾经就是放在这里（MaterialApp.builder 会包住整个 Navigator），
-      // 后果是**每一个二级页**（登录页 / 日志页 / 各设置页……）的
-      // `MediaQuery.padding.bottom` 都被凭空加了 `miuixNavBarOccupiedHeight`。
-      // 而那些页面根本没有底栏（push 出来的路由会盖住它），于是：
-      //   - 它们自己的 `SafeArea` 底部会多出 ~76dp 空白
-      //   - 它们底部的 SnackBar 会凭空悬高 76dp
-      //   - 它们自己铺的底栏（如日志页的操作条）会飘在屏幕中间
-      // 所以补偿下沉到 `MyHomePage`，只影响真正有底栏的那一层。
-      builder: (context, child) {
-        return _MiuixScope(child: child);
-      },
-      // ⚠️⚠️ 底栏补偿**只能挂在 `home:` 上**，绝不能放进 `builder:` 里全局生效。
-      //
-      // `_GlassNavInsets` 给 `MediaQuery.padding.bottom` 加
-      // `miuixNavBarOccupiedHeight`，目的是让首页 Scaffold 渲染的 SnackBar
-      // 不被悬浮玻璃底栏盖住。但 `MaterialApp.builder` 包住的是**整个 Navigator**，
-      // 放在那里会连所有 push 出来的二级页（登录页 / 日志页 / 各设置页……）
-      // 一起污染。而那些页面根本没有底栏（push 出来的路由会盖住它），于是：
-      //   - 它们自己的 `SafeArea` 底部凭空多出 ~76dp 空白
-      //   - 它们底部的 SnackBar 凭空悬高 76dp
-      //   - 它们自己铺的底栏（如日志页的操作条）会飘在屏幕中间
-      //
-      // 挂在 `home:` 上则只作用于**首页这一个路由**：push 出来的路由是
-      // Navigator overlay 里的**兄弟节点**而非 `home` 的后代，拿不到这层 MediaQuery，
-      // 天然免疫。这正是我们要的「只补偿真正有底栏的那一层」。
-      home: const _GlassNavInsets(child: MyHomePage()),
-      routes: {
-        '/accounts': (context) => const AccountsPage(),
-        '/login': (context) => const LoginPage(),
-      },
+      builder: (context, themeMode, _) => ValueListenableBuilder<bool>(
+        valueListenable: ThemeSetting.predictiveBack,
+        builder: (context, predictiveBack, _) => MaterialApp(
+          navigatorKey: navigatorKey,
+          title: '课程助手',
+          locale: const Locale('zh', 'CN'),
+          supportedLocales: const [
+            Locale('zh', 'CN'),
+            Locale('en', 'US')
+          ],
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate
+          ],
+          // [改动] 取消 Material You 动态取色（不再跟随壁纸），改为固定主题色 + 纯白/纯黑背景
+          // 原来的 DynamicColorBuilder 已移除，因此 dynamic_color 依赖不再需要
+          theme: _buildLightTheme(predictiveBack: predictiveBack),
+          darkTheme: _buildDarkTheme(predictiveBack: predictiveBack),
+          themeMode: themeMode,
+          builder: (context, child) {
+            return _MiuixScope(child: child);
+          },
+          home: const _GlassNavInsets(child: MyHomePage()),
+          routes: {
+            '/accounts': (context) => const AccountsPage(),
+            '/login': (context) => const LoginPage(),
+          },
+        ),
       ),
     );
   }
 
   /// 浅色主题：纯白背景 + Miuix 蓝色主色（seed 0xFF3482FF）
-  static ThemeData _buildLightTheme() {
+  static ThemeData _buildLightTheme({bool predictiveBack = true}) {
     final base = ColorScheme.fromSeed(
       seedColor: const Color(0xFF3482FF),
       brightness: Brightness.light,
@@ -205,15 +166,18 @@ class MyApp extends StatelessWidget {
         outlineVariant: const Color(0xFFE4E4EA),
       ),
       scaffoldBackgroundColor: Colors.white,
+      pageTransitionsTheme: PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: predictiveBack
+              ? const PredictiveBackPageTransitionsBuilder()
+              : const ZoomPageTransitionsBuilder(),
+        },
+      ),
     );
   }
 
   /// 深色主题：纯黑背景（真黑，非灰黑）
-  ///
-  /// 注意容器层级：背景是纯黑 `#000000`，各级 surfaceContainer 必须**逐级提亮**
-  /// 才能让卡片看出边界。若把 surfaceContainerLow 也设成接近纯黑，
-  /// 卡片会和背景糊在一起、层级关系完全丢失。
-  static ThemeData _buildDarkTheme() {
+  static ThemeData _buildDarkTheme({bool predictiveBack = true}) {
     final base = ColorScheme.fromSeed(
       seedColor: const Color(0xFF3482FF),
       brightness: Brightness.dark,
@@ -242,21 +206,18 @@ class MyApp extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
         ),
       ),
+      pageTransitionsTheme: PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: predictiveBack
+              ? const PredictiveBackPageTransitionsBuilder()
+              : const ZoomPageTransitionsBuilder(),
+        },
+      ),
     );
   }
 }
 
 /// 把 Miuix 主题注入整棵子树。
-///
-/// 放在 `MaterialApp.builder` 里，好处是能拿到已由 `MaterialApp` 建立好的
-/// `MediaQuery`（含正确的 `platformBrightness`），从而让浅色/深色自动跟随系统。
-///
-/// ⚠️ 签名注意：`MiuixThemeData.of()` 的第一个参数是 `Brightness`（不是
-/// `BuildContext`），与 Flutter 里 `Theme.of(context)` 的习惯不同，别写错。
-///
-/// ⚠️ 关键坑：`MiuixTheme.of()` 在未包裹时**不报错**，而是静默返回
-/// `MiuixThemeData.light()`。若这里忘记包裹，深色模式下界面会莫名变浅色，
-/// 且没有任何异常提示。所以这个 wrapper 不允许被移除。
 class _MiuixScope extends StatelessWidget {
   const _MiuixScope({required this.child});
 
@@ -273,26 +234,24 @@ class _MiuixScope extends StatelessWidget {
           ThemeMode.dark => Brightness.dark,
           ThemeMode.system => MediaQuery.platformBrightnessOf(context),
         };
-        return MiuixTheme(
-          data: MiuixThemeData.of(brightness),
-      // [新增] 全局补一层透明 `Material`。
-      //
-      // 为什么需要：Miuix 的 `MiuixScaffold` / `MiuixSurface` **不提供
-      // `DefaultTextStyle`**（它是纯 Miuix 组件，不走 Material 那套）。于是
-      // Miuix 页面里的 `Text` 找不到 `DefaultTextStyle` 祖先，会退回到
-      // `DefaultTextStyle.fallback()` —— 表现是**每行文字都带一条黄色双下划线**。
-      //
-      // 实测：外观设置页（MiuixScaffold）标题、小标题、开关行标题全是黄下划线。
-      // 这里在 Navigator 之上补一层 `MaterialType.transparency`（不画任何背景），
-      // 所有路由就都有 `DefaultTextStyle` 了。
-      //
-      // 对原有 Material 页面无影响：`Scaffold` 自己也会套一层 `Material`，
-      // 且用的是同一套主题文字样式。
-      child: AnnotatedRegion<SystemUiOverlayStyle>(
-        value: _overlayStyleOf(brightness),
-        child: Material(type: MaterialType.transparency, child: child!),
-      ),
-    );
+        return ValueListenableBuilder<double>(
+          valueListenable: ThemeSetting.uiScale,
+          builder: (context, scale, _) {
+            final mq = MediaQuery.of(context);
+            return MediaQuery(
+              data: mq.copyWith(
+                textScaler: TextScaler.linear(scale),
+              ),
+              child: MiuixTheme(
+                data: MiuixThemeData.of(brightness),
+                child: AnnotatedRegion<SystemUiOverlayStyle>(
+                  value: _overlayStyleOf(brightness),
+                  child: Material(type: MaterialType.transparency, child: child!),
+                ),
+              ),
+            );
+          },
+        );
       },
     );
   }
@@ -598,45 +557,19 @@ class _MainPageState extends State<MainPage> {
             ),
           ),
 
-          // ── 液态玻璃底栏（贴边叠加）──────────────────────────────────────
+          // ── 统一底栏宿主（由 NavigationBarHost 动态切换传统 Miuix / Liquid Glass）──
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
-            child: _buildNavBar(context),
+            child: NavigationBarHost(
+              selectedIndex: _selectedIndex,
+              onSelect: _onNavTap,
+              pageController: _pageController,
+            ),
           ),
         ],
       ),
-    );
-  }
-
-  /// 贴边液态玻璃底栏（4 个 Tab：课程 / 账号 / 课件 / 设置）。
-  Widget _buildNavBar(BuildContext context) {
-    final safeBottom = MediaQuery.viewPaddingOf(context).bottom;
-    // 图标：选中态用实心，未选中用描边（Miuix 底栏的常规做法）
-    const items = <(IconData, IconData, String)>[
-      (Icons.school, Icons.school_outlined, '课程'),
-      (Icons.account_circle, Icons.account_circle_outlined, '账号'),
-      (Icons.folder_copy, Icons.folder_copy_outlined, '课件'),
-      (Icons.settings, Icons.settings_outlined, '设置'),
-    ];
-
-    return MiuixLiquidGlassNavigationBar(
-      items: [
-        for (var i = 0; i < items.length; i++)
-          MiuixLiquidGlassNavItem(
-            icon: Icon(_selectedIndex == i ? items[i].$1 : items[i].$2),
-            label: items[i].$3,
-            contentDescription: items[i].$3,
-          ),
-      ],
-      selectedIndex: _selectedIndex,
-      onSelect: _onNavTap,
-      height: miuixNavBarContentHeight,
-      bottomPadding: safeBottom,
-      pageController: _pageController,
-      shape: const MiuixGlassShape(cornerRadius: 0),
-      shadow: const MiuixGlassShadow(radius: 0, color: Color(0x00000000)),
     );
   }
 

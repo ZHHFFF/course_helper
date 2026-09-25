@@ -6,7 +6,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:course_helper/main.dart';
 import 'package:course_helper/pages/accounts.dart';
 import 'package:course_helper/pages/login.dart';
+import 'package:course_helper/pages/settings/appearance.dart';
+import 'package:course_helper/pages/widget/miuix_blur_navigation_bar.dart';
 import 'package:course_helper/pages/widget/miuix_liquid_glass_nav_bar.dart';
+import 'package:course_helper/pages/widget/navigation_bar_host.dart';
+import 'package:course_helper/setting/theme_setting.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -291,16 +295,144 @@ void main() {
       final observedIndices = <int>[];
       for (int i = 0; i < 10; i++) {
         await tester.pump(const Duration(milliseconds: 35));
-        final navBar = tester.widget<MiuixLiquidGlassNavigationBar>(find.byType(MiuixLiquidGlassNavigationBar));
-        observedIndices.add(navBar.selectedIndex);
+        final host = tester.widget<NavigationBarHost>(find.byType(NavigationBarHost));
+        observedIndices.add(host.selectedIndex);
       }
 
       await tester.pump(const Duration(milliseconds: 400));
-      final finalNavBar = tester.widget<MiuixLiquidGlassNavigationBar>(find.byType(MiuixLiquidGlassNavigationBar));
-      observedIndices.add(finalNavBar.selectedIndex);
+      final finalHost = tester.widget<NavigationBarHost>(find.byType(NavigationBarHost));
+      observedIndices.add(finalHost.selectedIndex);
 
       // 验证过程中绝无跳变回 1 或 2，全程稳定为 3
       expect(observedIndices.every((idx) => idx == 3), isTrue);
+    });
+
+    testWidgets('NavigationBarHost 动态无缝切换传统 Miuix 底栏与 Liquid Glass 悬浮底栏', (tester) async {
+      ThemeSetting.floatingNavBar.value = false;
+      ThemeSetting.liquidGlass.value = true;
+      ThemeSetting.blurEnabled.value = true;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MiuixTheme(
+            data: MiuixThemeData.light(),
+            child: Scaffold(
+              body: Stack(
+                children: [
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: NavigationBarHost(
+                      selectedIndex: 0,
+                      onSelect: (_) {},
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 1. 默认状态：传统 Miuix 底栏 (MiuixBlurNavigationBar)
+      expect(find.byType(MiuixBlurNavigationBar), findsOneWidget);
+      expect(find.byType(MiuixLiquidGlassNavigationBar), findsNothing);
+
+      // 2. 开启悬浮底栏：立即切换为 Liquid Glass 悬浮胶囊底栏 (MiuixLiquidGlassNavigationBar)
+      ThemeSetting.floatingNavBar.value = true;
+      await tester.pumpAndSettle();
+      expect(find.byType(MiuixBlurNavigationBar), findsNothing);
+      expect(find.byType(MiuixLiquidGlassNavigationBar), findsOneWidget);
+
+      // 3. 切回传统 Miuix 底栏：立即切回，互不影响
+      ThemeSetting.floatingNavBar.value = false;
+      await tester.pumpAndSettle();
+      expect(find.byType(MiuixBlurNavigationBar), findsOneWidget);
+      expect(find.byType(MiuixLiquidGlassNavigationBar), findsNothing);
+    });
+  });
+
+  group('主題設定頁 (AppearanceSettingsPage) 6項控制項測試', () {
+    testWidgets('頁面正確渲染 6 項設定項並可響應交互', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MiuixTheme(
+            data: MiuixThemeData.light(),
+            child: const AppearanceSettingsPage(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 標題
+      expect(find.text('主題設定'), findsWidgets);
+
+      // 1. 主題
+      expect(find.text('主題'), findsOneWidget);
+      expect(find.text('選擇應用程式的主題模式'), findsOneWidget);
+
+      // 2. 模糊
+      expect(find.text('模糊'), findsOneWidget);
+      expect(find.text('啟用頂欄和底欄的模糊效果'), findsOneWidget);
+
+      // 3. 懸浮底欄
+      expect(find.text('懸浮底欄'), findsOneWidget);
+      expect(find.text('使用類 Apple 風格的懸浮底欄'), findsOneWidget);
+
+      // 4. 液態玻璃
+      expect(find.text('液態玻璃'), findsOneWidget);
+      expect(find.text('啟用懸浮底欄的液態玻璃效果'), findsOneWidget);
+
+      // 5. 預測性返回手勢
+      expect(find.text('預測性返回手勢'), findsOneWidget);
+      expect(find.text('啟用對預測性返回手勢的支援'), findsOneWidget);
+
+      // 6. 介面縮放
+      expect(find.text('介面縮放'), findsOneWidget);
+      expect(find.text('調整全域顯示比例'), findsOneWidget);
+
+      // 點擊「模糊」開關，驗證響應
+      final initialBlur = ThemeSetting.blurEnabled.value;
+      await tester.tap(find.text('模糊'));
+      await tester.pumpAndSettle();
+      expect(ThemeSetting.blurEnabled.value, !initialBlur);
+
+      // 點擊「懸浮底欄」開關，驗證響應
+      final initialFloating = ThemeSetting.floatingNavBar.value;
+      await tester.tap(find.text('懸浮底欄'));
+      await tester.pumpAndSettle();
+      expect(ThemeSetting.floatingNavBar.value, !initialFloating);
+    });
+  });
+
+  group('ThemeSetting 持久化與配置載入測試', () {
+    test('各設定項 setter 與解碼正常工作', () async {
+      await ThemeSetting.setMode(ThemeMode.dark);
+      expect(ThemeSetting.mode.value, ThemeMode.dark);
+
+      await ThemeSetting.setBlurEnabled(false);
+      expect(ThemeSetting.blurEnabled.value, isFalse);
+
+      await ThemeSetting.setFloatingNavBar(true);
+      expect(ThemeSetting.floatingNavBar.value, isTrue);
+
+      await ThemeSetting.setLiquidGlass(false);
+      expect(ThemeSetting.liquidGlass.value, isFalse);
+
+      await ThemeSetting.setPredictiveBack(false);
+      expect(ThemeSetting.predictiveBack.value, isFalse);
+
+      await ThemeSetting.setUiScale(1.1);
+      expect(ThemeSetting.uiScale.value, closeTo(1.1, 0.001));
+
+      // 介面縮放超出 [0.8, 1.2] 時被 clamp
+      await ThemeSetting.setUiScale(1.5);
+      expect(ThemeSetting.uiScale.value, 1.2);
+
+      await ThemeSetting.setUiScale(0.5);
+      expect(ThemeSetting.uiScale.value, 0.8);
     });
   });
 }

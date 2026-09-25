@@ -19,25 +19,51 @@ class ThemeSetting {
   ThemeSetting._();
 
   static const _keyMode = 'theme_mode';
+  static const _keyBlurEnabled = 'theme_blur_enabled';
+  static const _keyFloatingNavBar = 'theme_floating_nav_bar';
+  static const _keyLiquidGlass = 'theme_liquid_glass';
+  static const _keyPredictiveBack = 'theme_predictive_back';
+  static const _keyUiScale = 'theme_ui_scale';
 
-  /// 当前深浅色模式。默认 `system`（跟随系统），与迁移前行为一致。
+  /// 当前深浅色模式。默认 `system`（跟随系统）
   static final ValueNotifier<ThemeMode> mode =
       ValueNotifier<ThemeMode>(ThemeMode.system);
+
+  /// 模糊效果开关。默认开启 (true)
+  static final ValueNotifier<bool> blurEnabled =
+      ValueNotifier<bool>(true);
+
+  /// 悬浮底栏开关。默认关闭 (false，保持传统 Miuix 底栏)，开启后切换为悬浮胶囊底栏
+  static final ValueNotifier<bool> floatingNavBar =
+      ValueNotifier<bool>(false);
+
+  /// 液态玻璃效果开关。默认开启 (true)，在悬浮底栏开启时生效
+  static final ValueNotifier<bool> liquidGlass =
+      ValueNotifier<bool>(true);
+
+  /// 预测性返回手势开关。默认开启 (true)
+  static final ValueNotifier<bool> predictiveBack =
+      ValueNotifier<bool>(true);
+
+  /// 界面全局缩放比例 (0.8 ~ 1.2)。默认 1.0 (100%)
+  static final ValueNotifier<double> uiScale =
+      ValueNotifier<double>(1.0);
 
   static bool _loaded = false;
 
   /// 读取持久化设置（幂等）
-  ///
-  /// 必须在首帧前调用，否则启动瞬间会先用默认值渲染一帧、读到配置后再跳变
-  /// （深色用户会看到一次白闪）。
   static Future<void> ensureLoaded() async {
     if (_loaded) return;
     try {
       mode.value = _decode(StorageManager.prefs.getString(_keyMode));
+      blurEnabled.value = StorageManager.prefs.getBool(_keyBlurEnabled) ?? true;
+      floatingNavBar.value = StorageManager.prefs.getBool(_keyFloatingNavBar) ?? false;
+      liquidGlass.value = StorageManager.prefs.getBool(_keyLiquidGlass) ?? true;
+      predictiveBack.value = StorageManager.prefs.getBool(_keyPredictiveBack) ?? true;
+      final savedScale = StorageManager.prefs.getDouble(_keyUiScale) ?? 1.0;
+      uiScale.value = savedScale.clamp(0.8, 1.2);
       _loaded = true;
     } catch (e) {
-      // 用 AppLogger 而不是 debugPrint —— debugPrint 不进日志文件，
-      // 用户导出日志排查时完全看不到（这个坑项目里踩过）。
       AppLogger.w('外观设置', '读取外观设置失败：$e');
     }
   }
@@ -48,6 +74,52 @@ class ThemeSetting {
       await StorageManager.prefs.setString(_keyMode, value.name);
     } catch (e) {
       AppLogger.w('外观设置', '保存外观设置失败：$e');
+    }
+  }
+
+  static Future<void> setBlurEnabled(bool value) async {
+    blurEnabled.value = value;
+    try {
+      await StorageManager.prefs.setBool(_keyBlurEnabled, value);
+    } catch (e) {
+      AppLogger.w('外观设置', '保存模糊设置失败：$e');
+    }
+  }
+
+  static Future<void> setFloatingNavBar(bool value) async {
+    floatingNavBar.value = value;
+    try {
+      await StorageManager.prefs.setBool(_keyFloatingNavBar, value);
+    } catch (e) {
+      AppLogger.w('外观设置', '保存悬浮底栏设置失败：$e');
+    }
+  }
+
+  static Future<void> setLiquidGlass(bool value) async {
+    liquidGlass.value = value;
+    try {
+      await StorageManager.prefs.setBool(_keyLiquidGlass, value);
+    } catch (e) {
+      AppLogger.w('外观设置', '保存液态玻璃设置失败：$e');
+    }
+  }
+
+  static Future<void> setPredictiveBack(bool value) async {
+    predictiveBack.value = value;
+    try {
+      await StorageManager.prefs.setBool(_keyPredictiveBack, value);
+    } catch (e) {
+      AppLogger.w('外观设置', '保存预测性返回设置失败：$e');
+    }
+  }
+
+  static Future<void> setUiScale(double value) async {
+    final clamped = value.clamp(0.8, 1.2);
+    uiScale.value = clamped;
+    try {
+      await StorageManager.prefs.setDouble(_keyUiScale, clamped);
+    } catch (e) {
+      AppLogger.w('外观设置', '保存界面缩放设置失败：$e');
     }
   }
 

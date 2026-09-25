@@ -173,8 +173,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   _entry(
                     context,
                     icon: Icons.palette_outlined,
-                    title: '外观设置',
-                    summary: '深浅色模式',
+                    title: '主題設定',
+                    summary: '深淺色、模糊、懸浮底欄與縮放',
                     onTap: () => _open(const AppearanceSettingsPage()),
                   ),
                   _entry(

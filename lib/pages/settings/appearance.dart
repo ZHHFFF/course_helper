@@ -3,95 +3,173 @@ import 'package:flutter_miuix/miuix.dart';
 
 import '../../setting/theme_setting.dart';
 
-/// 「外观设置」页
+/// 「主題設定」頁
 ///
-/// 入口：设置 Tab → 外观设置。
-///
-/// 【历史】
-/// 本页原先只有一个「悬浮底栏」开关（`NavBarSetting.floating`）。2026-09-22
-/// 用户拍板「底部导航栏改为 miuix 标准样式，采用非悬浮的固定布局，删除现有的
-/// 悬浮底栏实现」—— 那个开关随之作废，`setting/navbar_setting.dart` 已整体删除。
-///
-/// 现在换成真正属于「外观」的内容：**深浅色模式**（跟随系统 / 浅色 / 深色）。
-/// 三态单选而不是一个开关 —— 因为「跟随系统」必须能选回来，
-/// 二元开关表达不了三态。
-class AppearanceSettingsPage extends StatelessWidget {
+/// 1:1 对齐用户参考视觉与功能设计：
+/// 1. 主題：選擇應用程式的主題模式（跟隨系統 / 淺色 / 深色）
+/// 2. 模糊：啟用頂欄和底欄的模糊效果
+/// 3. 懸浮底欄：使用類 Apple 風格的懸浮底欄
+/// 4. 液態玻璃：啟用懸浮底欄的液態玻璃效果
+/// 5. 預測性返回手勢：啟用對預測性返回手勢的支援
+/// 6. 介面縮放：調整全域顯示比例 (80% ~ 120%)
+class AppearanceSettingsPage extends StatefulWidget {
   const AppearanceSettingsPage({super.key});
 
   @override
+  State<AppearanceSettingsPage> createState() => _AppearanceSettingsPageState();
+}
+
+class _AppearanceSettingsPageState extends State<AppearanceSettingsPage> {
+  late final MiuixExitUntilCollapsedScrollBehavior _topBarBehavior =
+      miuixScrollBehavior();
+  double _topBarInset = 0;
+
+  @override
   Widget build(BuildContext context) {
-    return MiuixScaffold(
-      topBar: MiuixTopAppBar(
-        title: '外观设置',
-        // ⚠️ `MiuixTopAppBar` **没有** `onBack` 参数（踩过：写 `onBack:` 直接编译不过）。
-        // 返回键要自己塞进 `navigationIcon`。
-        //
-        // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
-        // 与顶栏、底栏是同一套玻璃口径（见 `widget/miuix_glass_spec.dart`）。
-        blurred: true,
-        navigationIcon: MiuixIconButton(
-          onPressed: () => Navigator.of(context).maybePop(),
-          child: const Icon(Icons.arrow_back_ios_new, size: 20),
-        ),
-      ),
-      // ⚠️ `content` 是 `Widget Function(EdgeInsets)` 而**不是** `Widget`
-      // （踩过：直接传 ListView 报 `argument_type_not_assignable`）。
-      // 脚手架把算好的内边距交给你，由内容自行贴到根部。
-      content: (contentPadding) => ListView(
-        padding: contentPadding,
-        children: [
-          const MiuixSmallTitle('深浅色'),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: MiuixCard(
-              child: ValueListenableBuilder<ThemeMode>(
-                valueListenable: ThemeSetting.mode,
-                builder: (context, current, _) => Column(
-                  children: [
-                    for (final mode in ThemeMode.values)
-                      MiuixRadioButtonPreference(
-                        title: _labelOf(mode),
-                        summary: _summaryOf(mode),
-                        selected: current == mode,
-                        onClick: () => ThemeSetting.setMode(mode),
-                      ),
-                  ],
+    return ValueListenableBuilder<bool>(
+      valueListenable: ThemeSetting.blurEnabled,
+      builder: (context, blurEnabled, _) {
+        return MiuixScaffold(
+          topBar: MiuixTopAppBar(
+            title: '主題設定',
+            largeTitle: '主題設定',
+            blurred: blurEnabled,
+            scrollBehavior: _topBarBehavior,
+            navigationIcon: MiuixIconButton(
+              onPressed: () => Navigator.of(context).maybePop(),
+              child: const Icon(Icons.arrow_back_ios_new, size: 20),
+            ),
+          ),
+          content: (contentPadding) {
+            if (contentPadding.top > _topBarInset) {
+              _topBarInset = contentPadding.top;
+            }
+            return MiuixScrollBehaviorListener(
+              behavior: _topBarBehavior,
+              child: ListView(
+                padding: EdgeInsets.only(
+                  top: _topBarInset,
+                  bottom: contentPadding.bottom + 24,
                 ),
+                children: [
+                  const SizedBox(height: 8),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: MiuixCard(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 1. 主題
+                          ValueListenableBuilder<ThemeMode>(
+                            valueListenable: ThemeSetting.mode,
+                            builder: (context, mode, _) {
+                              final selectedIndex = switch (mode) {
+                                ThemeMode.system => 0,
+                                ThemeMode.light => 1,
+                                ThemeMode.dark => 2,
+                              };
+                              return MiuixOverlayDropdownPreference(
+                                title: '主題',
+                                summary: '選擇應用程式的主題模式',
+                                items: const ['跟隨系統', '淺色', '深色'],
+                                selectedIndex: selectedIndex,
+                                onSelectedIndexChange: (index) {
+                                  final newMode = [
+                                    ThemeMode.system,
+                                    ThemeMode.light,
+                                    ThemeMode.dark,
+                                  ][index];
+                                  ThemeSetting.setMode(newMode);
+                                },
+                              );
+                            },
+                          ),
+
+                          // 2. 模糊
+                          MiuixSwitchPreference(
+                            title: '模糊',
+                            summary: '啟用頂欄和底欄的模糊效果',
+                            value: blurEnabled,
+                            onChanged: (v) => ThemeSetting.setBlurEnabled(v),
+                          ),
+
+                          // 3. 懸浮底欄
+                          ValueListenableBuilder<bool>(
+                            valueListenable: ThemeSetting.floatingNavBar,
+                            builder: (context, floating, _) =>
+                                MiuixSwitchPreference(
+                              title: '懸浮底欄',
+                              summary: '使用類 Apple 風格的懸浮底欄',
+                              value: floating,
+                              onChanged: (v) =>
+                                  ThemeSetting.setFloatingNavBar(v),
+                            ),
+                          ),
+
+                          // 4. 液態玻璃
+                          ValueListenableBuilder<bool>(
+                            valueListenable: ThemeSetting.floatingNavBar,
+                            builder: (context, floating, _) {
+                              return ValueListenableBuilder<bool>(
+                                valueListenable: ThemeSetting.liquidGlass,
+                                builder: (context, liquidGlass, _) =>
+                                    MiuixSwitchPreference(
+                                  title: '液態玻璃',
+                                  summary: '啟用懸浮底欄的液態玻璃效果',
+                                  value: liquidGlass,
+                                  enabled: floating,
+                                  onChanged: (v) =>
+                                      ThemeSetting.setLiquidGlass(v),
+                                ),
+                              );
+                            },
+                          ),
+
+                          // 5. 預測性返回手勢
+                          ValueListenableBuilder<bool>(
+                            valueListenable: ThemeSetting.predictiveBack,
+                            builder: (context, predictive, _) =>
+                                MiuixSwitchPreference(
+                              title: '預測性返回手勢',
+                              summary: '啟用對預測性返回手勢的支援',
+                              value: predictive,
+                              onChanged: (v) =>
+                                  ThemeSetting.setPredictiveBack(v),
+                            ),
+                          ),
+
+                          // 6. 介面縮放
+                          ValueListenableBuilder<double>(
+                            valueListenable: ThemeSetting.uiScale,
+                            builder: (context, scale, _) =>
+                                MiuixSliderPreference(
+                              title: '介面縮放',
+                              summary: '調整全域顯示比例',
+                              value: scale,
+                              min: 0.8,
+                              max: 1.2,
+                              steps: 4,
+                              showKeyPoints: true,
+                              keyPoints: const [0.8, 0.9, 1.0, 1.1, 1.2],
+                              valueText: '${(scale * 100).round()}%',
+                              onClick: () {},
+                              onValueChange: (v) {
+                                final snapped =
+                                    (v * 10).round() / 10.0;
+                                ThemeSetting.setUiScale(snapped);
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(28, 12, 28, 0),
-            child: MiuixText(
-              '「跟随系统」会随手机的深色模式自动切换；选「浅色」或「深色」'
-              '则固定不变。切换即时生效，无需重启。',
-              style: MiuixTheme.of(context).textStyles.footnote1,
-            ),
-          ),
-        ],
-      ),
+            );
+          },
+        );
+      },
     );
-  }
-
-  static String _labelOf(ThemeMode mode) {
-    switch (mode) {
-      case ThemeMode.system:
-        return '跟随系统';
-      case ThemeMode.light:
-        return '浅色';
-      case ThemeMode.dark:
-        return '深色';
-    }
-  }
-
-  static String _summaryOf(ThemeMode mode) {
-    switch (mode) {
-      case ThemeMode.system:
-        return '与手机的深色模式保持一致';
-      case ThemeMode.light:
-        return '始终使用浅色外观';
-      case ThemeMode.dark:
-        return '始终使用深色外观';
-    }
   }
 }

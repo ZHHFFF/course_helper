@@ -79,6 +79,16 @@ class MiuixBlurNavigationBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = MiuixTheme.of(context).colors;
+    if (blurRadius <= 0) {
+      return ColoredBox(
+        color: colors.surface,
+        child: MiuixNavigationBar(
+          color: Colors.transparent,
+          showDivider: showDivider,
+          children: children,
+        ),
+      );
+    }
     final sigma = MiuixGlassSpec.sigmaOf(blurRadius);
 
     // `ClipRect` 不是可选项：`BackdropFilter` 的模糊会把采样结果溢出到自己的
