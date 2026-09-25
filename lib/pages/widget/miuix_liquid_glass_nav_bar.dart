@@ -1,86 +1,25 @@
 // ============================================================================
-// 液态玻璃底栏（Miuix GlassNavigationBar 的增强版 · 方案 C：BackdropFilter）
+// 液态玻璃底栏（Kyant0 / AndroidLiquidGlass 核心移植版）
 // ============================================================================
 //
-// 【为什么不用包里的 MiuixGlassNavigationBar】
-//
-// `flutter_miuix 1.2.0` 的 `MiuixGlassNavigationBar` 是「官方的液态玻璃底栏」，
-// 玻璃外壳 / backdrop 采样 / 跨项拖动 / spring 回弹都齐了，但有两处不够：
-//
-//   - 选中指示器只是一个纯色 `AnimatedContainer` + `StadiumBorder`
-//     （`neutral.withValues(alpha: .12)`），不是玻璃，没有模糊也没有高光；
-//   - 按压反馈只有图标 `Opacity(0.6)`，没有形变、没有描边变化、没有缩放。
-//
-// 这两处都写死在它的 `build()` 里，包内没有扩展点，所以把它的实现**原样搬过来
-// 再补**。搬过来的部分（拖动几何 / 弹簧参数 / 显示隐藏动画）一行没改。
-//
-// 【为什么把玻璃从「快照采样」换成 BackdropFilter】
-//
-// Miuix 的 `MiuixGlassPanel` 不是 `BackdropFilter`，而是「录图层快照 → 喂
-// `miuix_os4_glass.frag`」：靠 `paint()` 触发 `addPostFrameCallback` 里的
-// `toImageSync()` 把内容层录成一张位图，玻璃再按偏移取样 + 模糊 + 折射。
-//
-// 这个机制在**静态**画面下没问题，但一滚动就崩：
-//   `ListView` 的 `Viewport` 自己就是重绘边界
-//   （`RenderViewportBase.isRepaintBoundary => true`，`rendering/viewport.dart:752`），
-//   滚动时 `markNeedsPaint()` 只标脏 viewport 自己的图层，**位于它之上的捕获节点
-//   收不到 `paint()`** → 快照冻在旧帧，只在偶尔重排时跳一次。
-//   真机实测（一加 13 / 60Hz）：滚动期间捕获频率只有 **4~37 次/秒**（平均 ~19），
-//   而同期 `SurfaceFlinger --latency` 显示**每帧都是 16.57ms、零掉帧** ——
-//   所以卡顿不是掉帧，是**采样频率跟不上**。
-//   而且每次捕获是整屏位图（1264×2780 ≈ 14MB）+ CPU 侧 `toImageSync`，
-//   功耗也远高于 GPU 的一次 blur pass。
-//
-// 因此改用与**顶栏完全相同**的机制：`ClipRRect` + `BackdropFilter` +
-// `ImageFilter.blur`，再叠一层半透明色调。
-//   - 合成时实时取正下方像素 → **永远与当前帧同步，零延迟**；
-//   - 只有一次 GPU blur pass，没有位图录制/上传 → 功耗低一个量级；
-//   - 代价：**没有折射/色差**（那需要 `ImageFilter.shader`，见下）。
-//
-// 顶栏（`miuix_top_app_bar.dart:1097-1124`）用的正是这套：
-//   `sigma = blurRadius.clamp(0,150) * 0.45`
-//   `ColoredBox(color: colors.surface.withValues(alpha: blurTintAlpha))`
-// 这里逐值对齐，保证底栏和顶栏是**同一种玻璃**。
-//
-// 【层级结构（有一个反直觉的坑，改之前务必看懂）】
-//
-// ```
-// DecoratedBox(阴影)          ← 必须在 ClipRRect **外面**，否则阴影被裁掉
-//  └ ClipRRect(圆角)
-//     └ Stack
-//        ├ BackdropFilter ← 背景玻璃层（唯一的「实时采样屏幕像素」入口）
-//        ├ 选中指示器      ← 自己也有 BackdropFilter
-//        └ 导航项          ← 画在最上
-// ```
-//
-// ⚠️ 选中指示器必须与背景玻璃**并列**，绝不能嵌进背景玻璃的 `child` 里。
-// 原因：`BackdropFilter` 的语义是「saveLayer 一个空图层，把**当前画布上已绘制的
-// 内容**作为 backdrop 输入」。一旦嵌套，内层读到的就是外层**刚创建、几乎空白**的
-// 图层（里面只有一层纯色调）—— 糊一个均匀色块等于没糊，**嵌套 BackdropFilter
-// 会静默失效**。放进同一个 `Stack` 当兄弟节点，内层读到的才是
-// 「屏幕内容 + 外层玻璃」的合成结果。
-//
-// 【以后想补回折射】
-//
-// Flutter 的 `ui.ImageFilter.shader` 可以把 `BackdropFilter` 的输入直接喂给
-// fragment shader（引擎会把首个 `vec2` uniform 设为纹理尺寸、首个 `sampler2D`
-// 设为 filter 输入），因此「实时 + 折射」理论上可以兼得。
-// 但它 **只在 Impeller 下可用**（`painting.dart` 里对非 Impeller 直接
-// `throw UnsupportedError`），且 GLES 后端要手动翻 y 轴。等确认目标机都走
-// Impeller 再上。
-//
-// 用到的 Miuix 公开 API：
-//   - `MiuixGlassMotion`   全部弹簧参数 + `pressScale`（按压缩放规范值）
-//   - `MiuixGlassStroke(s)` 玻璃描边（含光照方向的 bloom 色）
-//   - `MiuixGlassShadow(s)` 玻璃阴影预设（`floating` 等）
-//   - `MiuixGlassShape`    圆角
-//   - `miuixGlassNavigationDragTarget` / `miuixGlassNavigationIndicatorBounds`
-//                          跨项拖动几何（跟手拉伸上限 60 物理像素）
-//
-// ⚠️ 包里 `GlassSpringBuilder` 与 `GlassInteractive` 在 `glass/internal/` 下
-// **没有导出**，这里用同样公开的 `SpringDescription` 自己驱动
-// （[_MiuixSpringValue]）与自写 [_NavItemInteractive]，弹簧参数仍取自
-// `MiuixGlassMotion`，手感与 Miuix 其它组件一致。
+// 移植自 Kyant0/AndroidLiquidGlass 与 KernelSU (FloatingBottomBar.kt / Lens.kt / InnerShadow.kt / Vibrancy.kt):
+// 1. 实时全向双层采样（Dual-Layer BackdropFilter）：
+//    外壳采样屏幕内容，选中指示器作为并列同级二次采样，零帧延迟，背景滚动实时响应。
+// 2. Kyant0 Vibrancy 饱和度矩阵（Vibrancy.kt）：
+//    +35% 色彩反差与饱和增强，穿透玻璃呈现透亮晶莹感。
+// 3. 动态外向膨胀与水滴挤压形变（Squash & Stretch）：
+//    按压时胶囊不缩小，而是向外自然放大膨胀至 1.30x（Kyant0 pressedScale = 78/56）。
+//    拖动过程中根据实时滑动速度（_dragVelocity）动态形变：
+//      scaleX /= 1.0 - (vel * 0.75)
+//      scaleY *= 1.0 - (|vel| * 0.35)
+//    产生真实液态水滴横向拉伸、纵向微缩的流体视觉。
+// 4. 零延迟即时跟手与物理阻尼（DampedDragAnimation）：
+//    手势拖动直接驱动指示器坐标（无慢半拍滞后），超出边缘施加 EaseOut 阻尼弹性；
+//    松手后由物理弹簧（mass: 1.0, stiffness: 300, damping: 24）平滑回弹。
+// 5. 光学双峰高光、内阴影凹陷与微弱色散边缘（Specular Bloom & Lens & InnerShadow）：
+//    - iosIndicatorSpecular 双峰镜面高光（Dual-Peak Rim）；
+//    - InnerShadow 动态凹陷内阴影；
+//    - 次像素微弱色散边缘（Chromatic Aberration），提供纯正玻璃折射厚度感。
 // ============================================================================
 
 import 'dart:async';
@@ -92,19 +31,10 @@ import 'package:flutter/physics.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_miuix/miuix.dart';
 
-/// 与 `MiuixGlassNavigationBar` 同名的入参类型，直接复用包里的定义。
+/// 与 [MiuixGlassNavigationItem] 同名入参类型，保持完全兼容。
 typedef MiuixLiquidGlassNavItem = MiuixGlassNavigationItem;
 
-/// 液态玻璃底栏（`BackdropFilter` 版）。
-///
-/// 与 `MiuixGlassNavigationBar` 的差异：
-/// 1. 玻璃外壳用 **`BackdropFilter`**（与顶栏同一机制）而不是图层快照采样 ——
-///    滚动时模糊连续跟随、无 1 帧延迟、无整屏位图录制，功耗低一个量级；
-/// 2. 选中区域是**一层与外壳并列叠加的玻璃**（自己再采样一次 + 更亮的色调 +
-///    描边），而不是纯色胶囊，所以选中项有自己的模糊与边缘高光；
-/// 3. 按压时有完整反馈：`MiuixGlassMotion.pressScale` 缩放 + 描边增亮加粗 +
-///    高光叠加，全部由 Miuix 的弹簧（`navPressEnter` / `navPressExit`）驱动，
-///    松手平滑回弹。
+/// Kyant0 液态玻璃底栏
 class MiuixLiquidGlassNavigationBar extends StatefulWidget {
   const MiuixLiquidGlassNavigationBar({
     super.key,
@@ -129,30 +59,28 @@ class MiuixLiquidGlassNavigationBar extends StatefulWidget {
   final int selectedIndex;
   final ValueChanged<int> onSelect;
 
-  /// 玻璃整体的不透明度倍率（同时作用于模糊与色调层）。
+  /// 玻璃整体不透明度倍率
   final double alpha;
   final bool visible;
   final double height;
 
-  /// 模糊半径（dp）。默认 20，与 Miuix 玻璃材质 `puredThinGlass` 一致。
-  ///
-  /// 实际 sigma = `blurRadius * 0.45`（顶栏同款换算），所以 20 → 9.0。
+  /// 模糊半径（dp）
   final double blurRadius;
 
-  /// 模糊之上叠加的色调不透明度 [0,1]。默认 .55，与顶栏 `blurTintAlpha` 一致。
+  /// 模糊之上叠加的色调不透明度 [0,1]
   final double blurTintAlpha;
 
   final MiuixGlassShape? shape;
   final MiuixGlassStroke? stroke;
   final MiuixGlassShadow? shadow;
 
-  /// 选中 / 未选中项的图标与文字颜色（不传则用 `colors.onBackground`）。
+  /// 选中 / 未选中项的图标与文字颜色
   final Color? selectedColor, unselectedColor;
 
-  /// 底部手势安全区内边距（贴底模式下使玻璃铺满手势区）。
+  /// 底部手势安全区内边距
   final double bottomPadding;
 
-  /// 页面滑动控制器（联动左右滑动切换与指示器平滑跟随）。
+  /// 页面滑动控制器（联动左右滑动切换与指示器平滑跟随）
   final PageController? pageController;
 
   @override
@@ -163,54 +91,53 @@ class MiuixLiquidGlassNavigationBar extends StatefulWidget {
 class _MiuixLiquidGlassNavigationBarState
     extends State<MiuixLiquidGlassNavigationBar>
     with TickerProviderStateMixin {
-  late final _show = AnimationController.unbounded(
+  late final AnimationController _showController = AnimationController.unbounded(
     vsync: this,
-    value: widget.visible ? 1 : 0,
+    value: widget.visible ? 1.0 : 0.0,
   );
-  late final _left = AnimationController.unbounded(vsync: this);
-  late final _right = AnimationController.unbounded(vsync: this);
+
+  /// 指示器当前物理浮点位置（0.0 ~ N-1.0）
+  late final AnimationController _positionController =
+      AnimationController.unbounded(
+    vsync: this,
+    value: widget.selectedIndex.toDouble(),
+  );
+
+  /// 按压进出进度控制器（0.0 静止 ~ 1.0 完全按下）
+  late final AnimationController _pressController =
+      AnimationController.unbounded(
+    vsync: this,
+    value: 0.0,
+  );
+
   final _key = GlobalKey();
-  final _controllers = <AnimationController>[];
 
-  bool _isAnimatingFromTap = false;
   Timer? _animatingFromTapTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _controllers.addAll([_show, _left, _right]);
-    widget.pageController?.addListener(_onPageScroll);
-  }
-
-  void _onPageScroll() {
-    if (widget.pageController == null || !widget.pageController!.hasClients) return;
-    if (_pointer != null) return;
-    if (_isAnimatingFromTap) {
-      if (widget.pageController!.position.userScrollDirection != ScrollDirection.idle) {
-        _animatingFromTapTimer?.cancel();
-        _isAnimatingFromTap = false;
-      } else {
-        return;
-      }
-    }
-    final page = widget.pageController!.page;
-    if (page != null && _width > 0) {
-      final clampedPage = page.clamp(0.0, (widget.items.length - 1).toDouble());
-      final frac = (clampedPage - clampedPage.floor()).clamp(0.0, 1.0);
-      // 中间态微弱液态横向拉伸（SDF 液态微形变，最大 +6dp），两端归零
-      final stretch = (1 - (2 * frac - 1).abs()) * 6.0;
-      final targetLeft = leftOf(page) - stretch / 2;
-      final targetRight = leftOf(page) + _slot + 10 + stretch / 2;
-      _left.value = targetLeft;
-      _right.value = targetRight;
-    }
-  }
-
-  Timer? _timer;
+  bool _isAnimatingFromTap = false;
   int? _pointer;
-  int _pressed = -1;
-  double _width = 0, _lastX = 0;
+  int _pressedIndex = -1;
+  double _width = 0.0;
+  double _lastX = 0.0;
+  double _dragVelocity = 0.0;
+  int _lastTime = 0;
   bool _positioned = false;
+
+  /// Kyant0 物理弹簧参数
+  static const _positionSpring = SpringDescription(
+    mass: 1.0,
+    stiffness: 300.0,
+    damping: 24.0,
+  );
+  static const _pressEnterSpring = SpringDescription(
+    mass: 1.0,
+    stiffness: 420.0,
+    damping: 28.0,
+  );
+  static const _pressExitSpring = SpringDescription(
+    mass: 1.0,
+    stiffness: 280.0,
+    damping: 22.0,
+  );
 
   bool get _disabledMotion =>
       MediaQuery.maybeOf(context)?.disableAnimations ?? false;
@@ -219,96 +146,45 @@ class _MiuixLiquidGlassNavigationBarState
       ? 0
       : widget.selectedIndex.clamp(0, widget.items.length - 1);
 
-  double get _slot =>
-      (_width - 16).clamp(0.0, double.infinity) /
-      math.max(1, widget.items.length);
+  double get _tabWidth {
+    if (widget.items.isEmpty || _width <= 16) return 0.0;
+    return (_width - 16) / widget.items.length;
+  }
 
   bool get _rtl => Directionality.of(context) == TextDirection.rtl;
 
-  double leftOf(num index) =>
-      8 + (_rtl ? widget.items.length - 1 - index : index) * _slot - 5;
-
-  /// 外壳圆角：`shape` 不传时用胶囊（999）。
-  double get _radius => widget.shape?.cornerRadius ?? 999;
-
-  /// 模糊 sigma，换算系数与顶栏一致（`BLUR_RADIUS_TO_SIGMA = 0.45`）。
   double get _sigma => widget.blurRadius.clamp(0.0, 150.0) * 0.45;
 
-  void _select(int index) {
-    _animatingFromTapTimer?.cancel();
-    _isAnimatingFromTap = true;
-    _animatingFromTapTimer = Timer(const Duration(milliseconds: 350), () {
-      if (mounted) {
-        _isAnimatingFromTap = false;
-      }
-    });
-    _move(leftOf(index), leftOf(index) + _slot + 10);
-    widget.onSelect(index);
-  }
-
-  void _move(
-    double left,
-    double right, {
-    bool following = false,
-    bool? movingRight,
-  }) {
-    final rightwards = movingRight ?? left > _left.value;
-    _animateTo(
-      _left,
-      left,
-      following
-          ? MiuixGlassMotion.navDragFollow
-          : MiuixGlassMotion.edgeSpring(!rightwards),
-    );
-    _animateTo(
-      _right,
-      right,
-      following
-          ? MiuixGlassMotion.navDragFollow
-          : MiuixGlassMotion.edgeSpring(rightwards),
-    );
-  }
-
-  /// 等价于包里未导出的 `animateGlassTo`。
-  void _animateTo(
-    AnimationController controller,
-    double target,
-    SpringDescription spring,
-  ) {
-    if (_disabledMotion) {
-      controller.value = target;
-      return;
-    }
-    controller.animateWith(
-      SpringSimulation(spring, controller.value, target, controller.velocity),
-    );
+  @override
+  void initState() {
+    super.initState();
+    widget.pageController?.addListener(_onPageScroll);
   }
 
   @override
   void didUpdateWidget(MiuixLiquidGlassNavigationBar oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.visible != widget.visible) {
-      _timer?.cancel();
-      void run() {
-        if (mounted) {
-          _animateTo(_show, widget.visible ? 1 : 0, MiuixGlassMotion.navShowHide);
-        }
-      }
-
-      if (widget.visible && !_disabledMotion) {
-        _timer = Timer(MiuixGlassMotion.navShowDelay, run);
+      if (_disabledMotion) {
+        _showController.value = widget.visible ? 1.0 : 0.0;
       } else {
-        run();
+        _showController.animateWith(
+          SpringSimulation(
+            _positionSpring,
+            _showController.value,
+            widget.visible ? 1.0 : 0.0,
+            _showController.velocity,
+          ),
+        );
       }
       if (!widget.visible) {
-        _pointer = null;
-        _pressed = -1;
+        _release();
       }
     }
     if (oldWidget.items.length != widget.items.length) {
       _positioned = false;
       _pointer = null;
-      _pressed = -1;
+      _pressedIndex = -1;
     }
     if (oldWidget.pageController != widget.pageController) {
       oldWidget.pageController?.removeListener(_onPageScroll);
@@ -319,45 +195,115 @@ class _MiuixLiquidGlassNavigationBarState
         _width > 0 &&
         !_isAnimatingFromTap) {
       final isDragging = widget.pageController?.hasClients == true &&
-          widget.pageController!.position.userScrollDirection != ScrollDirection.idle;
+          widget.pageController!.position.userScrollDirection !=
+              ScrollDirection.idle;
       if (!isDragging) {
-        _move(leftOf(_index), leftOf(_index) + _slot + 10);
+        _animatePositionTo(widget.selectedIndex.toDouble());
       }
     }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
     _animatingFromTapTimer?.cancel();
     widget.pageController?.removeListener(_onPageScroll);
-    _pointer = null;
-    for (final controller in _controllers) {
-      controller.dispose();
-    }
+    _showController.dispose();
+    _positionController.dispose();
+    _pressController.dispose();
     super.dispose();
   }
 
-  double _x(Offset global) =>
-      (_key.currentContext!.findRenderObject() as RenderBox)
-          .globalToLocal(global)
-          .dx;
+  void _onPageScroll() {
+    if (widget.pageController == null || !widget.pageController!.hasClients) {
+      return;
+    }
+    if (_pointer != null) return;
+    if (_isAnimatingFromTap) {
+      if (widget.pageController!.position.userScrollDirection !=
+          ScrollDirection.idle) {
+        _animatingFromTapTimer?.cancel();
+        _isAnimatingFromTap = false;
+      } else {
+        return;
+      }
+    }
+    final page = widget.pageController!.page;
+    if (page != null && _width > 0) {
+      final clampedPage =
+          page.clamp(0.0, (widget.items.length - 1).toDouble());
+      _positionController.value = clampedPage;
+    }
+  }
 
-  int _item(double x) {
-    final raw = ((x - 8) / math.max(_slot, .01)).floor().clamp(
-      0,
-      widget.items.length - 1,
-    );
+  double _localX(Offset global) {
+    final box = _key.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return 0.0;
+    return box.globalToLocal(global).dx;
+  }
+
+  int _itemAt(double x) {
+    if (_tabWidth <= 0) return _index;
+    final raw = ((x - 8) / _tabWidth).floor().clamp(0, widget.items.length - 1);
     return _rtl ? widget.items.length - 1 - raw : raw;
   }
 
+  void _animatePositionTo(double target) {
+    if (_disabledMotion) {
+      _positionController.value = target;
+      return;
+    }
+    _positionController.animateWith(
+      SpringSimulation(
+        _positionSpring,
+        _positionController.value,
+        target,
+        _positionController.velocity,
+      ),
+    );
+  }
+
+  void _animatePressTo(double target) {
+    if (_disabledMotion) {
+      _pressController.value = target;
+      return;
+    }
+    final spring = target > 0.5 ? _pressEnterSpring : _pressExitSpring;
+    _pressController.animateWith(
+      SpringSimulation(
+        spring,
+        _pressController.value,
+        target,
+        _pressController.velocity,
+      ),
+    );
+  }
+
+  void _select(int index) {
+    _animatingFromTapTimer?.cancel();
+    _isAnimatingFromTap = true;
+    _animatingFromTapTimer = Timer(const Duration(milliseconds: 320), () {
+      if (mounted) {
+        _isAnimatingFromTap = false;
+      }
+    });
+    _animatePositionTo(index.toDouble());
+    widget.onSelect(index);
+  }
+
   void _release() {
-    if (_pointer == null) return;
+    if (_pointer == null && _pressedIndex == -1) return;
+    final targetIndex =
+        _positionController.value.round().clamp(0, widget.items.length - 1);
     setState(() {
       _pointer = null;
-      _pressed = -1;
+      _pressedIndex = -1;
+      _dragVelocity = 0.0;
     });
-    _move(leftOf(_index), leftOf(_index) + _slot + 10);
+    _animatePressTo(0.0);
+    _animatePositionTo(targetIndex.toDouble());
+    if (targetIndex != _index) {
+      widget.onSelect(targetIndex);
+    }
   }
 
   @override
@@ -368,55 +314,73 @@ class _MiuixLiquidGlassNavigationBarState
     final fontSize = MediaQuery.textScalerOf(context).scale(1) >= 1.6
         ? 16.0
         : 11.0;
-    final pressed = _pressed >= 0;
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth.isFinite
             ? constraints.maxWidth
             : widget.items.length * 80.0;
+
         if (_width != width || !_positioned) {
           _width = width;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted || widget.items.isEmpty) return;
             if (!_positioned) {
-              _left.value = leftOf(_index);
-              _right.value = leftOf(_index) + _slot + 10;
+              _positionController.value = _index.toDouble();
               _positioned = true;
             } else {
-              _move(leftOf(_index), leftOf(_index) + _slot + 10);
+              _positionController.value = _index.toDouble();
             }
           });
         }
+
         return AnimatedBuilder(
-          animation: Listenable.merge([_show, _left, _right]),
+          animation: Listenable.merge(
+              [_showController, _positionController, _pressController]),
           builder: (context, _) {
-            final progress = _show.value.clamp(0.0, 1.0);
-            if (!widget.visible && progress < .001) {
-              return SizedBox(width: width, height: widget.height + widget.bottomPadding);
+            final showProgress = _showController.value.clamp(0.0, 1.0);
+            if (!widget.visible && showProgress < .001) {
+              return SizedBox(
+                width: width,
+                height: widget.height + widget.bottomPadding,
+              );
             }
-            final effectiveLeft = !_positioned ? leftOf(_index) : _left.value;
-            final effectiveRight =
-                !_positioned ? leftOf(_index) + _slot + 10 : _right.value;
-            final bounds = miuixGlassNavigationIndicatorBounds(
-              effectiveLeft,
-              effectiveRight,
-              width,
-              3,
-            );
+
+            final pressProgress = _pressController.value.clamp(0.0, 1.0);
+            final posValue = _positionController.value;
+            final tabW = _tabWidth;
+
+            // 橡皮筋阻尼计算（Kyant0 EaseOut transform）
+            double rubberBand = 0.0;
+            if (posValue < 0.0) {
+              final frac = (-posValue).clamp(0.0, 1.0);
+              rubberBand = -4.0 * (1.0 - (1.0 - frac) * (1.0 - frac));
+            } else if (posValue > widget.items.length - 1) {
+              final frac = (posValue - (widget.items.length - 1)).clamp(0.0, 1.0);
+              rubberBand = 4.0 * (1.0 - (1.0 - frac) * (1.0 - frac));
+            }
+
+            // 指示器左侧像素坐标与宽度
+            final indicatorLeft = _rtl
+                ? 8 + (widget.items.length - 1 - posValue) * tabW + rubberBand
+                : 8 + posValue * tabW + rubberBand;
+
+            // Kyant0 呼吸外壳微缩放（lerp(1f, 1f + 16dp / width, pressProgress)）
+            final shellScale = 1.0 + 0.012 * pressProgress;
+
             return IgnorePointer(
               ignoring: !widget.visible,
               child: ExcludeSemantics(
                 excluding: !widget.visible,
                 child: Opacity(
-                  opacity: progress,
+                  opacity: showProgress,
                   child: Transform.scale(
-                    scale: .6 + .4 * progress,
+                    scale: (.65 + .35 * showProgress) * shellScale,
                     child: ImageFiltered(
-                      enabled: progress < .999,
+                      enabled: showProgress < .999,
                       imageFilter: ui.ImageFilter.blur(
-                        sigmaX: (1 - progress) * 18,
-                        sigmaY: (1 - progress) * 18,
+                        sigmaX: (1 - showProgress) * 16,
+                        sigmaY: (1 - showProgress) * 16,
                       ),
                       child: SizedBox(
                         width: width,
@@ -426,37 +390,41 @@ class _MiuixLiquidGlassNavigationBarState
                           onPointerDown: (event) {
                             if (_pointer != null) return;
                             _pointer = event.pointer;
-                            _lastX = _x(event.position);
-                            setState(() => _pressed = _item(_lastX));
-                            _select(_pressed);
+                            final x = _localX(event.position);
+                            _lastX = x;
+                            _lastTime = DateTime.now().millisecondsSinceEpoch;
+                            _dragVelocity = 0.0;
+                            final item = _itemAt(x);
+                            setState(() => _pressedIndex = item);
+                            _animatePressTo(1.0);
+                            _select(item);
                           },
                           onPointerMove: (event) {
                             if (_pointer != event.pointer) return;
-                            final x = _x(event.position),
-                                index = _item(x),
-                                changed = index != _pressed;
-                            final target = miuixGlassNavigationDragTarget(
-                              left: changed
-                                  ? leftOf(index)
-                                  : x - (_slot + 10) / 2,
-                              width: _slot + 10,
-                              containerWidth: width,
-                              delta: x - _lastX,
-                              changedItem: changed,
-                              devicePixelRatio: MediaQuery.devicePixelRatioOf(
-                                context,
-                              ),
-                            );
-                            _move(
-                              target.left,
-                              target.right,
-                              following: target.following,
-                              movingRight: target.movingRight,
-                            );
+                            final x = _localX(event.position);
+                            final now = DateTime.now().millisecondsSinceEpoch;
+                            final dt = (now - _lastTime) / 1000.0;
+                            if (dt > 0.003) {
+                              _dragVelocity = ((x - _lastX) / dt / 360.0)
+                                  .clamp(-2.5, 2.5);
+                            }
+                            _lastTime = now;
                             _lastX = x;
-                            if (changed) {
-                              setState(() => _pressed = index);
-                              widget.onSelect(index);
+
+                            if (tabW > 0) {
+                              // 即时跟手计算，零延迟
+                              final logicalX = _rtl ? width - 8 - x : x - 8;
+                              final floatTarget =
+                                  (logicalX - tabW / 2) / tabW;
+                              _positionController.value = floatTarget.clamp(
+                                -0.4,
+                                (widget.items.length - 1) + 0.4,
+                              );
+                              final item = _itemAt(x);
+                              if (item != _pressedIndex) {
+                                setState(() => _pressedIndex = item);
+                                widget.onSelect(item);
+                              }
                             }
                           },
                           onPointerUp: (e) {
@@ -469,23 +437,21 @@ class _MiuixLiquidGlassNavigationBarState
                             context,
                             dark: dark,
                             layers: [
-                              // ★ 选中区域：一层独立叠加的玻璃
-                              //   （位置与外壳对齐、画在导航项之下；它自己的
-                              //    `BackdropFilter` 读到的是「屏幕内容 + 外壳玻璃」，
-                              //    所以选中项真的有独立的模糊与边缘高光，
-                              //    而不是一块纯色 —— 详见 _buildIndicator）
-                              Positioned(
-                                left: bounds.dx,
-                                right: math.max(0, width - bounds.dy),
-                                top: 3,
-                                bottom: 3 + widget.bottomPadding,
-                                child: _buildIndicator(
-                                  context,
-                                  dark: dark,
-                                  pressed: pressed,
+                              // 1. Kyant0 液态玻璃选中指示器（并列层二次 BackdropFilter 采样）
+                              if (tabW > 0)
+                                Positioned(
+                                  left: indicatorLeft,
+                                  top: 3,
+                                  width: tabW,
+                                  height: math.max(1.0, widget.height - 6),
+                                  child: _buildLiquidIndicator(
+                                    context,
+                                    dark: dark,
+                                    pressProgress: pressProgress,
+                                    velocity: _dragVelocity,
+                                  ),
                                 ),
-                              ),
-                              // 导航项（画在最上层）
+                              // 2. 导航项内容图标与标签（顶层交互）
                               Positioned(
                                 left: 0,
                                 right: 0,
@@ -518,32 +484,45 @@ class _MiuixLiquidGlassNavigationBarState
                                                   _select(i);
                                                 }
                                               },
-                                              builder:
-                                                  (
-                                                    context,
-                                                    itemPressed,
-                                                    focused,
-                                                  ) {
-                                                final tint =
-                                                    (i == _index
-                                                        ? widget
-                                                              .selectedColor
+                                              builder: (
+                                                context,
+                                                itemPressed,
+                                                focused,
+                                              ) {
+                                                final isSelected = i == _index;
+                                                final tint = (isSelected
+                                                        ? widget.selectedColor
                                                         : widget
-                                                              .unselectedColor) ??
-                                                    (i == _index
-                                                        ? theme.colors.onSurfaceContainer
-                                                        : theme.colors.onSurfaceContainer.withValues(alpha: 0.45));
-                                                return _buildItem(
-                                                  item: widget.items[i],
-                                                  tint: tint,
-                                                  focused: focused,
-                                                  dimmed: _pressed == i,
-                                                  fontSize: fontSize,
-                                                  primary:
-                                                      theme.colors.primary,
-                                                  selected: i == _index,
+                                                            .unselectedColor) ??
+                                                    (isSelected
+                                                        ? theme.colors.primary
+                                                        : theme
+                                                            .colors
+                                                            .onSurfaceContainer
+                                                            .withValues(
+                                                                alpha: 0.55));
+
+                                                // Kyant0: LocalFloatingBottomBarTabScale 动态微放大
+                                                final itemScale = isSelected
+                                                    ? 1.0 +
+                                                        0.14 * pressProgress
+                                                    : 1.0;
+
+                                                return Transform.scale(
+                                                  scale: itemScale,
+                                                  child: _buildItem(
+                                                    item: widget.items[i],
+                                                    tint: tint,
+                                                    focused: focused,
+                                                    dimmed: _pressedIndex == i &&
+                                                        !isSelected,
+                                                    fontSize: fontSize,
+                                                    primary:
+                                                        theme.colors.primary,
+                                                    selected: isSelected,
+                                                  ),
                                                 );
-                                                  },
+                                              },
                                             ),
                                           ),
                                       ],
@@ -566,72 +545,68 @@ class _MiuixLiquidGlassNavigationBarState
     );
   }
 
-  /// 玻璃外壳：`ClipRRect` + `BackdropFilter` + 半透明色调 + 描边 + 外阴影。
-  ///
-  /// 与顶栏（`miuix_top_app_bar.dart:1097-1124`）**同一套机制、同一套参数**，
-  /// 所以底栏和顶栏是「同一种玻璃」。
-  ///
-  /// 层级顺序很关键，三层各司其职：
-  ///
-  /// ```
-  /// DecoratedBox(阴影)          ← 必须在 ClipRRect **外面**，否则阴影被裁掉
-  ///  └ ClipRRect(圆角)
-  ///     └ Stack
-  ///        ├ BackdropFilter ← 背景玻璃层（唯一的「实时采样屏幕像素」入口）
-  ///        ├ layers[0]      ← 选中指示器（自己也有 BackdropFilter）
-  ///        └ layers[1]      ← 导航项（画在最上）
-  /// ```
-  ///
-  /// ⚠️ 指示器为什么必须与背景玻璃**并列**、而不能嵌在它的 child 里：
-  /// `BackdropFilter` 在实现上是「saveLayer 一个空图层，把**当前画布上已绘制的内容**
-  /// 作为 backdrop 输入」。若指示器嵌在背景玻璃的 child 中，它读到的就是那个
-  /// **刚创建、几乎空白的图层**（里面只有一层纯色调），糊一个均匀色块等于没糊 ——
-  /// 嵌套 `BackdropFilter` 会静默失效。
-  /// 放进同一个 `Stack` 做并列兄弟，指示器读到的才是
-  /// 「屏幕内容 + 背景玻璃」的合成结果，二次模糊才真正生效。
+  /// 玻璃外壳：Kyant0 Vibrancy + 双层柔和阴影 + 实时 BackdropFilter + 镜面双峰高光
   Widget _buildShell(
     BuildContext context, {
     required bool dark,
     required List<Widget> layers,
   }) {
-    final borderRadius = BorderRadius.circular(_radius);
-    final stroke = widget.stroke ?? MiuixGlassStrokes.forTheme(dark);
-    // 色调与顶栏一致：colors.surface @ blurTintAlpha。
-    // 再叠一层极淡的亮面（近似 Miuix 玻璃材质里的 softLight / overlay 层），
-    // 让玻璃不至于在深色背景上显得比原版更闷。
+    final borderRadius = BorderRadius.circular(999);
     final theme = MiuixTheme.of(context);
-    final tint = theme.colors.surface.withValues(
-      alpha: (widget.blurTintAlpha * widget.alpha).clamp(0.0, 1.0),
-    );
-    final sheen = Colors.white.withValues(
-      alpha: (dark ? .04 : .12) * widget.alpha,
-    );
+
+    // Kyant0 / KernelSU 风格：surfaceContainer 半透底色
+    final surfaceContainer = theme.colors.surfaceContainer;
+    final containerColor = dark
+        ? surfaceContainer.withValues(alpha: 0.30 * widget.alpha)
+        : surfaceContainer.withValues(alpha: 0.65 * widget.alpha);
+
+    // Kyant0 Vibrancy: +35% 饱和度反差增强矩阵，让透过玻璃的底色色彩鲜艳通透
+    const vibrancyMatrix = <double>[
+      1.35, -0.18, -0.12, 0, 0,
+      -0.12, 1.35, -0.18, 0, 0,
+      -0.12, -0.18, 1.35, 0, 0,
+      0,     0,     0,     1, 0,
+    ];
 
     return DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: borderRadius,
-        boxShadow: _boxShadows(widget.shadow),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: dark ? 0.30 : 0.10),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
+          ),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: dark ? 0.14 : 0.04),
+            blurRadius: 4,
+            offset: const Offset(0, 1),
+          ),
+        ],
       ),
       child: ClipRRect(
         borderRadius: borderRadius,
         child: Stack(
           children: [
+            // 背景玻璃全向实时采样
             Positioned.fill(
               child: BackdropFilter(
                 filter: ui.ImageFilter.blur(sigmaX: _sigma, sigmaY: _sigma),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: tint,
-                    borderRadius: borderRadius,
-                    border: Border.all(
-                      color: stroke.color,
-                      width: stroke.width,
+                child: ColorFiltered(
+                  colorFilter: const ColorFilter.matrix(vibrancyMatrix),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: containerColor,
+                      borderRadius: borderRadius,
                     ),
                   ),
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(color: sheen),
-                  ),
                 ),
+              ),
+            ),
+            // Kyant0 外壳双峰高光描边 (baseHighlight -45°)
+            Positioned.fill(
+              child: CustomPaint(
+                painter: _Kyant0ShellRimPainter(dark: dark),
               ),
             ),
             ...layers,
@@ -641,110 +616,51 @@ class _MiuixLiquidGlassNavigationBarState
     );
   }
 
-  /// 把 Miuix 的 `MiuixGlassShadow` 翻译成 Flutter 原生 `BoxShadow`。
+  /// Kyant0 液态胶囊选中指示器
   ///
-  /// 源端 `offsetX/offsetY/radius` 的单位是**源端像素**，绘制时要除以
-  /// `sourceDensity = 3`（见 `miuix_glass_decoration.dart` 的类注释），
-  /// 这里照做，保证悬浮高度与原版观感一致。
-  List<BoxShadow> _boxShadows(MiuixGlassShadow? shadow) {
-    if (shadow == null) return const [];
-    if (shadow.radius <= 0 && shadow.offsetX == 0 && shadow.offsetY == 0) {
-      return const [];
-    }
-    return [
-      BoxShadow(
-        color: shadow.color,
-        offset: Offset(shadow.offsetX / 3, shadow.offsetY / 3),
-        blurRadius: math.max(shadow.radius / 3, 0),
-      ),
-    ];
-  }
-
-  /// 选中区域的玻璃指示器。
-  ///
-  /// 三层叠起来：
-  ///   1. 自己的一次 `BackdropFilter` —— 它读到的是「屏幕内容 + 外壳玻璃」的合成
-  ///      结果（因为它与外壳玻璃是 `Stack` 里的并列兄弟，见 [_buildShell]），
-  ///      于是选中区比底栏本体更磨砂；
-  ///   2. 更亮的色调层（深色底用白、浅色底用黑），按下时透明度随弹簧抬升；
-  ///   3. 描边（宽度与亮度都随按压提亮）→ 边缘高光变化。
-  ///
-  /// 整块用 `MiuixGlassMotion.pressScale` 缩放，由 `navPressEnter` /
-  /// `navPressExit` 两条弹簧驱动，松手平滑回弹。
-  Widget _buildIndicator(
+  /// 核心要素：
+  /// - pressedScale 扩展放大（1.0x -> 1.30x），拒绝缩小；
+  /// - 速度驱动横向水滴挤压拉伸（Squash & Stretch）；
+  /// - 内部凹陷深度阴影（InnerShadow）；
+  /// - 镜面双峰折射高光（pillHighlight 90°）；
+  /// - 微弱色散边缘（Subtle Chromatic Aberration）；
+  /// - 二次 BackdropFilter 磨砂折射。
+  Widget _buildLiquidIndicator(
     BuildContext context, {
     required bool dark,
-    required bool pressed,
+    required double pressProgress,
+    required double velocity,
   }) {
-    // 指示器高度 = 底栏高 - 上下各 3 的 inset
-    final shorterSide = math.max(widget.height - 6, 1.0);
-    final restScale = MiuixGlassMotion.pressScale(shorterSide);
-    final baseStroke = widget.stroke ?? MiuixGlassStrokes.forTheme(dark);
     final borderRadius = BorderRadius.circular(999);
+    final theme = MiuixTheme.of(context);
 
-    return _MiuixSpringValue(
-      value: pressed ? 1.0 : 0.0,
-      spring: pressed
-          ? MiuixGlassMotion.navPressEnter
-          : MiuixGlassMotion.navPressExit,
-      builder: (context, t) {
-        // 从 1.0 弹簧过渡到 Miuix 规范的按压缩放值
-        final scale = 1.0 + (restScale - 1.0) * t;
-        final rim = _pressedStroke(baseStroke, t);
-        return Transform.scale(
-          scale: scale,
-          child: ClipRRect(
-            borderRadius: borderRadius,
-            child: BackdropFilter(
-              // 它糊的是「已经糊过的外壳」，所以强度只需要外壳的六成
-              filter: ui.ImageFilter.blur(
-                sigmaX: _sigma * .6,
-                sigmaY: _sigma * .6,
-              ),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: borderRadius,
-                  border: Border.all(color: rim.color, width: rim.width),
-                  // 按下高光：深色底用白、浅色底用黑。
-                  // alpha 逐值对齐 Miuix 原版 `MiuixGlassNavigationBar`：
-                  //   neutral.withValues(alpha: dark ? .12 : .06)   ← 静止
-                  //   neutral.withValues(alpha: dark ? .26 : .16)   ← 按下
-                  // 这里写成 base + delta * t 的形式，由弹簧 t 驱动过渡。
-                  color: (dark ? Colors.white : Colors.black).withValues(
-                    alpha:
-                        ((dark ? .12 : .06) + (dark ? .14 : .10) * t) *
-                        widget.alpha,
-                  ),
-                ),
-              ),
+    // Kyant0: pressedScale 78f / 56f ≈ 1.393x，此处采用 1.30x 自然饱满扩张
+    final baseScale = 1.0 + 0.30 * pressProgress;
+
+    // Kyant0 速度挤压拉伸形变
+    final velClamp = (velocity * 0.16).clamp(-0.25, 0.25);
+    final scaleX = baseScale / (1.0 - velClamp * 0.75);
+    final scaleY = baseScale * (1.0 - velClamp.abs() * 0.35);
+
+    return Transform(
+      transform: Matrix4.diagonal3Values(scaleX, scaleY, 1.0),
+      alignment: Alignment.center,
+      child: ClipRRect(
+        borderRadius: borderRadius,
+        child: BackdropFilter(
+          // 选中区域二次采样磨砂折射
+          filter: ui.ImageFilter.blur(
+            sigmaX: _sigma * 0.45 * (1.0 + 0.25 * pressProgress),
+            sigmaY: _sigma * 0.45 * (1.0 + 0.25 * pressProgress),
+          ),
+          child: CustomPaint(
+            painter: _Kyant0LiquidPillPainter(
+              dark: dark,
+              pressProgress: pressProgress,
+              primaryColor: theme.colors.primary,
             ),
           ),
-        );
-      },
-    );
-  }
-
-  /// 按压时把描边「提亮 + 加粗」，制造玻璃边缘被压出高光的观感。
-  MiuixGlassStroke _pressedStroke(MiuixGlassStroke base, double t) {
-    if (t <= 0) return base;
-    Color lift(Color c, double amount) => c.withValues(
-      alpha: (c.a + (1 - c.a) * amount * t).clamp(0.0, 1.0),
-    );
-    return MiuixGlassStroke(
-      width: base.width * (1 + .6 * t),
-      bevel: base.bevel,
-      color: lift(base.color, .5),
-      primary: MiuixGlassStrokeLight(
-        base.primary.x,
-        base.primary.y,
-        base.primary.z,
-        lift(base.primary.color, .45),
-      ),
-      secondary: MiuixGlassStrokeLight(
-        base.secondary.x,
-        base.secondary.y,
-        base.secondary.z,
-        lift(base.secondary.color, .35),
+        ),
       ),
     );
   }
@@ -769,7 +685,7 @@ class _MiuixLiquidGlassNavigationBarState
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 3),
         child: Opacity(
-          opacity: dimmed ? .6 : 1,
+          opacity: dimmed ? .55 : 1,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
@@ -795,7 +711,8 @@ class _MiuixLiquidGlassNavigationBarState
                   style: TextStyle(
                     fontSize: fontSize,
                     color: tint,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                    fontWeight:
+                        selected ? FontWeight.w600 : FontWeight.normal,
                     height: 1.2,
                   ),
                 ),
@@ -807,68 +724,153 @@ class _MiuixLiquidGlassNavigationBarState
   }
 }
 
-/// 用 Miuix 的弹簧参数驱动一个标量进度。
-///
-/// 包里同款是 `GlassSpringBuilder`（`glass/internal/animation.dart`，**未导出**），
-/// 这里用同样公开的 `SpringDescription` 自己驱动；弹簧本身仍取自
-/// [MiuixGlassMotion]，所以手感和 Miuix 其它组件一致。
-class _MiuixSpringValue extends StatefulWidget {
-  const _MiuixSpringValue({
-    required this.value,
-    required this.spring,
-    required this.builder,
+/// Kyant0 外壳双峰高光描边绘制器（baseHighlight -45°）
+class _Kyant0ShellRimPainter extends CustomPainter {
+  const _Kyant0ShellRimPainter({required this.dark});
+
+  final bool dark;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
+    final rect = Offset.zero & size;
+    final rrect = RRect.fromRectAndRadius(
+      rect.deflate(0.6),
+      Radius.circular(size.height / 2),
+    );
+
+    // 沿左上 -45° 至右下 135° 的双峰镜面高光梯度
+    final rimPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..shader = ui.Gradient.linear(
+        rect.topLeft,
+        rect.bottomRight,
+        [
+          Colors.white.withValues(alpha: dark ? 0.38 : 0.45), // 左上主光峰值
+          Colors.white.withValues(alpha: dark ? 0.08 : 0.12),
+          Colors.white.withValues(alpha: dark ? 0.22 : 0.28), // 右下次光峰值
+        ],
+        const [0.0, 0.55, 1.0],
+      );
+
+    canvas.drawRRect(rrect, rimPaint);
+  }
+
+  @override
+  bool shouldRepaint(_Kyant0ShellRimPainter oldDelegate) =>
+      oldDelegate.dark != dark;
+}
+
+/// Kyant0 液态胶囊绘制器（镜面双峰高光 + InnerShadow 凹陷内阴影 + 微弱色散）
+class _Kyant0LiquidPillPainter extends CustomPainter {
+  const _Kyant0LiquidPillPainter({
+    required this.dark,
+    required this.pressProgress,
+    required this.primaryColor,
   });
 
-  final double value;
-  final SpringDescription spring;
-  final Widget Function(BuildContext context, double value) builder;
+  final bool dark;
+  final double pressProgress;
+  final Color primaryColor;
 
   @override
-  State<_MiuixSpringValue> createState() => _MiuixSpringValueState();
-}
+  void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
+    final rect = Offset.zero & size;
+    final radius = Radius.circular(size.height / 2);
+    final rrect = RRect.fromRectAndRadius(rect, radius);
 
-class _MiuixSpringValueState extends State<_MiuixSpringValue>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController.unbounded(
-    vsync: this,
-    value: widget.value,
-  );
+    // 1. 底层高光色调（静态淡亮色，按下时透亮提光）
+    final surfacePaint = Paint()
+      ..color = (dark ? Colors.white : Colors.black).withValues(
+        alpha: (dark ? 0.12 : 0.06) + 0.08 * pressProgress,
+      );
+    canvas.drawRRect(rrect, surfacePaint);
 
-  @override
-  void didUpdateWidget(_MiuixSpringValue oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.value == oldWidget.value) return;
-    if (MediaQuery.maybeOf(context)?.disableAnimations ?? false) {
-      _controller.value = widget.value;
-      return;
+    // 2. 主题色微光渗透
+    final accentPaint = Paint()
+      ..color = primaryColor.withValues(
+        alpha: (dark ? 0.08 : 0.06) * (1.0 - 0.4 * pressProgress),
+      );
+    canvas.drawRRect(rrect, accentPaint);
+
+    // 3. Kyant0 InnerShadow: 凹陷内阴影，随按压深度加深
+    if (pressProgress > 0.01) {
+      canvas.save();
+      canvas.clipRRect(rrect);
+
+      final shadowAlpha = (0.16 * pressProgress).clamp(0.0, 1.0);
+      final shadowBlur = 6.0 * pressProgress;
+      final innerShadowPaint = Paint()
+        ..color = Colors.black.withValues(alpha: shadowAlpha)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, shadowBlur);
+
+      // 反相镂空路径：上方向下位移投影，形成顶部镜面凹陷感
+      final shadowPath = Path()
+        ..addRect(rect.inflate(30.0))
+        ..addRRect(rrect.shift(Offset(0, 3.5 * pressProgress)));
+      shadowPath.fillType = PathFillType.evenOdd;
+
+      canvas.drawPath(shadowPath, innerShadowPaint);
+      canvas.restore();
     }
-    _controller.animateWith(
-      SpringSimulation(
-        widget.spring,
-        _controller.value,
-        widget.value,
-        _controller.velocity,
+
+    // 4. 微弱色散边缘（Chromatic Aberration）：青与琥珀色分离次像素折射边
+    final dispersionAlpha = (0.14 * (1.0 + pressProgress)).clamp(0.0, 0.25);
+    final cyanRimPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8
+      ..color = const Color(0xFF00E5FF).withValues(alpha: dispersionAlpha);
+    final orangeRimPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8
+      ..color = const Color(0xFFFF9100).withValues(alpha: dispersionAlpha);
+
+    // 左上微偏青色，右下微偏琥珀色
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        rect.shift(const Offset(-0.35, -0.35)).deflate(0.5),
+        radius,
       ),
+      cyanRimPaint,
     );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        rect.shift(const Offset(0.35, 0.35)).deflate(0.5),
+        radius,
+      ),
+      orangeRimPaint,
+    );
+
+    // 5. Kyant0 pillHighlight: 90° 双峰上下镜面聚光描边
+    final highlightAlpha =
+        ((dark ? 0.30 : 0.20) + 0.35 * pressProgress).clamp(0.0, 0.95);
+    final rimPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2 + 0.4 * pressProgress
+      ..shader = ui.Gradient.linear(
+        Offset(size.width / 2, 0),
+        Offset(size.width / 2, size.height),
+        [
+          Colors.white.withValues(alpha: highlightAlpha), // 顶部镜面主聚光
+          Colors.white.withValues(alpha: 0.04),
+          Colors.white.withValues(alpha: highlightAlpha * 0.55), // 底部次聚光
+        ],
+        const [0.0, 0.5, 1.0],
+      );
+
+    canvas.drawRRect(rrect.deflate(0.6), rimPaint);
   }
 
   @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _controller,
-    builder: (context, _) => widget.builder(context, _controller.value),
-  );
+  bool shouldRepaint(_Kyant0LiquidPillPainter oldDelegate) =>
+      oldDelegate.dark != dark ||
+      oldDelegate.pressProgress != pressProgress ||
+      oldDelegate.primaryColor != primaryColor;
 }
 
-/// 单个导航项的按压 / 焦点包装。
-///
-/// 包里同款是 `GlassInteractive`（`glass/internal/interactive.dart`，**未导出**），
-/// 这里重写一份等价的最小实现：无障碍语义 + 无涟漪按压 + 键盘激活 + 焦点高亮。
+/// 单个导航项交互包装
 class _NavItemInteractive extends StatefulWidget {
   const _NavItemInteractive({
     required this.onTap,
@@ -878,7 +880,8 @@ class _NavItemInteractive extends StatefulWidget {
   });
 
   final VoidCallback? onTap;
-  final Widget Function(BuildContext context, bool pressed, bool focused) builder;
+  final Widget Function(BuildContext context, bool pressed, bool focused)
+      builder;
   final bool? selected;
   final String? label;
 
@@ -897,37 +900,37 @@ class _NavItemInteractiveState extends State<_NavItemInteractive> {
 
   @override
   Widget build(BuildContext context) => Semantics(
-    button: true,
-    enabled: widget.onTap != null,
-    selected: widget.selected,
-    inMutuallyExclusiveGroup: widget.selected != null,
-    label: widget.label,
-    child: FocusableActionDetector(
-      enabled: widget.onTap != null,
-      mouseCursor: widget.onTap == null
-          ? SystemMouseCursors.basic
-          : SystemMouseCursors.click,
-      onShowFocusHighlight: (v) => setState(() => _focused = v),
-      actions: <Type, Action<Intent>>{
-        ActivateIntent: CallbackAction<ActivateIntent>(
-          onInvoke: (_) {
-            widget.onTap?.call();
-            return null;
+        button: true,
+        enabled: widget.onTap != null,
+        selected: widget.selected,
+        inMutuallyExclusiveGroup: widget.selected != null,
+        label: widget.label,
+        child: FocusableActionDetector(
+          enabled: widget.onTap != null,
+          mouseCursor: widget.onTap == null
+              ? SystemMouseCursors.basic
+              : SystemMouseCursors.click,
+          onShowFocusHighlight: (v) => setState(() => _focused = v),
+          actions: <Type, Action<Intent>>{
+            ActivateIntent: CallbackAction<ActivateIntent>(
+              onInvoke: (_) {
+                widget.onTap?.call();
+                return null;
+              },
+            ),
           },
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onTap,
+            onTapDown: widget.onTap == null
+                ? null
+                : (_) => setState(() => _pressed = true),
+            onTapUp: widget.onTap == null
+                ? null
+                : (_) => setState(() => _pressed = false),
+            onTapCancel: () => setState(() => _pressed = false),
+            child: widget.builder(context, _pressed, _focused),
+          ),
         ),
-      },
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        onTapDown: widget.onTap == null
-            ? null
-            : (_) => setState(() => _pressed = true),
-        onTapUp: widget.onTap == null
-            ? null
-            : (_) => setState(() => _pressed = false),
-        onTapCancel: () => setState(() => _pressed = false),
-        child: widget.builder(context, _pressed, _focused),
-      ),
-    ),
-  );
+      );
 }
