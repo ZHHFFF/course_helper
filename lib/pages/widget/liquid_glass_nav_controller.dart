@@ -139,9 +139,6 @@ class LiquidGlassNavController {
     _scaleY = _SpringValue(vsync: vsync, initial: _initialScale);
     _show = _SpringValue(vsync: vsync, initial: visible ? 1.0 : 0.0);
 
-    // 位置收敛后，若有挂起的 release 就执行（对应上游 release() 的顺序要求）
-    _value.controller.addStatusListener(_onValueStatusChanged);
-
     animatables = Listenable.merge([
       _value.controller,
       _velocity.controller,
@@ -319,15 +316,25 @@ class LiquidGlassNavController {
   }
 
   /// 松手：**先等位置收敛**，再收起按压与缩放
+  ///
+  /// ⚠️ 这里**不能**用 `AnimationStatus.completed` 监听。踩过的坑：
+  /// 控制器若已经处于 `completed` 状态、而新的位置动画又立即结束
+  /// （目标 == 当前值），状态**没有变化就不会发通知** →
+  /// `_performRelease()` 永远不执行 → 缩放卡在按压值不回落
+  /// （实机表现：点一次底栏后，指示器永久停留在 1.393x 的放大态）。
+  /// 改用 `animateWith` 返回的 `TickerFuture`，它无论正常结束还是被打断
+  /// 都会回调。
   void release() {
     _releasePending = true;
-    if (!_value.isAnimating) _performRelease();
-  }
-
-  void _onValueStatusChanged(AnimationStatus status) {
-    if (status == AnimationStatus.completed && _releasePending) {
+    final pending = _valueFuture;
+    if (pending == null || !_value.isAnimating) {
       _performRelease();
+      return;
     }
+    pending.whenComplete(() {
+      // 若期间又开始了新的位置动画，说明还在拖，等下一次松手
+      if (_releasePending && !_value.isAnimating) _performRelease();
+    });
   }
 
   void _performRelease() {
@@ -338,6 +345,9 @@ class LiquidGlassNavController {
     _scaleY.animateTo(_initialScale, LiquidGlassSprings.scaleY);
   }
 
+  /// 位置动画的 TickerFuture（release 用它判断「位置已收敛」）
+  TickerFuture? _valueFuture;
+
   /// 实时更新位置（对应上游 updateValue）
   void updateValue(double v) {
     _targetValue = v.clamp(_valueRangeStart, _valueRangeEnd);
@@ -345,7 +355,7 @@ class LiquidGlassNavController {
       _value.snapTo(_targetValue);
       return;
     }
-    _value.controller.animateWith(
+    _valueFuture = _value.controller.animateWith(
       SpringSimulation(
         LiquidGlassSprings.position,
         _value.value,
@@ -415,7 +425,6 @@ class LiquidGlassNavController {
   }
 
   void dispose() {
-    _value.controller.removeStatusListener(_onValueStatusChanged);
     _value.dispose();
     _velocity.dispose();
     _press.dispose();
