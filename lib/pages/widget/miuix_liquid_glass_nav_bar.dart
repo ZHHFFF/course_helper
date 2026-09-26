@@ -22,15 +22,14 @@
 //    - 次像素微弱色散边缘（Chromatic Aberration），提供纯正玻璃折射厚度感。
 // ============================================================================
 
-import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/physics.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_miuix/miuix.dart';
 
+import 'liquid_glass_nav_controller.dart';
 import 'liquid_glass_shader_filter.dart';
 
 /// 与 [MiuixGlassNavigationItem] 同名入参类型，保持完全兼容。
@@ -93,53 +92,29 @@ class MiuixLiquidGlassNavigationBar extends StatefulWidget {
 class _MiuixLiquidGlassNavigationBarState
     extends State<MiuixLiquidGlassNavigationBar>
     with TickerProviderStateMixin {
-  late final AnimationController _showController = AnimationController.unbounded(
+  /// 交互控制器：指针跟踪 + 位置/按压弹簧 + 选中收敛
+  /// （原实现把这些散落在 State 里，现已抽到 liquid_glass_nav_controller.dart）
+  late final LiquidGlassNavController _nav = LiquidGlassNavController(
     vsync: this,
-    value: widget.visible ? 1.0 : 0.0,
-  );
-
-  /// 指示器当前物理浮点位置（0.0 ~ N-1.0）
-  late final AnimationController _positionController =
-      AnimationController.unbounded(
-    vsync: this,
-    value: widget.selectedIndex.toDouble(),
-  );
-
-  /// 按压进出进度控制器（0.0 静止 ~ 1.0 完全按下）
-  late final AnimationController _pressController =
-      AnimationController.unbounded(
-    vsync: this,
-    value: 0.0,
+    itemCount: widget.items.length,
+    initialIndex: widget.selectedIndex,
+    visible: widget.visible,
+    onSelect: (i) => widget.onSelect(i),
+    onPointerStateChanged: () {
+      if (mounted) setState(() {});
+    },
   );
 
   final _key = GlobalKey();
 
-  Timer? _animatingFromTapTimer;
-  bool _isAnimatingFromTap = false;
-  int? _pointer;
-  int _pressedIndex = -1;
   double _width = 0.0;
-  double _lastX = 0.0;
-  double _dragVelocity = 0.0;
-  int _lastTime = 0;
-  bool _positioned = false;
 
-  /// Kyant0 物理弹簧参数
-  static const _positionSpring = SpringDescription(
-    mass: 1.0,
-    stiffness: 300.0,
-    damping: 24.0,
-  );
-  static const _pressEnterSpring = SpringDescription(
-    mass: 1.0,
-    stiffness: 420.0,
-    damping: 28.0,
-  );
-  static const _pressExitSpring = SpringDescription(
-    mass: 1.0,
-    stiffness: 280.0,
-    damping: 22.0,
-  );
+  // ── 只读转发：视觉层（build）从这里取动画值与手势状态 ────────────────
+  AnimationController get _showController => _nav.show;
+  AnimationController get _positionController => _nav.position;
+  AnimationController get _pressController => _nav.press;
+  double get _dragVelocity => _nav.dragVelocity;
+  bool get _positioned => _nav.positioned;
 
   bool get _disabledMotion =>
       MediaQuery.maybeOf(context)?.disableAnimations ?? false;
@@ -177,54 +152,38 @@ class _MiuixLiquidGlassNavigationBarState
   @override
   void didUpdateWidget(MiuixLiquidGlassNavigationBar oldWidget) {
     super.didUpdateWidget(oldWidget);
+
     if (oldWidget.visible != widget.visible) {
-      if (_disabledMotion) {
-        _showController.value = widget.visible ? 1.0 : 0.0;
-      } else {
-        _showController.animateWith(
-          SpringSimulation(
-            _positionSpring,
-            _showController.value,
-            widget.visible ? 1.0 : 0.0,
-            _showController.velocity,
-          ),
-        );
-      }
-      if (!widget.visible) {
-        _release();
-      }
+      _nav.setVisible(widget.visible);
     }
     if (oldWidget.items.length != widget.items.length) {
-      _positioned = false;
-      _pointer = null;
-      _pressedIndex = -1;
+      _nav.itemCount = widget.items.length;
+      _nav.resetForItemCountChange();
     }
     if (oldWidget.pageController != widget.pageController) {
       oldWidget.pageController?.removeListener(_onPageScroll);
       widget.pageController?.addListener(_onPageScroll);
     }
     if (oldWidget.selectedIndex != widget.selectedIndex &&
-        _pointer == null &&
+        !_nav.isDragging &&
         _width > 0 &&
-        !_isAnimatingFromTap) {
+        !_nav.isAnimatingFromTap) {
       final isDragging = widget.pageController?.hasClients == true &&
           widget.pageController!.position.userScrollDirection !=
               ScrollDirection.idle;
       if (!isDragging) {
-        _animatePositionTo(widget.selectedIndex.toDouble());
+        _nav.updateSelectedIndex(widget.selectedIndex);
+        _nav.animatePositionTo(widget.selectedIndex.toDouble());
       }
     }
   }
 
   @override
   void dispose() {
-    _animatingFromTapTimer?.cancel();
     widget.pageController?.removeListener(_onPageScroll);
     _shellGlass.dispose();
     _indicatorGlass.dispose();
-    _showController.dispose();
-    _positionController.dispose();
-    _pressController.dispose();
+    _nav.dispose();
     super.dispose();
   }
 
@@ -232,94 +191,28 @@ class _MiuixLiquidGlassNavigationBarState
     if (widget.pageController == null || !widget.pageController!.hasClients) {
       return;
     }
-    if (_pointer != null) return;
-    if (_isAnimatingFromTap) {
+    if (_nav.isDragging) return;
+    if (_nav.isAnimatingFromTap) {
       if (widget.pageController!.position.userScrollDirection !=
           ScrollDirection.idle) {
-        _animatingFromTapTimer?.cancel();
-        _isAnimatingFromTap = false;
+        _nav.cancelTapAnimation();
       } else {
         return;
       }
     }
     final page = widget.pageController!.page;
     if (page != null && _width > 0) {
-      final clampedPage =
-          page.clamp(0.0, (widget.items.length - 1).toDouble());
-      _positionController.value = clampedPage;
+      _nav.syncFromPage(page);
     }
   }
 
-  double _localX(Offset global) {
-    final box = _key.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null) return 0.0;
-    return box.globalToLocal(global).dx;
-  }
+  // ── 交互：全部委托给 LiquidGlassNavController ──────────────────────────
 
-  int _itemAt(double x) {
-    if (_tabWidth <= 0) return _index;
-    final raw = ((x - 8) / _tabWidth).floor().clamp(0, widget.items.length - 1);
-    return _rtl ? widget.items.length - 1 - raw : raw;
-  }
+  RenderBox? get _barBox =>
+      _key.currentContext?.findRenderObject() as RenderBox?;
 
-  void _animatePositionTo(double target) {
-    if (_disabledMotion) {
-      _positionController.value = target;
-      return;
-    }
-    _positionController.animateWith(
-      SpringSimulation(
-        _positionSpring,
-        _positionController.value,
-        target,
-        _positionController.velocity,
-      ),
-    );
-  }
-
-  void _animatePressTo(double target) {
-    if (_disabledMotion) {
-      _pressController.value = target;
-      return;
-    }
-    final spring = target > 0.5 ? _pressEnterSpring : _pressExitSpring;
-    _pressController.animateWith(
-      SpringSimulation(
-        spring,
-        _pressController.value,
-        target,
-        _pressController.velocity,
-      ),
-    );
-  }
-
-  void _select(int index) {
-    _animatingFromTapTimer?.cancel();
-    _isAnimatingFromTap = true;
-    _animatingFromTapTimer = Timer(const Duration(milliseconds: 320), () {
-      if (mounted) {
-        _isAnimatingFromTap = false;
-      }
-    });
-    _animatePositionTo(index.toDouble());
-    widget.onSelect(index);
-  }
-
-  void _release() {
-    if (_pointer == null && _pressedIndex == -1) return;
-    final targetIndex =
-        _positionController.value.round().clamp(0, widget.items.length - 1);
-    setState(() {
-      _pointer = null;
-      _pressedIndex = -1;
-      _dragVelocity = 0.0;
-    });
-    _animatePressTo(0.0);
-    _animatePositionTo(targetIndex.toDouble());
-    if (targetIndex != _index) {
-      widget.onSelect(targetIndex);
-    }
-  }
+  /// 点击底栏（用于 `onTap` 路径）
+  void _select(int index) => _nav.select(index);
 
   @override
   Widget build(BuildContext context) {
@@ -347,16 +240,21 @@ class _MiuixLiquidGlassNavigationBarState
             ? constraints.maxWidth
             : widget.items.length * 80.0;
 
+        // 把布局相关的几何量同步给控制器 —— 手势的「跟手换算」依赖它们。
+        // 控制器不碰布局，只消费这里算好的值。
+        _nav.barWidth = width;
+        _nav.syncGeometry(
+          tabWidth: widget.items.isEmpty ? 0.0 : (width - 16) / widget.items.length,
+          rtl: _rtl,
+        );
+        _nav.disabledMotion = _disabledMotion;
+
         if (_width != width || !_positioned) {
           _width = width;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted || widget.items.isEmpty) return;
-            if (!_positioned) {
-              _positionController.value = _index.toDouble();
-              _positioned = true;
-            } else {
-              _positionController.value = _index.toDouble();
-            }
+            _nav.position.value = _nav.index.toDouble();
+            _nav.positioned = true;
           });
         }
 
@@ -413,52 +311,20 @@ class _MiuixLiquidGlassNavigationBarState
                         height: widget.height + widget.bottomPadding,
                         child: Listener(
                           key: _key,
-                          onPointerDown: (event) {
-                            if (_pointer != null) return;
-                            _pointer = event.pointer;
-                            final x = _localX(event.position);
-                            _lastX = x;
-                            _lastTime = DateTime.now().millisecondsSinceEpoch;
-                            _dragVelocity = 0.0;
-                            final item = _itemAt(x);
-                            setState(() => _pressedIndex = item);
-                            _animatePressTo(1.0);
-                            _select(item);
-                          },
-                          onPointerMove: (event) {
-                            if (_pointer != event.pointer) return;
-                            final x = _localX(event.position);
-                            final now = DateTime.now().millisecondsSinceEpoch;
-                            final dt = (now - _lastTime) / 1000.0;
-                            if (dt > 0.003) {
-                              _dragVelocity = ((x - _lastX) / dt / 360.0)
-                                  .clamp(-2.5, 2.5);
-                            }
-                            _lastTime = now;
-                            _lastX = x;
-
-                            if (tabW > 0) {
-                              // 即时跟手计算，零延迟
-                              final logicalX = _rtl ? width - 8 - x : x - 8;
-                              final floatTarget =
-                                  (logicalX - tabW / 2) / tabW;
-                              _positionController.value = floatTarget.clamp(
-                                -0.4,
-                                (widget.items.length - 1) + 0.4,
-                              );
-                              final item = _itemAt(x);
-                              if (item != _pressedIndex) {
-                                setState(() => _pressedIndex = item);
-                                widget.onSelect(item);
-                              }
-                            }
-                          },
-                          onPointerUp: (e) {
-                            if (_pointer == e.pointer) _release();
-                          },
-                          onPointerCancel: (e) {
-                            if (_pointer == e.pointer) _release();
-                          },
+                          // 手势全部转交控制器 —— 它内部负责指针校验、
+                          // 速度采样、零延迟跟手与松手弹簧。
+                          onPointerDown: (event) => _nav.handlePointerDown(
+                            pointer: event.pointer,
+                            x: _nav.localX(event.position, _barBox),
+                          ),
+                          onPointerMove: (event) => _nav.handlePointerMove(
+                            pointer: event.pointer,
+                            x: _nav.localX(event.position, _barBox),
+                          ),
+                          onPointerUp: (event) =>
+                              _nav.handlePointerUp(event.pointer),
+                          onPointerCancel: (event) =>
+                              _nav.handlePointerUp(event.pointer),
                           child: _buildShell(
                             context,
                             dark: dark,
@@ -544,7 +410,9 @@ class _MiuixLiquidGlassNavigationBarState
                                                     item: widget.items[i],
                                                     tint: tint,
                                                     focused: focused,
-                                                    dimmed: _pressedIndex == i &&
+                                                    dimmed:
+                                                        _nav.pressedIndex ==
+                                                                i &&
                                                         !isSelected,
                                                     fontSize: fontSize,
                                                     primary:
@@ -614,15 +482,22 @@ class _MiuixLiquidGlassNavigationBarState
     // 实际半径一致（999 会被 Flutter 钳到 minDimension/2）。
     final pillRadius = math.min(999.0, height / 2);
 
-    // 折射参数：量级取自 Kyant0，但**刻意收敛**（用户要求「不要过度折射」）。
-    // 折射带取高度的 30%，最大位移取 14% —— 边缘可见形变，中心保持平整。
+    // 折射参数。
+    //
+    // ⚠️ 第一版取「高度的 30% / 位移 14%」，实机**看不出任何变化**。原因有二：
+    //   1. 折射带只有 ~16px，且恰好落在底栏上下的窄条里；
+    //   2. 该处背景多为纯色，位移几像素后采样到的还是同一个颜色 → 像素差为 0。
+    //      （这不是「shader 没生效」，而是「效果确实看不见」—— 用像素 diff 验证
+    //        时必须保证底栏后面有**高频内容**，否则测不出来。）
+    // 现在把折射带扩到近乎整个栏高、位移提到 28%，并加强色散，
+    // 让效果在真机上明确可见；后续可再按观感回调。
     final refraction = _shellGlass.resolve(
       LiquidGlassRefractionParams(
-        refractionHeight: math.max(12.0, height * 0.30),
-        refractionAmount: math.max(5.0, height * 0.14),
+        refractionHeight: math.max(24.0, height * 0.85),
+        refractionAmount: math.max(10.0, height * 0.28),
         cornerRadii: [pillRadius, pillRadius, pillRadius, pillRadius],
         depthEffect: 1.0,
-        chromaticAberration: 0.30,
+        chromaticAberration: 0.80,
       ),
     );
 
@@ -708,8 +583,8 @@ class _MiuixLiquidGlassNavigationBarState
     final indicatorRadius = math.min(999.0, height / 2);
     final refraction = _indicatorGlass.resolve(
       LiquidGlassRefractionParams(
-        refractionHeight: math.max(8.0, height * 0.42),
-        refractionAmount: math.max(3.0, height * 0.16),
+        refractionHeight: math.max(16.0, height * 0.90),
+        refractionAmount: math.max(8.0, height * 0.30),
         cornerRadii: [
           indicatorRadius,
           indicatorRadius,
@@ -717,7 +592,7 @@ class _MiuixLiquidGlassNavigationBarState
           indicatorRadius,
         ],
         depthEffect: 1.0,
-        chromaticAberration: 0.22,
+        chromaticAberration: 0.70,
       ),
     );
 
