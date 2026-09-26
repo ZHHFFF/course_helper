@@ -114,3 +114,32 @@ jobs:
           name: ${{ steps.apk.outputs.name }}
           path: build/app/outputs/flutter-apk/${{ steps.apk.outputs.name }}
           if-no-files-found: error
+
+      # ── 实验构建：layerBlock 等价行为对比 ─────────────────────────────
+      # 独立入口 `lib/experiment/layer_block_experiment.dart`，
+      # 不参与正式 App 的构建路径；产出单独 artifact，主 APK 不受影响。
+      # 实验结束后可整段删除。
+      - name: Build experiment APK (layerBlock A/B)
+        run: |
+          flutter build apk --release --split-per-abi \
+            --target-platform android-arm64 \
+            --target lib/experiment/layer_block_experiment.dart \
+            --build-number="${{ env.BUILD_NUMBER }}" \
+            --build-name="1.2.3-exp${{ env.BUILD_NUMBER }}"
+
+      - name: Rename experiment APK
+        id: expapk
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          NAME="exp-layerblock-${{ env.BUILD_NUMBER }}-${SHORT_SHA}-arm64.apk"
+          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+             "build/app/outputs/flutter-apk/${NAME}"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          ls -lh "build/app/outputs/flutter-apk/${NAME}"
+
+      - name: Upload experiment APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.expapk.outputs.name }}
+          path: build/app/outputs/flutter-apk/${{ steps.expapk.outputs.name }}
+          if-no-files-found: error
