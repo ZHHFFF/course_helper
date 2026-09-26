@@ -31,6 +31,7 @@ import 'package:flutter_miuix/miuix.dart';
 
 import 'liquid_glass_highlight.dart';
 import 'liquid_glass_nav_controller.dart';
+import 'liquid_glass_rim_highlight.dart';
 import 'liquid_glass_shader_filter.dart';
 
 /// 与 [MiuixGlassNavigationItem] 同名入参类型，保持完全兼容。
@@ -141,6 +142,13 @@ class _MiuixLiquidGlassNavigationBarState
   /// 共用同一实例会导致两者在同帧互相覆盖参数。
   final _indicatorGlass = LiquidGlassRefraction();
 
+  /// 外壳高光 shader 持有者（上游 `drawBackdrop` 的 `highlight` 默认值是
+  /// `Highlight.Default`，所以**外壳也有高光，且 alpha = 1**）
+  final _shellHighlight = LiquidGlassRimHighlightShader();
+
+  /// 指示器高光 shader 持有者（上游传 `Highlight.Default.copy(alpha = progress)`）
+  final _indicatorHighlight = LiquidGlassRimHighlightShader();
+
   @override
   void initState() {
     super.initState();
@@ -183,6 +191,8 @@ class _MiuixLiquidGlassNavigationBarState
     widget.pageController?.removeListener(_onPageScroll);
     _shellGlass.dispose();
     _indicatorGlass.dispose();
+    _shellHighlight.dispose();
+    _indicatorHighlight.dispose();
     _nav.dispose();
     super.dispose();
   }
@@ -503,12 +513,17 @@ class _MiuixLiquidGlassNavigationBarState
         ? surfaceContainer.withValues(alpha: 0.30 * widget.alpha)
         : surfaceContainer.withValues(alpha: 0.65 * widget.alpha);
 
-    // Kyant0 Vibrancy: +35% 饱和度反差增强矩阵，让透过玻璃的底色色彩鲜艳通透
+    // ── vibrancy（上游 ColorFilter.kt）────────────────────────────────────
+    //   `vibrancy()` = `colorControlsColorFilter(saturation = 1.5f)`
+    //   按 r=0.213*invSat, g=0.715*invSat, b=0.072*invSat（invSat = 1-1.5 = -0.5）
+    //   且 contrast=1 / brightness=0 → 偏移项 t = 0：
+    //     cr=-0.1065  cg=-0.3575  cb=-0.036  cs=1.5
+    // ⚠️ 此前用的是自造的对称近似（1.35 / -0.18 / -0.12），与上游不符，已替换为精算矩阵。
     const vibrancyMatrix = <double>[
-      1.35, -0.18, -0.12, 0, 0,
-      -0.12, 1.35, -0.18, 0, 0,
-      -0.12, -0.18, 1.35, 0, 0,
-      0,     0,     0,     1, 0,
+      1.3935, -0.3575, -0.036, 0, 0,
+      -0.1065, 1.1425, -0.036, 0, 0,
+      -0.1065, -0.3575, 1.464, 0, 0,
+      0, 0, 0, 1, 0,
     ];
 
     // ── 折射层（Impeller）────────────────────────────────────────────────
@@ -516,27 +531,22 @@ class _MiuixLiquidGlassNavigationBarState
     // 实际半径一致（999 会被 Flutter 钳到 minDimension/2）。
     final pillRadius = math.min(999.0, height / 2);
 
-    // 折射参数。
-    //
-    // ⚠️ 第一版取「高度的 30% / 位移 14%」，实机**看不出任何变化**。原因有二：
-    //   1. 折射带只有 ~16px，且恰好落在底栏上下的窄条里；
-    //   2. 该处背景多为纯色，位移几像素后采样到的还是同一个颜色 → 像素差为 0。
-    //      （这不是「shader 没生效」，而是「效果确实看不见」—— 用像素 diff 验证
-    //        时必须保证底栏后面有**高频内容**，否则测不出来。）
-    // 现在把折射带扩到近乎整个栏高、位移提到 28%，并加强色散，
-    // 让效果在真机上明确可见；后续可再按观感回调。
-    // 严格对齐上游外壳的 lens 参数：`lens(24.dp.toPx(), 24.dp.toPx())`
-    // ⚠️ 单位同样是**物理像素**（见引擎 runtime_effect_filter_contents.cc:144），
-    //    必须乘 dpr —— 上一版直接传逻辑 dp，折射带缩水 3.5 倍。
+    // ── 折射参数（严格对齐上游）────────────────────────────────────────────
+    // 上游 `LiquidBottomTabs.kt` 外壳（第 1 个 Row）：
+    //   `lens(24.dp.toPx(), 24.dp.toPx())`
+    //   → `depthEffect` 与 `chromaticAberration` 都用默认值 **false**
+    //   → 而且是**常量**，不随 pressProgress 变化（随按压变化的是隐藏层与指示器）
+    // ⚠️ 单位是**物理像素**：引擎 runtime_effect_filter_contents.cc:144 用
+    //    `Size(input_snapshot->texture->GetSize())` 填 size，
+    //    与 FlutterFragCoord() 同空间 → 必须乘 dpr。
     final dpr = MediaQuery.devicePixelRatioOf(context);
     final refraction = _shellGlass.resolve(
       LiquidGlassRefractionParams(
         refractionHeight: 24.0 * dpr,
         refractionAmount: 24.0 * dpr,
         cornerRadii: [pillRadius, pillRadius, pillRadius, pillRadius],
-        depthEffect: 1.0,
-        chromaticAberration: 0.5,
-        zoom: 1.0,
+        depthEffect: false,
+        chromaticAberration: false,
       ),
     );
 
@@ -582,10 +592,16 @@ class _MiuixLiquidGlassNavigationBarState
                 ),
               ),
             ),
-            // Kyant0 外壳双峰高光描边 (baseHighlight -45°)
+            // 外壳高光 —— 上游 `drawBackdrop` 的 `highlight` 参数默认值是
+            // `Highlight.Default`，**外壳本来就有高光且 alpha = 1**。
+            //   width 0.5dp / blurRadius 0.25dp / alpha 1 / angle 45° / falloff 1
+            // 由 `shaders/liquid_highlight.frag` 绘制（SDF 梯度 · 光向），
+            // 替代原先手绘的 `ui.Gradient.linear` 双峰描边。
             Positioned.fill(
               child: CustomPaint(
-                painter: _Kyant0ShellRimPainter(dark: dark),
+                painter: LiquidGlassRimHighlightPainter(
+                  shaderHolder: _shellHighlight,
+                ),
               ),
             ),
           ],
@@ -618,22 +634,21 @@ class _MiuixLiquidGlassNavigationBarState
 
     // ── 折射层（Impeller）────────────────────────────────────────────────
     //
-    // 严格对齐上游 Compose 的指示器 lens 参数：
+    // ── 折射参数（严格对齐上游）────────────────────────────────────────────
+    // 上游 `LiquidBottomTabs.kt` 指示器（第 3 个节点）：
     //   ```kotlin
     //   val progress = dampedDragAnimation.pressProgress
-    //   lens(refractionHeight = 10.dp.toPx() * progress,
-    //        refractionAmount = 14.dp.toPx() * progress,
-    //        depthEffect = true,
-    //        chromaticAberration = 0.5f)
+    //   lens(10f.dp.toPx() * progress,
+    //        14f.dp.toPx() * progress,
+    //        chromaticAberration = true)
     //   ```
-    // ★ 两个要点：
-    //   1. **折射强度与 pressProgress 成正比** —— 静止时完全没有折射，
-    //      按下才浮现。这正是用户要的「放大时扭曲内容」的效果来源。
-    //      （上一版我把它写成常量，等于永远没有这个效果。）
-    //   2. **单位是物理像素**。着色器里 `u_size` 来自
-    //      `input_snapshot->texture->GetSize()`（见引擎
-    //      runtime_effect_filter_contents.cc:144），是**纹理尺寸 = 物理像素**；
-    //      而 `height` 是逻辑 dp。不乘 dpr 会让折射带缩水 3.5 倍。
+    // ★ 三个要点：
+    //   1. **折射强度与 pressProgress 成正比** —— 静止时 `refractionHeight == 0`，
+    //      上游 `lens()` 会直接 return（不加效果）；按下才浮现。
+    //   2. **`depthEffect` 用默认值 false**（上游指示器没传这个参数）
+    //   3. **`chromaticAberration = true`** → 走**色散版** shader
+    //      （不是 0~1 的强度参数）
+    // ⚠️ 单位是物理像素，必须乘 dpr（原因同外壳）。
     final dpr = MediaQuery.devicePixelRatioOf(context);
     final progress = pressProgress.clamp(0.0, 1.0);
     final indicatorRadius = math.min(999.0, height / 2);
@@ -647,11 +662,8 @@ class _MiuixLiquidGlassNavigationBarState
           indicatorRadius,
           indicatorRadius,
         ],
-        depthEffect: 1.0,
-        chromaticAberration: 0.5,
-        // 放大由外层的 Transform.scale 承担（等价于上游的 layerBlock scaleX/scaleY），
-        // 所以这里不叠加 shader 级缩放，避免二次放大。
-        zoom: 1.0,
+        depthEffect: false,
+        chromaticAberration: true,
       ),
     );
 
@@ -705,6 +717,16 @@ class _MiuixLiquidGlassNavigationBarState
                 painter: LiquidGlassHighlightPainter(
                   progress: pressProgress,
                   center: Offset(width / 2, height / 2),
+                ),
+              ),
+            ),
+            // 3. 方向性高光 —— 上游 `highlight = Highlight.Default.copy(alpha = progress)`
+            //    由 `shaders/liquid_highlight.frag` 绘制，随按压淡入。
+            Positioned.fill(
+              child: CustomPaint(
+                painter: LiquidGlassRimHighlightPainter(
+                  shaderHolder: _indicatorHighlight,
+                  alpha: pressProgress,
                 ),
               ),
             ),
@@ -773,45 +795,12 @@ class _MiuixLiquidGlassNavigationBarState
   }
 }
 
-/// Kyant0 外壳双峰高光描边绘制器（baseHighlight -45°）
-class _Kyant0ShellRimPainter extends CustomPainter {
-  const _Kyant0ShellRimPainter({required this.dark});
+// 原 `_Kyant0ShellRimPainter`（手绘 `ui.Gradient.linear` 双峰描边）已删除。
+// 上游的外壳高光由 `DefaultHighlightShaderString` 绘制（SDF 梯度 · 光向），
+// 现改用 `LiquidGlassRimHighlightPainter` + `shaders/liquid_highlight.frag`。
+// 手绘渐变无法表达「内部不亮、朝光侧边缘最亮」的方向性。
 
-  final bool dark;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (size.width <= 0 || size.height <= 0) return;
-    final rect = Offset.zero & size;
-    final rrect = RRect.fromRectAndRadius(
-      rect.deflate(0.6),
-      Radius.circular(size.height / 2),
-    );
-
-    // 沿左上 -45° 至右下 135° 的双峰镜面高光梯度
-    final rimPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
-      ..shader = ui.Gradient.linear(
-        rect.topLeft,
-        rect.bottomRight,
-        [
-          Colors.white.withValues(alpha: dark ? 0.38 : 0.45), // 左上主光峰值
-          Colors.white.withValues(alpha: dark ? 0.08 : 0.12),
-          Colors.white.withValues(alpha: dark ? 0.22 : 0.28), // 右下次光峰值
-        ],
-        const [0.0, 0.55, 1.0],
-      );
-
-    canvas.drawRRect(rrect, rimPaint);
-  }
-
-  @override
-  bool shouldRepaint(_Kyant0ShellRimPainter oldDelegate) =>
-      oldDelegate.dark != dark;
-}
-
-/// Kyant0 液态胶囊绘制器（镜面双峰高光 + InnerShadow 凹陷内阴影 + 微弱色散）
+/// Kyant0 液态胶囊绘制器（InnerShadow 凹陷内阴影；高光与色散已移交 shader）
 class _Kyant0LiquidPillPainter extends CustomPainter {
   const _Kyant0LiquidPillPainter({
     required this.dark,
@@ -865,51 +854,22 @@ class _Kyant0LiquidPillPainter extends CustomPainter {
       canvas.restore();
     }
 
-    // 4. 微弱色散边缘（Chromatic Aberration）：青与琥珀色分离次像素折射边
-    final dispersionAlpha = (0.14 * (1.0 + pressProgress)).clamp(0.0, 0.25);
-    final cyanRimPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.8
-      ..color = const Color(0xFF00E5FF).withValues(alpha: dispersionAlpha);
-    final orangeRimPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.8
-      ..color = const Color(0xFFFF9100).withValues(alpha: dispersionAlpha);
-
-    // 左上微偏青色，右下微偏琥珀色
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        rect.shift(const Offset(-0.35, -0.35)).deflate(0.5),
-        radius,
-      ),
-      cyanRimPaint,
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        rect.shift(const Offset(0.35, 0.35)).deflate(0.5),
-        radius,
-      ),
-      orangeRimPaint,
-    );
-
-    // 5. Kyant0 pillHighlight: 90° 双峰上下镜面聚光描边
-    final highlightAlpha =
-        ((dark ? 0.30 : 0.20) + 0.35 * pressProgress).clamp(0.0, 0.95);
-    final rimPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2 + 0.4 * pressProgress
-      ..shader = ui.Gradient.linear(
-        Offset(size.width / 2, 0),
-        Offset(size.width / 2, size.height),
-        [
-          Colors.white.withValues(alpha: highlightAlpha), // 顶部镜面主聚光
-          Colors.white.withValues(alpha: 0.04),
-          Colors.white.withValues(alpha: highlightAlpha * 0.55), // 底部次聚光
-        ],
-        const [0.0, 0.5, 1.0],
-      );
-
-    canvas.drawRRect(rrect.deflate(0.6), rimPaint);
+    // ── 已移除的两处「手绘模拟」（第一阶段修正）──────────────────────────
+    //
+    // ① 原第 4 段：用青（0xFF00E5FF）/ 琥珀（0xFFFF9100）两条错位描边
+    //    **假装**色散。真正的色散现在由
+    //    `shaders/liquid_refract_dispersion.frag` 的 7 抽采样产生
+    //    （上游 `RoundedRectRefractionWithDispersionShaderString`）。
+    //    用彩色描边冒充色散是明确被禁止的做法。
+    //
+    // ② 原第 5 段：用 `ui.Gradient.linear` 画上下双峰描边**假装**高光。
+    //    真正的高光现在由 `shaders/liquid_highlight.frag` 产生
+    //    （上游 `DefaultHighlightShaderString`：SDF 梯度 · 光向），
+    //    由 `LiquidGlassRimHighlightPainter` 绘制。
+    //    ⚠️ 普通线性渐变表达不了「内部不亮、朝光侧边缘最亮」的方向性。
+    //
+    // 保留 1~3 段（底色 / 主题色渗透 / 内阴影）—— 它们对应上游的
+    // `onDrawSurface` 与 `InnerShadow`，将在后续阶段单独对齐。
   }
 
   @override

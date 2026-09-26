@@ -117,12 +117,21 @@ flutter:
     - images/placeholder.png
     - images/logo.png
 
-  # 自定义片元着色器（Liquid Glass 折射）。
-  # 移植自 Kyant0/AndroidLiquidGlass 的 Lens.kt，见 shaders/liquid_refract.frag 头部说明。
-  # ⚠️ 只在 Impeller 后端可用（ImageFilter.shader 的硬性要求，见 sky_engine/lib/ui/painting.dart:4461），
-  #    Skia 下 Dart 侧会探测 isShaderFilterSupported 并降级为普通 BackdropFilter 模糊。
+  # 自定义片元着色器 —— 逐行移植自 Kyant0/AndroidLiquidGlass @
+  # 65ab177e90e5c1d8c62e70cf7755841982da65f6（分支 kmp）
+  # 上游源码基线见 refs/kyant/，映射表见 refs/kyant/MAPPING.md
+  #
+  # ⚠️ 折射两份 shader 只在 Impeller 后端可用（ImageFilter.shader 的硬性要求，
+  #    见 sky_engine/lib/ui/painting.dart:4461）；Skia 下 Dart 侧会探测
+  #    isShaderFilterSupported 并降级为普通 BackdropFilter 模糊。
+  #    highlight 那份走 Paint.shader，不受此限。
   shaders:
+    # 对应上游 RoundedRectRefractionShaderString
     - shaders/liquid_refract.frag
+    # 对应上游 RoundedRectRefractionWithDispersionShaderString
+    - shaders/liquid_refract_dispersion.frag
+    # 对应上游 DefaultHighlightShaderString
+    - shaders/liquid_highlight.frag
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

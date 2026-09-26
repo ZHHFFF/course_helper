@@ -1,38 +1,40 @@
 // ============================================================================
-// Liquid Glass 折射滤镜（`ImageFilter.shader` 封装）
+// Liquid Glass 着色器封装
 // ============================================================================
 //
-// 对应着色器：`shaders/liquid_refract.frag`（移植自 Kyant0/AndroidLiquidGlass
-// 的 Lens.kt，经 KernelSU refs/kernelsu/Lens.kt 中转）。
+// 逐行对应 refs/kyant/Shaders.kt（Kyant0/AndroidLiquidGlass @ 65ab177…，分支 kmp）
 //
-// 【职责】
-//   1. 全局缓存 `FragmentProgram`（从 asset 加载，有真实开销，只做一次）
-//   2. 把 Dart 侧参数写进 shader 的 uniform，产出一个 `ImageFilter`
+//   liquid_refract.frag            ← RoundedRectRefractionShaderString
+//   liquid_refract_dispersion.frag ← RoundedRectRefractionWithDispersionShaderString
+//   liquid_highlight.frag          ← DefaultHighlightShaderString
+//
+// 【本文件只做三件事】
+//   1. 全局缓存 `FragmentProgram`（从 asset 加载有真实开销，只做一次）
+//   2. 把 Dart 参数按**上游的 uniform 顺序**写进 shader，产出 `ImageFilter`
 //   3. 探测后端能力，不可用时返回 null 让调用方降级
 //
 // 【为什么 program 全局、shader 实例不全局】
-//
-//   - `FragmentProgram.fromAsset()` 要读 asset + 走编译产物，**开销大** → 全局缓存。
+//   - `FragmentProgram.fromAsset()` 开销大 → 全局缓存
 //   - `FragmentShader` 持有 **uniform 状态**。若全局共用一个实例，
-//     底栏外壳与选中指示器在同帧用不同参数时**会互相覆盖** → 必须各自持有。
-//   - `program.fragmentShader()` 本身很轻（Flutter 官方的 overscroll 拉伸效果
-//     就是每次 build 新建 + dispose，见 packages/flutter/lib/src/widgets/
-//     stretch_effect.dart:170）。所以策略是：
-//       **program 全局一份；FragmentShader 由调用方按角色持有并复用。**
+//     外壳与指示器在同帧用不同参数时会互相覆盖 → 必须各自持有
+//   - `program.fragmentShader()` 本身很轻（Flutter 官方 stretch_effect.dart:170
+//     就是每次 build 新建 + dispose）
 //
-// 【uniform 索引约定（踩过的坑）】
+// 【uniform 索引 —— 与上游声明顺序严格一致】
+//   上游 Shaders.kt 的声明顺序：
+//     size, offset, cornerRadii, refractionHeight, refractionAmount,
+//     depthEffect, [chromaticAberration]
+//   `setFloat(index)` 不计数 sampler，且**第一个 float uniform 起于 index 0**；
+//   对 `ImageFilter.shader` 而言 0~1 被引擎自动填入「绑定纹理尺寸」。
+//   → 0,1=size | 2,3=offset | 4..7=cornerRadii | 8=refractionHeight
+//     9=refractionAmount | 10=depthEffect | 11=chromaticAberration（仅色散版）
 //
-//   `setFloat(index, value)` 的 index **不计数 sampler**，且
-//   **index 0~1 被 `u_size` 占用**（引擎自动填绑定纹理尺寸，不要自己设）。
-//   → 自定义 float 从 **index 2** 开始。
-//   这与 Flutter 官方 stretch_effect 的用法一致（它也从 2 开始）。
-//
-// 【后端限制（硬性）】
-//
-//   `ImageFilter.shader` **仅 Impeller 可用**，Skia 下构造会直接抛
-//   `UnsupportedError`（见 sky_engine/lib/ui/painting.dart:4461）。
-//   所以调用前必须过 `isAvailable`。Skia 下本类返回 null，
-//   调用方降级为普通 `BackdropFilter` + `ImageFilter.blur`（无折射）。
+// 【两处必须与上游一致、极易搞错的语义】
+//   ★ `refractionAmount` 写入时**取负**
+//     上游 Lens.kt：`setFloatUniform("refractionAmount", -refractionAmount)`
+//     → 位移方向朝心（向内收）。传正数会让内容被往外推，方向完全相反。
+//   ★ `chromaticAberration` 是**布尔**，不是 0~1 强度
+//     上游用它切换**两份不同的 shader**；用色散版时 uniform 固定为 1.0
 // ============================================================================
 
 import 'dart:ui' as ui;
@@ -41,108 +43,125 @@ import 'package:flutter/foundation.dart';
 
 import '../../utils/app_logger.dart';
 
-/// 全局 shader 库：负责 asset 加载与能力探测
-///
-/// ⚠️ **加载是异步的**，所以本类暴露 [ready] 这个 `ValueListenable`。
-/// 调用方**必须监听它**并在变化时重建 —— 否则底栏会在 program 就绪后
-/// 依然停在降级路径（这正是第一版实机验证暴露出的缺陷：
-/// A/B 对比像素完全一致，说明 shader 从未被应用）。
+/// 全局着色器库：负责 asset 加载与能力探测
 class LiquidGlassShaderLibrary {
   LiquidGlassShaderLibrary._();
 
   static const String _tag = 'LiquidGlass';
 
-  /// 必须与 `pubspec.yaml` 的 `flutter: shaders:` 条目一致
-  static const String assetKey = 'shaders/liquid_refract.frag';
+  /// 折射（无版散）—— 对应上游 `RoundedRectRefractionShaderString`
+  static const String plainAssetKey = 'shaders/liquid_refract.frag';
+
+  /// 折射 + 7 抽色散 —— 对应上游 `RoundedRectRefractionWithDispersionShaderString`
+  static const String dispersionAssetKey = 'shaders/liquid_refract_dispersion.frag';
+
+  /// 方向性高光 —— 对应上游 `DefaultHighlightShaderString`
+  static const String highlightAssetKey = 'shaders/liquid_highlight.frag';
 
   static bool _initCalled = false;
-  static ui.FragmentProgram? _program;
+  static ui.FragmentProgram? _plain;
+  static ui.FragmentProgram? _dispersion;
+  static ui.FragmentProgram? _highlight;
   static Object? _loadError;
 
   /// program 就绪状态。就绪后置 true，监听方据此重建以切到折射路径。
+  ///
+  /// ⚠️ 加载是异步的，**调用方必须监听** —— 否则底栏会在 program 就绪后
+  /// 依然停在降级路径（实机 A/B 验证曾因此误判为「shader 从未生效」）。
   static final ValueNotifier<bool> ready = ValueNotifier<bool>(false);
 
   /// 当前渲染后端是否支持 `ImageFilter.shader`（仅 Impeller 为 true）
   static bool get isBackendSupported => ui.ImageFilter.isShaderFilterSupported;
 
-  /// program 是否已加载完成
-  static bool get isProgramLoaded => _program != null;
-
   /// 是否可以真正使用折射效果
-  static bool get isAvailable => isBackendSupported && _program != null;
+  static bool get isAvailable => isBackendSupported && _plain != null;
+
+  /// 高光 shader 是否可用（走 `Paint.shader`，不受 Impeller 限制，但仍需加载完成）
+  static bool get isHighlightAvailable => _highlight != null;
 
   /// 加载失败的原因（用于日志 / 兜底提示），成功时为 null
   static Object? get loadError => _loadError;
 
-  /// 预加载 shader program（幂等，可在 `main()` 里提前调用）
-  ///
-  /// ⚠️ 异步：调用后 [isAvailable] 不会立刻变 true。
-  /// 底栏在就绪前走降级模糊，就绪后由 [ready] 通知重建切到折射 ——
-  /// 这样既不阻塞首帧，又不会永远停在降级路径。
+  /// 预加载全部着色器（幂等，可在 `main()` 里提前调用）
   static void initialize() {
     if (_initCalled) return;
     _initCalled = true;
 
-    // Skia 下 `ImageFilter.shader` 必然抛异常，连加载都不必做
+    // 高光走 Paint.shader，任何后端都能用，先加载它
+    _load(highlightAssetKey, (p) => _highlight = p);
+
+    // Skia 下 `ImageFilter.shader` 必然抛异常，折射两份不必加载
     if (!isBackendSupported) {
       AppLogger.w(_tag, '后端不支持 ImageFilter.shader（非 Impeller），折射已禁用');
       return;
     }
 
-    AppLogger.i(_tag, '开始加载折射着色器：$assetKey');
-    ui.FragmentProgram.fromAsset(assetKey).then(
+    _load(dispersionAssetKey, (p) => _dispersion = p);
+    _load(plainAssetKey, (p) {
+      _plain = p;
+      AppLogger.i(_tag, '折射着色器加载完成，已启用');
+      ready.value = true;
+    });
+  }
+
+  static void _load(String key, void Function(ui.FragmentProgram) onOk) {
+    ui.FragmentProgram.fromAsset(key).then(
       (ui.FragmentProgram program) {
-        _program = program;
+        onOk(program);
         _loadError = null;
-        AppLogger.i(_tag, '折射着色器加载完成，已启用');
-        ready.value = true;
       },
       onError: (Object error, StackTrace stack) {
         _loadError = error;
-        AppLogger.e(_tag, '折射着色器加载失败：$error\n$stack');
+        AppLogger.e(_tag, '着色器加载失败（$key）：$error\n$stack');
       },
     );
   }
 
   /// 供 [LiquidGlassRefraction] 取用；外部不应直接调用
-  static ui.FragmentShader? newShader() => _program?.fragmentShader();
+  static ui.FragmentShader? newRefractionShader({required bool dispersion}) =>
+      (dispersion ? _dispersion : _plain)?.fragmentShader();
+
+  /// 供高光绘制取用；外部不应直接调用
+  static ui.FragmentShader? newHighlightShader() => _highlight?.fragmentShader();
 }
 
 /// 一次折射渲染所需的参数（也是复用缓存的键）
+///
+/// 字段与上游 `Lens.kt` 的 `lens(...)` 入参一一对应。
 class LiquidGlassRefractionParams {
   const LiquidGlassRefractionParams({
     required this.refractionHeight,
     required this.refractionAmount,
     required this.cornerRadii,
-    this.depthEffect = 1.0,
-    this.chromaticAberration = 0.0,
+    this.depthEffect = false,
+    this.chromaticAberration = false,
     this.offset = ui.Offset.zero,
-    this.zoom = 1.0,
   });
 
-  /// 折射带宽度（px）：距边缘这个距离内的像素才参与折射
+  /// 折射带宽度（**物理像素**）：距边缘这个距离内的像素才参与折射
+  ///
+  /// 上游 `lens(refractionHeight)`。传 0 或负 → 上游会直接不加效果。
   final double refractionHeight;
 
-  /// 最大折射位移（px）
+  /// 最大折射位移（**物理像素**，传正数）
+  ///
+  /// 上游 `lens(refractionAmount)`，内部取负后写入 uniform。
   final double refractionAmount;
 
-  /// 四角圆角半径，顺序 TL, TR, BR, BL
+  /// 四角圆角半径，顺序 **TL, TR, BR, BL**（与上游 `cornerRadii` 一致）
   final List<double> cornerRadii;
 
-  /// 0/1，是否叠加朝心的深度分量（玻璃厚度感）
-  final double depthEffect;
+  /// 是否叠加朝心的深度分量（上游 `depthEffect: Boolean = false`）
+  final bool depthEffect;
 
-  /// 色散强度。**0 = 走无版散快路径**（省 6 次纹理采样）
-  final double chromaticAberration;
-
-  /// 与 SDF 中心的偏移
-  final ui.Offset offset;
-
-  /// 采样放大倍率（1.0 = 不放大）。
+  /// 是否使用色散版 shader（上游 `chromaticAberration: Boolean = false`）
   ///
-  /// 对应 Compose 的 `layerBlock { scaleX/scaleY }` —— 在**采样层**缩放，
-  /// 所以放大后的内容仍会被折射，而不是把已渲染的结果拉大。
-  final double zoom;
+  /// ⚠️ 这是**布尔开关**，不是强度。true 时改用
+  /// `liquid_refract_dispersion.frag`，并把 uniform 固定为 1.0。
+  final bool chromaticAberration;
+
+  /// 与 SDF 中心的偏移（上游 `offset`，默认由 `-padding` 得到；此处默认 0）
+  final ui.Offset offset;
 
   bool _sameAs(LiquidGlassRefractionParams o) {
     if (refractionHeight != o.refractionHeight ||
@@ -150,7 +169,6 @@ class LiquidGlassRefractionParams {
         depthEffect != o.depthEffect ||
         chromaticAberration != o.chromaticAberration ||
         offset != o.offset ||
-        zoom != o.zoom ||
         cornerRadii.length != o.cornerRadii.length) {
       return false;
     }
@@ -162,20 +180,6 @@ class LiquidGlassRefractionParams {
 }
 
 /// 折射滤镜持有者：参数不变时复用同一个 `ImageFilter`，避免每帧重建
-///
-/// 用法（在 `State` 里持有一个实例，`dispose()` 里释放）：
-/// ```dart
-/// final _refraction = LiquidGlassRefraction();
-///
-/// ui.ImageFilter? get _glassFilter => _refraction.resolve(
-///       const LiquidGlassRefractionParams(
-///         refractionHeight: 18,
-///         refractionAmount: 9,
-///         cornerRadii: [32, 32, 32, 32],
-///         chromaticAberration: 0.35,
-///       ),
-///     );
-/// ```
 class LiquidGlassRefraction {
   ui.FragmentShader? _shader;
   ui.ImageFilter? _filter;
@@ -188,13 +192,21 @@ class LiquidGlassRefraction {
       return null;
     }
 
-    // 参数没变 → 直接复用，避免每帧分配
+    // 上游：`if (refractionHeight <= 0 || refractionAmount <= 0) return`
+    // —— 参数为 0 就不加效果（指示器静止时正是这种情况）
+    if (params.refractionHeight <= 0 || params.refractionAmount <= 0) {
+      _release();
+      return null;
+    }
+
     final cached = _cached;
     if (cached != null && cached._sameAs(params) && _filter != null) {
       return _filter;
     }
 
-    final shader = LiquidGlassShaderLibrary.newShader();
+    final shader = LiquidGlassShaderLibrary.newRefractionShader(
+      dispersion: params.chromaticAberration,
+    );
     if (shader == null) {
       _release();
       return null;
@@ -210,27 +222,35 @@ class LiquidGlassRefraction {
     return _filter;
   }
 
-  /// 写入 uniform。索引见文件头说明：0~1 是引擎占用的 `u_size`。
+  /// 写入 uniform。索引与上游声明顺序严格一致，见文件头说明。
   static void _writeUniforms(
     ui.FragmentShader shader,
     LiquidGlassRefractionParams p,
   ) {
-    shader.setFloat(2, p.refractionHeight);
-    shader.setFloat(3, p.refractionAmount);
-    shader.setFloat(4, p.depthEffect);
-    shader.setFloat(5, p.chromaticAberration);
+    // 0,1 = size —— 由引擎自动填入绑定纹理尺寸，**不要**自己设
 
-    // vec4 cornerRadii（TL, TR, BR, BL）—— 不足 4 个时补 0
+    // 2,3 = offset
+    shader.setFloat(2, p.offset.dx);
+    shader.setFloat(3, p.offset.dy);
+
+    // 4..7 = cornerRadii（TL, TR, BR, BL）—— 不足 4 个时补 0
     for (var i = 0; i < 4; i++) {
-      shader.setFloat(6 + i, i < p.cornerRadii.length ? p.cornerRadii[i] : 0.0);
+      shader.setFloat(4 + i, i < p.cornerRadii.length ? p.cornerRadii[i] : 0.0);
     }
 
-    // vec2 offset
-    shader.setFloat(10, p.offset.dx);
-    shader.setFloat(11, p.offset.dy);
+    // 8 = refractionHeight
+    shader.setFloat(8, p.refractionHeight);
 
-    // float zoom
-    shader.setFloat(12, p.zoom);
+    // 9 = refractionAmount —— ★ 上游取负，位移朝心
+    shader.setFloat(9, -p.refractionAmount);
+
+    // 10 = depthEffect
+    shader.setFloat(10, p.depthEffect ? 1.0 : 0.0);
+
+    // 11 = chromaticAberration —— 仅色散版有；上游固定传 1f
+    if (p.chromaticAberration) {
+      shader.setFloat(11, 1.0);
+    }
   }
 
   void _release() {
