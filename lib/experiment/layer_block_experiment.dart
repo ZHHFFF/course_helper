@@ -212,8 +212,15 @@ class _LayerBlockExperimentPageState extends State<LayerBlockExperimentPage> {
     //   这正是上游「固定尺寸录制 → 整体缩放」的 Flutter 候选实现。
     final w = _baseLensW * _scale;
     final h = _baseLensH * _scale;
+    // ⚠️ `ImageFilter.matrix` 是在**图层坐标系**里作用的，不是 widget 局部坐标。
+    //    只写 `S(scale)` 会**绕坐标原点**缩放 → 采样到屏幕上方的内容（实测已确认）。
+    //    要绕 lens 中心缩放，必须补共轭：T(C) · S(s) · T(-C)
+    final matrix = Matrix4.identity()
+      ..translateByDouble(cx, cy, 0.0, 1.0)
+      ..scaleByDouble(_scale, _scale, 1.0, 1.0)
+      ..translateByDouble(-cx, -cy, 0.0, 1.0);
     final matrixFilter = ui.ImageFilter.matrix(
-      (Matrix4.identity()..scaleByDouble(_scale, _scale, 1.0, 1.0)).storage,
+      matrix.storage,
       filterQuality: FilterQuality.high,
     );
     // compose 语义：outer(inner(source)) —— matrix 先作用于背景，再交给折射
