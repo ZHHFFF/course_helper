@@ -117,6 +117,13 @@ flutter:
     - images/placeholder.png
     - images/logo.png
 
+  # 自定义片元着色器（Liquid Glass 折射）。
+  # 移植自 Kyant0/AndroidLiquidGlass 的 Lens.kt，见 shaders/liquid_refract.frag 头部说明。
+  # ⚠️ 只在 Impeller 后端可用（ImageFilter.shader 的硬性要求，见 sky_engine/lib/ui/painting.dart:4461），
+  #    Skia 下 Dart 侧会探测 isShaderFilterSupported 并降级为普通 BackdropFilter 模糊。
+  shaders:
+    - shaders/liquid_refract.frag
+
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
 

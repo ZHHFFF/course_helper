@@ -31,6 +31,8 @@ import 'package:flutter/physics.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_miuix/miuix.dart';
 
+import 'liquid_glass_shader_filter.dart';
+
 /// 与 [MiuixGlassNavigationItem] 同名入参类型，保持完全兼容。
 typedef MiuixLiquidGlassNavItem = MiuixGlassNavigationItem;
 
@@ -155,9 +157,20 @@ class _MiuixLiquidGlassNavigationBarState
 
   double get _sigma => widget.blurRadius.clamp(0.0, 150.0) * 0.45;
 
+  /// 外壳玻璃的折射滤镜持有者（Impeller 下产出真实折射，否则恒为 null）
+  final _shellGlass = LiquidGlassRefraction();
+
+  /// 选中指示器玻璃的折射滤镜持有者
+  ///
+  /// ⚠️ 必须与外壳**分开持有** —— `FragmentShader` 带 uniform 状态，
+  /// 共用同一实例会导致两者在同帧互相覆盖参数。
+  final _indicatorGlass = LiquidGlassRefraction();
+
   @override
   void initState() {
     super.initState();
+    // 异步加载 shader program（幂等）。就绪前底栏走降级模糊，就绪后自动切换。
+    LiquidGlassShaderLibrary.initialize();
     widget.pageController?.addListener(_onPageScroll);
   }
 
@@ -207,6 +220,8 @@ class _MiuixLiquidGlassNavigationBarState
   void dispose() {
     _animatingFromTapTimer?.cancel();
     widget.pageController?.removeListener(_onPageScroll);
+    _shellGlass.dispose();
+    _indicatorGlass.dispose();
     _showController.dispose();
     _positionController.dispose();
     _pressController.dispose();
@@ -436,6 +451,8 @@ class _MiuixLiquidGlassNavigationBarState
                           child: _buildShell(
                             context,
                             dark: dark,
+                            width: width,
+                            height: widget.height + widget.bottomPadding,
                             layers: [
                               // 1. Kyant0 液态玻璃选中指示器（并列层二次 BackdropFilter 采样）
                               if (tabW > 0)
@@ -449,6 +466,8 @@ class _MiuixLiquidGlassNavigationBarState
                                     dark: dark,
                                     pressProgress: pressProgress,
                                     velocity: _dragVelocity,
+                                    width: tabW,
+                                    height: math.max(1.0, widget.height - 6),
                                   ),
                                 ),
                               // 2. 导航项内容图标与标签（顶层交互）
@@ -546,10 +565,21 @@ class _MiuixLiquidGlassNavigationBarState
   }
 
   /// 玻璃外壳：Kyant0 Vibrancy + 双层柔和阴影 + 实时 BackdropFilter + 镜面双峰高光
+  ///
+  /// 玻璃管线与 Kyant0 一致 —— **先模糊，再折射**：
+  ///   1. `ImageFilter.blur`  磨砂，抹掉背景细节（否则折射会把文字拉花）
+  ///   2. `liquid_refract.frag`  沿圆角矩形 SDF 的边缘做折射 + 7 抽色散
+  /// 两者用 `ImageFilter.compose(outer: 折射, inner: 模糊)` 串联 ——
+  /// compose 的语义是 `outer(inner(source))`，正好是这个顺序。
+  ///
+  /// ⚠️ 折射**仅在 Impeller 后端可用**。Skia 下 `resolve()` 返回 null，
+  ///    此时降级为**纯模糊**（用户确认的 fallback 策略），不做任何"假折射"。
   Widget _buildShell(
     BuildContext context, {
     required bool dark,
     required List<Widget> layers,
+    required double width,
+    required double height,
   }) {
     final borderRadius = BorderRadius.circular(999);
     final theme = MiuixTheme.of(context);
@@ -567,6 +597,30 @@ class _MiuixLiquidGlassNavigationBarState
       -0.12, -0.18, 1.35, 0, 0,
       0,     0,     0,     1, 0,
     ];
+
+    // ── 折射层（Impeller）────────────────────────────────────────────────
+    // 圆角半径取高度一半 —— 与 `BorderRadius.circular(999)` 被裁成胶囊后的
+    // 实际半径一致（999 会被 Flutter 钳到 minDimension/2）。
+    final pillRadius = math.min(999.0, height / 2);
+
+    // 折射参数：量级取自 Kyant0，但**刻意收敛**（用户要求「不要过度折射」）。
+    // 折射带取高度的 30%，最大位移取 14% —— 边缘可见形变，中心保持平整。
+    final refraction = _shellGlass.resolve(
+      LiquidGlassRefractionParams(
+        refractionHeight: math.max(12.0, height * 0.30),
+        refractionAmount: math.max(5.0, height * 0.14),
+        cornerRadii: [pillRadius, pillRadius, pillRadius, pillRadius],
+        depthEffect: 1.0,
+        chromaticAberration: 0.30,
+      ),
+    );
+
+    final blurFilter = ui.ImageFilter.blur(sigmaX: _sigma, sigmaY: _sigma);
+
+    // 折射可用 → 模糊 + 折射串联；不可用（Skia / shader 未就绪）→ 纯模糊
+    final glassFilter = refraction == null
+        ? blurFilter
+        : ui.ImageFilter.compose(outer: refraction, inner: blurFilter);
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -588,10 +642,10 @@ class _MiuixLiquidGlassNavigationBarState
         borderRadius: borderRadius,
         child: Stack(
           children: [
-            // 背景玻璃全向实时采样
+            // 背景玻璃全向实时采样（模糊 + 折射串联；Skia 下退化为纯模糊）
             Positioned.fill(
               child: BackdropFilter(
-                filter: ui.ImageFilter.blur(sigmaX: _sigma, sigmaY: _sigma),
+                filter: glassFilter,
                 child: ColorFiltered(
                   colorFilter: const ColorFilter.matrix(vibrancyMatrix),
                   child: DecoratedBox(
@@ -630,9 +684,40 @@ class _MiuixLiquidGlassNavigationBarState
     required bool dark,
     required double pressProgress,
     required double velocity,
+    required double width,
+    required double height,
   }) {
     final borderRadius = BorderRadius.circular(999);
     final theme = MiuixTheme.of(context);
+
+    // ── 折射层（Impeller）────────────────────────────────────────────────
+    // ⚠️ 参数**刻意不随 pressProgress 变化** —— 否则按压弹簧动画期间
+    //    参数每帧都变，`resolve()` 会每帧重建 FragmentShader。
+    //    液态形变由下面的 squash & stretch 变换 + 绘制器承担，视觉上已足够。
+    final indicatorRadius = math.min(999.0, height / 2);
+    final refraction = _indicatorGlass.resolve(
+      LiquidGlassRefractionParams(
+        refractionHeight: math.max(8.0, height * 0.42),
+        refractionAmount: math.max(3.0, height * 0.16),
+        cornerRadii: [
+          indicatorRadius,
+          indicatorRadius,
+          indicatorRadius,
+          indicatorRadius,
+        ],
+        depthEffect: 1.0,
+        chromaticAberration: 0.22,
+      ),
+    );
+
+    final blurFilter = ui.ImageFilter.blur(
+      sigmaX: _sigma * 0.45 * (1.0 + 0.25 * pressProgress),
+      sigmaY: _sigma * 0.45 * (1.0 + 0.25 * pressProgress),
+    );
+
+    final glassFilter = refraction == null
+        ? blurFilter
+        : ui.ImageFilter.compose(outer: refraction, inner: blurFilter);
 
     // Kyant0: pressedScale 78f / 56f ≈ 1.393x，此处采用 1.30x 自然饱满扩张
     final baseScale = 1.0 + 0.30 * pressProgress;
@@ -648,11 +733,8 @@ class _MiuixLiquidGlassNavigationBarState
       child: ClipRRect(
         borderRadius: borderRadius,
         child: BackdropFilter(
-          // 选中区域二次采样磨砂折射
-          filter: ui.ImageFilter.blur(
-            sigmaX: _sigma * 0.45 * (1.0 + 0.25 * pressProgress),
-            sigmaY: _sigma * 0.45 * (1.0 + 0.25 * pressProgress),
-          ),
+          // 选中区域二次采样：模糊 + 折射（Skia 下退化为纯模糊）
+          filter: glassFilter,
           child: CustomPaint(
             painter: _Kyant0LiquidPillPainter(
               dark: dark,

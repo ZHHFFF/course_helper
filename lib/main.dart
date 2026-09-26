@@ -21,6 +21,8 @@ import'./pages/settings/settings.dart';
 import './pages/widget/miuix_nav_metrics.dart';
 // [新增] 统一底栏宿主（NavigationBarHost：传统 Miuix / Liquid Glass 动态切换）
 import './pages/widget/navigation_bar_host.dart';
+// [新增] Liquid Glass 折射着色器库（启动时预加载，见 main() 内说明）
+import './pages/widget/liquid_glass_shader_filter.dart';
 // [新增] 深浅色外观设置（见 setting/theme_setting.dart）
 import './setting/theme_setting.dart';
 import'./api/api_service.dart';
@@ -76,6 +78,17 @@ void main() async {
   // （原先这里是 `NavBarSetting.ensureLoaded()` —— 那个「悬浮 / 贴边」开关
   //  已随悬浮底栏一起删除，见 setting/theme_setting.dart 的说明。）
   await ThemeSetting.ensureLoaded();
+
+  // [新增] 预加载 Liquid Glass 折射着色器。
+  //
+  // 不 await —— `FragmentProgram.fromAsset` 是异步的，等它会拖慢冷启动；
+  // 底栏在 program 就绪前会走降级模糊（Skia 路径），就绪后下一帧自动切到折射。
+  // 这里只是把加载**提前**到启动阶段，让底栏首次出现时就大概率已就绪。
+  LiquidGlassShaderLibrary.initialize();
+  AppLogger.i(
+    'App',
+    'Liquid Glass 着色器：后端支持=${LiquidGlassShaderLibrary.isBackendSupported}',
+  );
 
   AppLogger.i('App', '初始化完成，进入主界面');
 
