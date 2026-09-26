@@ -61,6 +61,12 @@ uniform float u_depthEffect;        // index 4  0/1，是否叠加朝心的深�
 uniform float u_chromaticAberration;// index 5  色散强度，0 = 关闭（省 6 次采样）
 uniform vec4 u_cornerRadii;         // index 6~9  TL, TR, BR, BL
 uniform vec2 u_offset;              // index 10~11
+uniform float u_zoom;               // index 12  采样放大倍率（1.0 = 不放大）
+
+// 放大倍率 = 1.0 时无操作；>1 时绕中心放大采样内容。
+// 对应 Compose 的 `layerBlock { scaleX = ...; scaleY = ... }` —— 在**采样层**
+// 做缩放，而不是把渲染结果拉伸。这是「放大时内容真的被放大」与
+// 「只是把糊掉的图拉大」的区别所在。
 
 out vec4 frag_color;
 
@@ -110,9 +116,19 @@ vec2 toUv(vec2 px) {
   return uv;
 }
 
+/// 绕中心施加放大倍率（u_zoom = 1.0 时恒等）
+vec2 applyZoom(vec2 px) {
+  if (u_zoom <= 0.0 || abs(u_zoom - 1.0) < 1e-4) return px;
+  vec2 center = u_size * 0.5;
+  return (px - center) / u_zoom + center;
+}
+
 /// 按像素坐标采样背景（替代 AGSL 的 content.eval(coord)）
+///
+/// 采样前统一施加放大 —— 折射位移与放大都在**坐标空间**完成，
+/// 所以放大后的内容仍会被正确折射（而不是先糊再拉大）。
 vec4 sampleContent(vec2 px) {
-  return texture(u_content, toUv(px));
+  return texture(u_content, toUv(applyZoom(px)));
 }
 
 // -------------------------------------------------------------------- main

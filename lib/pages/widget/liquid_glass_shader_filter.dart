@@ -117,6 +117,7 @@ class LiquidGlassRefractionParams {
     this.depthEffect = 1.0,
     this.chromaticAberration = 0.0,
     this.offset = ui.Offset.zero,
+    this.zoom = 1.0,
   });
 
   /// 折射带宽度（px）：距边缘这个距离内的像素才参与折射
@@ -137,12 +138,19 @@ class LiquidGlassRefractionParams {
   /// 与 SDF 中心的偏移
   final ui.Offset offset;
 
+  /// 采样放大倍率（1.0 = 不放大）。
+  ///
+  /// 对应 Compose 的 `layerBlock { scaleX/scaleY }` —— 在**采样层**缩放，
+  /// 所以放大后的内容仍会被折射，而不是把已渲染的结果拉大。
+  final double zoom;
+
   bool _sameAs(LiquidGlassRefractionParams o) {
     if (refractionHeight != o.refractionHeight ||
         refractionAmount != o.refractionAmount ||
         depthEffect != o.depthEffect ||
         chromaticAberration != o.chromaticAberration ||
         offset != o.offset ||
+        zoom != o.zoom ||
         cornerRadii.length != o.cornerRadii.length) {
       return false;
     }
@@ -220,6 +228,9 @@ class LiquidGlassRefraction {
     // vec2 offset
     shader.setFloat(10, p.offset.dx);
     shader.setFloat(11, p.offset.dy);
+
+    // float zoom
+    shader.setFloat(12, p.zoom);
   }
 
   void _release() {

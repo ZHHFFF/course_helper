@@ -29,6 +29,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_miuix/miuix.dart';
 
+import 'liquid_glass_highlight.dart';
 import 'liquid_glass_nav_controller.dart';
 import 'liquid_glass_shader_filter.dart';
 
@@ -109,11 +110,10 @@ class _MiuixLiquidGlassNavigationBarState
 
   double _width = 0.0;
 
+  /// 上一帧的指针 x（上游 `canDrag` 需要同时判断当前与上一帧是否在栏内）
+  double _lastPointerX = 0.0;
+
   // ── 只读转发：视觉层（build）从这里取动画值与手势状态 ────────────────
-  AnimationController get _showController => _nav.show;
-  AnimationController get _positionController => _nav.position;
-  AnimationController get _pressController => _nav.press;
-  double get _dragVelocity => _nav.dragVelocity;
   bool get _positioned => _nav.positioned;
 
   bool get _disabledMotion =>
@@ -173,7 +173,7 @@ class _MiuixLiquidGlassNavigationBarState
               ScrollDirection.idle;
       if (!isDragging) {
         _nav.updateSelectedIndex(widget.selectedIndex);
-        _nav.animatePositionTo(widget.selectedIndex.toDouble());
+        _nav.updateValue(widget.selectedIndex.toDouble());
       }
     }
   }
@@ -211,8 +211,8 @@ class _MiuixLiquidGlassNavigationBarState
   RenderBox? get _barBox =>
       _key.currentContext?.findRenderObject() as RenderBox?;
 
-  /// 点击底栏（用于 `onTap` 路径）
-  void _select(int index) => _nav.select(index);
+  /// 点击底栏（用于 `onTap` 路径）—— 对应上游 `activateTab` → `animateToValue`
+  void _select(int index) => _nav.animateToValue(index.toDouble());
 
   @override
   Widget build(BuildContext context) {
@@ -244,7 +244,10 @@ class _MiuixLiquidGlassNavigationBarState
         // 控制器不碰布局，只消费这里算好的值。
         _nav.barWidth = width;
         _nav.syncGeometry(
-          tabWidth: widget.items.isEmpty ? 0.0 : (width - 16) / widget.items.length,
+          tabWidth: widget.items.isEmpty
+              ? 0.0
+              : (width - 16) / widget.items.length,
+          barWidth: width,
           rtl: _rtl,
         );
         _nav.disabledMotion = _disabledMotion;
@@ -253,16 +256,16 @@ class _MiuixLiquidGlassNavigationBarState
           _width = width;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted || widget.items.isEmpty) return;
-            _nav.position.value = _nav.index.toDouble();
+            _nav.placeAt(_nav.index);
             _nav.positioned = true;
           });
         }
 
         return AnimatedBuilder(
-          animation: Listenable.merge(
-              [_showController, _positionController, _pressController]),
+          // 六个动画（位置/速度/按压/scaleX/scaleY/显示）统一由控制器合并暴露
+          animation: _nav.animatables,
           builder: (context, _) {
-            final showProgress = _showController.value.clamp(0.0, 1.0);
+            final showProgress = _nav.showProgress.clamp(0.0, 1.0);
             if (!widget.visible && showProgress < .001) {
               return SizedBox(
                 width: width,
@@ -270,8 +273,8 @@ class _MiuixLiquidGlassNavigationBarState
               );
             }
 
-            final pressProgress = _pressController.value.clamp(0.0, 1.0);
-            final posValue = _positionController.value;
+            final pressProgress = _nav.pressProgress.clamp(0.0, 1.0);
+            final posValue = _nav.value;
             final tabW = _tabWidth;
 
             // 橡皮筋阻尼计算（Kyant0 EaseOut transform）
@@ -288,6 +291,13 @@ class _MiuixLiquidGlassNavigationBarState
             final indicatorLeft = _rtl
                 ? 8 + (widget.items.length - 1 - posValue) * tabW + rubberBand
                 : 8 + posValue * tabW + rubberBand;
+
+            // 指示器几何 —— 严格对齐上游 Compose：
+            //   栏高 64 / 指示器高 56 / 上下各留 4 → 两者天然同心
+            //   （半径差 = 4 = 边距，所以边缘间隙处处相等）
+            final indicatorHeight =
+                math.max(1.0, widget.height - widget.bottomPadding - 8);
+            const indicatorInset = 4.0;
 
             // Kyant0 呼吸外壳微缩放（lerp(1f, 1f + 16dp / width, pressProgress)）
             final shellScale = 1.0 + 0.012 * pressProgress;
@@ -313,41 +323,63 @@ class _MiuixLiquidGlassNavigationBarState
                           key: _key,
                           // 手势全部转交控制器 —— 它内部负责指针校验、
                           // 速度采样、零延迟跟手与松手弹簧。
-                          onPointerDown: (event) => _nav.handlePointerDown(
-                            pointer: event.pointer,
-                            x: _nav.localX(event.position, _barBox),
-                          ),
-                          onPointerMove: (event) => _nav.handlePointerMove(
-                            pointer: event.pointer,
-                            x: _nav.localX(event.position, _barBox),
-                          ),
+                          onPointerDown: (event) {
+                            _lastPointerX = _nav.localX(event.position, _barBox);
+                            _nav.handlePointerDown(
+                              pointer: event.pointer,
+                              x: _lastPointerX,
+                            );
+                          },
+                          onPointerMove: (event) {
+                            final x = _nav.localX(event.position, _barBox);
+                            _nav.handlePointerMove(
+                              pointer: event.pointer,
+                              x: x,
+                              previousX: _lastPointerX,
+                            );
+                            _lastPointerX = x;
+                          },
                           onPointerUp: (event) =>
                               _nav.handlePointerUp(event.pointer),
                           onPointerCancel: (event) =>
                               _nav.handlePointerUp(event.pointer),
-                          child: _buildShell(
-                            context,
-                            dark: dark,
-                            width: width,
-                            height: widget.height + widget.bottomPadding,
-                            layers: [
-                              // 1. Kyant0 液态玻璃选中指示器（并列层二次 BackdropFilter 采样）
+                          // 对应上游 Compose 外层 Box 的兄弟节点结构：
+                          //   1. 外壳（背景玻璃，裁剪层止于此）
+                          //   2. 选中指示器（与外壳并列 → 放大溢出不会被裁）
+                          //   3. 图标与标签（最上层，保证清晰不被玻璃糊到）
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              // ── 1. 外壳：只画背景玻璃 ──────────────────────
+                              Positioned.fill(
+                                child: _buildShell(
+                                  context,
+                                  dark: dark,
+                                  width: width,
+                                  height: widget.height + widget.bottomPadding,
+                                ),
+                              ),
+
+                              // ── 2. 选中指示器（不在外壳的 ClipRRect 内）─────
                               if (tabW > 0)
                                 Positioned(
                                   left: indicatorLeft,
-                                  top: 3,
+                                  top: indicatorInset,
                                   width: tabW,
-                                  height: math.max(1.0, widget.height - 6),
+                                  height: indicatorHeight,
                                   child: _buildLiquidIndicator(
                                     context,
                                     dark: dark,
                                     pressProgress: pressProgress,
-                                    velocity: _dragVelocity,
+                                    velocity: _nav.velocity,
+                                    baseScaleX: _nav.scaleX,
+                                    baseScaleY: _nav.scaleY,
                                     width: tabW,
-                                    height: math.max(1.0, widget.height - 6),
+                                    height: indicatorHeight,
                                   ),
                                 ),
-                              // 2. 导航项内容图标与标签（顶层交互）
+
+                              // ── 3. 导航项图标与标签（顶层交互）────────────
                               Positioned(
                                 left: 0,
                                 right: 0,
@@ -453,10 +485,12 @@ class _MiuixLiquidGlassNavigationBarState
   ///
   /// ⚠️ 折射**仅在 Impeller 后端可用**。Skia 下 `resolve()` 返回 null，
   ///    此时降级为**纯模糊**（用户确认的 fallback 策略），不做任何"假折射"。
+  /// ⚠️ 本方法**只画背景玻璃**，不再承载指示器与图标。
+  /// 这是为了对齐上游 Compose 的结构（外层 `Box` 的三个兄弟节点）：
+  /// 指示器必须与外壳**并列**，否则放大到 1.39x 时会被这里的 `ClipRRect` 裁掉。
   Widget _buildShell(
     BuildContext context, {
     required bool dark,
-    required List<Widget> layers,
     required double width,
     required double height,
   }) {
@@ -491,13 +525,18 @@ class _MiuixLiquidGlassNavigationBarState
     //        时必须保证底栏后面有**高频内容**，否则测不出来。）
     // 现在把折射带扩到近乎整个栏高、位移提到 28%，并加强色散，
     // 让效果在真机上明确可见；后续可再按观感回调。
+    // 严格对齐上游外壳的 lens 参数：`lens(24.dp.toPx(), 24.dp.toPx())`
+    // ⚠️ 单位同样是**物理像素**（见引擎 runtime_effect_filter_contents.cc:144），
+    //    必须乘 dpr —— 上一版直接传逻辑 dp，折射带缩水 3.5 倍。
+    final dpr = MediaQuery.devicePixelRatioOf(context);
     final refraction = _shellGlass.resolve(
       LiquidGlassRefractionParams(
-        refractionHeight: math.max(24.0, height * 0.85),
-        refractionAmount: math.max(10.0, height * 0.28),
+        refractionHeight: 24.0 * dpr,
+        refractionAmount: 24.0 * dpr,
         cornerRadii: [pillRadius, pillRadius, pillRadius, pillRadius],
         depthEffect: 1.0,
-        chromaticAberration: 0.80,
+        chromaticAberration: 0.5,
+        zoom: 1.0,
       ),
     );
 
@@ -549,7 +588,6 @@ class _MiuixLiquidGlassNavigationBarState
                 painter: _Kyant0ShellRimPainter(dark: dark),
               ),
             ),
-            ...layers,
           ],
         ),
       ),
@@ -570,6 +608,8 @@ class _MiuixLiquidGlassNavigationBarState
     required bool dark,
     required double pressProgress,
     required double velocity,
+    required double baseScaleX,
+    required double baseScaleY,
     required double width,
     required double height,
   }) {
@@ -577,14 +617,30 @@ class _MiuixLiquidGlassNavigationBarState
     final theme = MiuixTheme.of(context);
 
     // ── 折射层（Impeller）────────────────────────────────────────────────
-    // ⚠️ 参数**刻意不随 pressProgress 变化** —— 否则按压弹簧动画期间
-    //    参数每帧都变，`resolve()` 会每帧重建 FragmentShader。
-    //    液态形变由下面的 squash & stretch 变换 + 绘制器承担，视觉上已足够。
+    //
+    // 严格对齐上游 Compose 的指示器 lens 参数：
+    //   ```kotlin
+    //   val progress = dampedDragAnimation.pressProgress
+    //   lens(refractionHeight = 10.dp.toPx() * progress,
+    //        refractionAmount = 14.dp.toPx() * progress,
+    //        depthEffect = true,
+    //        chromaticAberration = 0.5f)
+    //   ```
+    // ★ 两个要点：
+    //   1. **折射强度与 pressProgress 成正比** —— 静止时完全没有折射，
+    //      按下才浮现。这正是用户要的「放大时扭曲内容」的效果来源。
+    //      （上一版我把它写成常量，等于永远没有这个效果。）
+    //   2. **单位是物理像素**。着色器里 `u_size` 来自
+    //      `input_snapshot->texture->GetSize()`（见引擎
+    //      runtime_effect_filter_contents.cc:144），是**纹理尺寸 = 物理像素**；
+    //      而 `height` 是逻辑 dp。不乘 dpr 会让折射带缩水 3.5 倍。
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final progress = pressProgress.clamp(0.0, 1.0);
     final indicatorRadius = math.min(999.0, height / 2);
     final refraction = _indicatorGlass.resolve(
       LiquidGlassRefractionParams(
-        refractionHeight: math.max(16.0, height * 0.90),
-        refractionAmount: math.max(8.0, height * 0.30),
+        refractionHeight: 10.0 * dpr * progress,
+        refractionAmount: 14.0 * dpr * progress,
         cornerRadii: [
           indicatorRadius,
           indicatorRadius,
@@ -592,7 +648,10 @@ class _MiuixLiquidGlassNavigationBarState
           indicatorRadius,
         ],
         depthEffect: 1.0,
-        chromaticAberration: 0.70,
+        chromaticAberration: 0.5,
+        // 放大由外层的 Transform.scale 承担（等价于上游的 layerBlock scaleX/scaleY），
+        // 所以这里不叠加 shader 级缩放，避免二次放大。
+        zoom: 1.0,
       ),
     );
 
@@ -605,29 +664,51 @@ class _MiuixLiquidGlassNavigationBarState
         ? blurFilter
         : ui.ImageFilter.compose(outer: refraction, inner: blurFilter);
 
-    // Kyant0: pressedScale 78f / 56f ≈ 1.393x，此处采用 1.30x 自然饱满扩张
-    final baseScale = 1.0 + 0.30 * pressProgress;
-
-    // Kyant0 速度挤压拉伸形变
-    final velClamp = (velocity * 0.16).clamp(-0.25, 0.25);
-    final scaleX = baseScale / (1.0 - velClamp * 0.75);
-    final scaleY = baseScale * (1.0 - velClamp.abs() * 0.35);
+    // ── 缩放与液态形变（严格对齐上游 layerBlock）──────────────────────────
+    //   ```kotlin
+    //   scaleX = dampedDragAnimation.scaleX      // 独立弹簧，ratio 0.6
+    //   scaleY = dampedDragAnimation.scaleY      // 独立弹簧，ratio 0.7
+    //   val velocity = dampedDragAnimation.velocity / 10f
+    //   scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
+    //   scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
+    //   ```
+    // scaleX / scaleY 由控制器传入（两条 dampingRatio 不同的弹簧 →
+    // 按下时横向先到位、纵向稍后跟上，产生各向异性「液态」感）。
+    final vel = (velocity / 10.0).clamp(-0.2, 0.2);
+    final scaleX = baseScaleX / (1.0 - vel * 0.75);
+    final scaleY = baseScaleY * (1.0 - vel * 0.25);
 
     return Transform(
       transform: Matrix4.diagonal3Values(scaleX, scaleY, 1.0),
       alignment: Alignment.center,
       child: ClipRRect(
         borderRadius: borderRadius,
-        child: BackdropFilter(
-          // 选中区域二次采样：模糊 + 折射（Skia 下退化为纯模糊）
-          filter: glassFilter,
-          child: CustomPaint(
-            painter: _Kyant0LiquidPillPainter(
-              dark: dark,
-              pressProgress: pressProgress,
-              primaryColor: theme.colors.primary,
+        child: Stack(
+          children: [
+            // 1. 玻璃本体：二次采样（模糊 + 折射，Skia 下退化为纯模糊）
+            Positioned.fill(
+              child: BackdropFilter(
+                filter: glassFilter,
+                child: CustomPaint(
+                  painter: _Kyant0LiquidPillPainter(
+                    dark: dark,
+                    pressProgress: pressProgress,
+                    primaryColor: theme.colors.primary,
+                  ),
+                ),
+              ),
             ),
-          ),
+            // 2. InteractiveHighlight（移植自 KernelSU 同名组件）：
+            //    按下时在指示器位置叠加径向辉光，加法混合，随按压缩放。
+            Positioned.fill(
+              child: CustomPaint(
+                painter: LiquidGlassHighlightPainter(
+                  progress: pressProgress,
+                  center: Offset(width / 2, height / 2),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
