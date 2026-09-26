@@ -73,8 +73,15 @@ class LayerBlockExperimentPage extends StatefulWidget {
 }
 
 class _LayerBlockExperimentPageState extends State<LayerBlockExperimentPage> {
-  /// true = 模式 A（Transform.scale）；false = 模式 B（实际尺寸）
-  bool _modeA = true;
+  /// 0 = A（Transform.scale）
+  /// 1 = B（实际 width/height）
+  /// 2 = C（固定布局尺寸 + ImageFilter.matrix 缩放**已光栅化的 backdrop**）
+  ///
+  /// C 是「先录制、后缩放」的 Flutter 候选实现：
+  ///   `ImageFilter.matrix` 变换的是**滤镜输入（已光栅化的背景）**，
+  ///   不是布局。若它的输入区域 = 输出区域 / scale，就等价于
+  ///   「按原尺寸采样 → 放大已采样的位图」。
+  int _mode = 0;
 
   /// 当前缩放倍率（A 用它做 Transform.scale；B 用它改实际尺寸）
   double _scale = 1.0;
@@ -159,9 +166,7 @@ class _LayerBlockExperimentPageState extends State<LayerBlockExperimentPage> {
     final effectiveFilter = filter ??
         ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8); // 降级：纯模糊
 
-    final borderRadius = BorderRadius.circular(999);
-
-    if (_modeA) {
+    if (_mode == 0) {
       // ── 模式 A：布局尺寸不变，Transform.scale 放大 ──────────────
       return Positioned(
         left: cx - _baseLensW / 2,
@@ -171,7 +176,7 @@ class _LayerBlockExperimentPageState extends State<LayerBlockExperimentPage> {
         child: Transform.scale(
           scale: _scale,
           child: ClipRRect(
-            borderRadius: borderRadius,
+            borderRadius: BorderRadius.circular(999),
             child: BackdropFilter(
               filter: effectiveFilter,
               child: const SizedBox.expand(),
@@ -181,9 +186,40 @@ class _LayerBlockExperimentPageState extends State<LayerBlockExperimentPage> {
       );
     }
 
-    // ── 模式 B：实际尺寸按 scale 放大，BackdropFilter 按新区域采样 ──
+    if (_mode == 1) {
+      // ── 模式 B：实际尺寸按 scale 放大，BackdropFilter 按新区域采样 ──
+      final w = _baseLensW * _scale;
+      final h = _baseLensH * _scale;
+      return Positioned(
+        left: cx - w / 2,
+        top: cy - h / 2,
+        width: w,
+        height: h,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(h / 2),
+          child: BackdropFilter(
+            filter: effectiveFilter,
+            child: const SizedBox.expand(),
+          ),
+        ),
+      );
+    }
+
+    // ── 模式 C：**先光栅化、后缩放** ─────────────────────────────────
+    //   显示尺寸 = base * scale（外轮廓与 A/B 一致），
+    //   但滤镜链里插入 `ImageFilter.matrix(scale)`：
+    //     采样区域 = 输出区域 / scale = base  →  放大已采样的位图
+    //   这正是上游「固定尺寸录制 → 整体缩放」的 Flutter 候选实现。
     final w = _baseLensW * _scale;
     final h = _baseLensH * _scale;
+    final matrixFilter = ui.ImageFilter.matrix(
+      (Matrix4.identity()..scaleByDouble(_scale, _scale, 1.0, 1.0)).storage,
+      filterQuality: FilterQuality.high,
+    );
+    // compose 语义：outer(inner(source)) —— matrix 先作用于背景，再交给折射
+    final cFilter = _refractionOn
+        ? ui.ImageFilter.compose(outer: effectiveFilter, inner: matrixFilter)
+        : matrixFilter;
     return Positioned(
       left: cx - w / 2,
       top: cy - h / 2,
@@ -192,7 +228,7 @@ class _LayerBlockExperimentPageState extends State<LayerBlockExperimentPage> {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(h / 2),
         child: BackdropFilter(
-          filter: effectiveFilter,
+          filter: cFilter,
           child: const SizedBox.expand(),
         ),
       ),
@@ -214,18 +250,22 @@ class _LayerBlockExperimentPageState extends State<LayerBlockExperimentPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  _chip('A: Transform.scale', _modeA, () {
-                    setState(() => _modeA = true);
+                  _chip('A: Transform.scale', _mode == 0, () {
+                    setState(() => _mode = 0);
                   }),
-                  const SizedBox(width: 8),
-                  _chip('B: 实际尺寸', !_modeA, () {
-                    setState(() => _modeA = false);
+                  _chip('B: 实际尺寸', _mode == 1, () {
+                    setState(() => _mode = 1);
                   }),
-                  const SizedBox(width: 12),
+                  _chip('C: matrix 缩放', _mode == 2, () {
+                    setState(() => _mode = 2);
+                  }),
                   Text(
-                    'mode=${_modeA ? "A" : "B"}  scale=${_scale.toStringAsFixed(3)}',
+                    'mode=${const ["A", "B", "C"][_mode]}  scale=${_scale.toStringAsFixed(3)}',
                     style: const TextStyle(
                       color: Colors.amber,
                       fontSize: 13,
@@ -235,18 +275,16 @@ class _LayerBlockExperimentPageState extends State<LayerBlockExperimentPage> {
                 ],
               ),
               const SizedBox(height: 6),
-              Row(
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
                 children: [
                   // 其中 _pressedScale 就是上游的 78/56，便于直接对照
                   for (final s in [1.0, 1.2, _pressedScale, 1.5])
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: _chip('×${s.toStringAsFixed(3)}',
-                          (_scale - s).abs() < 1e-6, () {
-                        setState(() => _scale = s);
-                      }),
-                    ),
-                  const SizedBox(width: 6),
+                    _chip('×${s.toStringAsFixed(3)}', (_scale - s).abs() < 1e-6,
+                        () {
+                      setState(() => _scale = s);
+                    }),
                   _chip('折射开关', _refractionOn, () {
                     setState(() => _refractionOn = !_refractionOn);
                   }),
@@ -376,20 +414,55 @@ class _TestBackgroundPainter extends CustomPainter {
       Paint()..color = const Color(0xFF101014),
     );
 
-    // ① 细水平线（每 9px 一条，1px 粗）
+    // ⚠️ 上一版用**等距**网格是设计缺陷：折射位移接近整数个周期时，
+    //    结果与背景几乎一致，肉眼完全看不出，容易误判成「lens 没渲染」。
+    //    现在改成**非等距**细线 + 不规则图案，任何位移都会破坏对齐。
+
+    // ① 非等距细水平线（间距在 5~21px 间变化，1px 粗）
     final hLine = Paint()
       ..color = const Color(0xFF3AF0FF)
       ..strokeWidth = 1.0;
-    for (double y = 0; y < size.height; y += 9) {
+    var y = 0.0;
+    var hi = 0;
+    while (y < size.height) {
       canvas.drawLine(Offset(0, y), Offset(size.width, y), hLine);
+      y += 5.0 + ((hi * 7 + 3) % 17); // 非周期
+      hi++;
     }
 
-    // ② 细垂直线（每 13px 一条，1px 粗）
+    // ② 非等距细垂直线（间距在 4~23px 间变化，1px 粗）
     final vLine = Paint()
       ..color = const Color(0xFFFF4FD8)
       ..strokeWidth = 1.0;
-    for (double x = 0; x < size.width; x += 13) {
+    var x = 0.0;
+    var vi = 0;
+    while (x < size.width) {
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), vLine);
+      x += 4.0 + ((vi * 11 + 5) % 20); // 非周期
+      vi++;
+    }
+
+    // ③ 不规则多边形（判断形状是否被整体缩放/扭曲）
+    final poly = Path()
+      ..moveTo(size.width * 0.08, size.height * 0.30)
+      ..lineTo(size.width * 0.42, size.height * 0.26)
+      ..lineTo(size.width * 0.55, size.height * 0.36)
+      ..lineTo(size.width * 0.33, size.height * 0.44)
+      ..lineTo(size.width * 0.12, size.height * 0.40)
+      ..close();
+    canvas.drawPath(poly, Paint()..color = const Color(0xFFFF8A3D));
+
+    // ④ 大小不一的圆点（非周期排布）
+    final dot = Paint()..color = const Color(0xFF7CFF6B);
+    var di = 0;
+    for (var r = 0; r < 6; r++) {
+      for (var c = 0; c < 5; c++) {
+        di++;
+        final px = size.width * (0.10 + 0.19 * c) + ((di * 13) % 23) - 11;
+        final py = size.height * (0.72 + 0.045 * r) + ((di * 7) % 17) - 8;
+        final rad = 3.0 + ((di * 5) % 11); // 半径 3~13，大小不一
+        canvas.drawCircle(Offset(px, py), rad, dot);
+      }
     }
 
     // ③ 棋盘格块（便于观察是否只是被拉伸）
