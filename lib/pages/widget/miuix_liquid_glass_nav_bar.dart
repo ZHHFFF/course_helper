@@ -330,7 +330,7 @@ class _MiuixLiquidGlassNavigationBarState
     // 有/无 shader 两个版本的像素完全一致，即 shader 从未生效）。
     return ValueListenableBuilder<bool>(
       valueListenable: LiquidGlassShaderLibrary.ready,
-      builder: (context, _, __) => _buildBar(context),
+      builder: (context, isReady) => _buildBar(context),
     );
   }
 
