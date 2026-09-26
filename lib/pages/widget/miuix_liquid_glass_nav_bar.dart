@@ -324,6 +324,17 @@ class _MiuixLiquidGlassNavigationBarState
   @override
   Widget build(BuildContext context) {
     if (widget.items.isEmpty) return const SizedBox.shrink();
+
+    // ⚠️ 折射着色器是**异步**加载的。必须监听就绪事件并在就绪后重建 ——
+    // 否则底栏会永远停在降级模糊路径（实机 A/B 验证发现：不监听时
+    // 有/无 shader 两个版本的像素完全一致，即 shader 从未生效）。
+    return ValueListenableBuilder<bool>(
+      valueListenable: LiquidGlassShaderLibrary.ready,
+      builder: (context, _, __) => _buildBar(context),
+    );
+  }
+
+  Widget _buildBar(BuildContext context) {
     final theme = MiuixTheme.of(context);
     final dark = theme.colors.background.computeLuminance() < .5;
     final fontSize = MediaQuery.textScalerOf(context).scale(1) >= 1.6

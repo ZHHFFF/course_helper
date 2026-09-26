@@ -37,9 +37,20 @@
 
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
+
+import '../../utils/app_logger.dart';
+
 /// 全局 shader 库：负责 asset 加载与能力探测
+///
+/// ⚠️ **加载是异步的**，所以本类暴露 [ready] 这个 `ValueListenable`。
+/// 调用方**必须监听它**并在变化时重建 —— 否则底栏会在 program 就绪后
+/// 依然停在降级路径（这正是第一版实机验证暴露出的缺陷：
+/// A/B 对比像素完全一致，说明 shader 从未被应用）。
 class LiquidGlassShaderLibrary {
   LiquidGlassShaderLibrary._();
+
+  static const String _tag = 'LiquidGlass';
 
   /// 必须与 `pubspec.yaml` 的 `flutter: shaders:` 条目一致
   static const String assetKey = 'shaders/liquid_refract.frag';
@@ -48,10 +59,13 @@ class LiquidGlassShaderLibrary {
   static ui.FragmentProgram? _program;
   static Object? _loadError;
 
+  /// program 就绪状态。就绪后置 true，监听方据此重建以切到折射路径。
+  static final ValueNotifier<bool> ready = ValueNotifier<bool>(false);
+
   /// 当前渲染后端是否支持 `ImageFilter.shader`（仅 Impeller 为 true）
   static bool get isBackendSupported => ui.ImageFilter.isShaderFilterSupported;
 
-  /// program 是否已加载完成（异步，首帧可能还没好）
+  /// program 是否已加载完成
   static bool get isProgramLoaded => _program != null;
 
   /// 是否可以真正使用折射效果
@@ -62,23 +76,30 @@ class LiquidGlassShaderLibrary {
 
   /// 预加载 shader program（幂等，可在 `main()` 里提前调用）
   ///
-  /// ⚠️ 是异步的：调用后 `isAvailable` 不会立刻变 true。
-  /// 底栏在 program 就绪前会走降级路径，就绪后下一帧自动切换 —— 这是刻意的，
-  /// 避免为了等 shader 而阻塞首帧。
+  /// ⚠️ 异步：调用后 [isAvailable] 不会立刻变 true。
+  /// 底栏在就绪前走降级模糊，就绪后由 [ready] 通知重建切到折射 ——
+  /// 这样既不阻塞首帧，又不会永远停在降级路径。
   static void initialize() {
     if (_initCalled) return;
     _initCalled = true;
 
     // Skia 下 `ImageFilter.shader` 必然抛异常，连加载都不必做
-    if (!isBackendSupported) return;
+    if (!isBackendSupported) {
+      AppLogger.w(_tag, '后端不支持 ImageFilter.shader（非 Impeller），折射已禁用');
+      return;
+    }
 
+    AppLogger.i(_tag, '开始加载折射着色器：$assetKey');
     ui.FragmentProgram.fromAsset(assetKey).then(
       (ui.FragmentProgram program) {
         _program = program;
         _loadError = null;
+        AppLogger.i(_tag, '折射着色器加载完成，已启用');
+        ready.value = true;
       },
-      onError: (Object error, StackTrace _) {
+      onError: (Object error, StackTrace stack) {
         _loadError = error;
+        AppLogger.e(_tag, '折射着色器加载失败：$error\n$stack');
       },
     );
   }
