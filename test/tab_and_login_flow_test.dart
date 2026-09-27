@@ -203,18 +203,18 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('课程'), findsOneWidget);
-      expect(find.text('账号'), findsOneWidget);
-      expect(find.text('课件'), findsOneWidget);
-      expect(find.text('设置'), findsOneWidget);
+      // Lens shader input can contain a second, non-interactive text copy.
+      for (final label in ['课程', '账号', '课件', '设置']) {
+        expect(find.text(label), findsAtLeastNWidgets(1));
+      }
 
       // 点击切换到第二个 Tab (账号)
-      await tester.tap(find.text('账号'));
+      await tester.tap(find.text('账号').last);
       await tester.pumpAndSettle();
       expect(selected, equals(1));
 
       // 点击切换到第四个 Tab (设置)
-      await tester.tap(find.text('设置'));
+      await tester.tap(find.text('设置').last);
       await tester.pumpAndSettle();
       expect(selected, equals(3));
     });
