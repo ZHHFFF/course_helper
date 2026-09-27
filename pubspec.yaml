@@ -132,6 +132,7 @@ flutter:
     - shaders/liquid_refract_dispersion.frag
     # 对应上游 DefaultHighlightShaderString
     - shaders/liquid_highlight.frag
+    - shaders/liquid_icon_refract.frag
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

@@ -63,6 +63,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 
+import '../../utils/app_logger.dart';
+
 /// 弹簧参数（对应上游 `spring(dampingRatio, stiffness)`）
 class LiquidGlassSprings {
   const LiquidGlassSprings._();
@@ -171,8 +173,8 @@ class LiquidGlassNavController {
   int _index;
   int? _pointer;
   int _pressedIndex = -1;
-  bool _releasePending = false;
   bool _tapAnimating = false;
+  int _barSelectionEpoch = 0;
   double _targetValue;
 
   /// Flutter 的 VelocityTracker 需要指定设备类型，且没有 reset 方法 ——
@@ -236,22 +238,52 @@ class LiquidGlassNavController {
         .clamp(0, itemCount - 1);
   }
 
+  double _downFingerX = 0.0;
+  double _downIndicatorValue = 0.0;
+  bool _hasDragged = false;
+
+  /// 调试指标（用于量化跟手误差）
+  double debugPointerX = 0.0;
+  double debugIndicatorX = 0.0;
+  double debugError = 0.0;
+  double maxErrorSlow = 0.0;
+  double maxErrorFast = 0.0;
+  int debugSampleCount = 0;
+
+  double _indicatorPixelCenter(double val) {
+    if (tabWidth <= 0) return 0.0;
+    return rtl
+        ? 8.0 + (itemCount - 1 - val + 0.5) * tabWidth
+        : 8.0 + (val + 0.5) * tabWidth;
+  }
+
   /// 对应上游 `canDrag`
   bool _canDrag(double x) => x >= 0.0 && x <= barWidth;
 
-  // ── 指针事件（对应上游 inspectDragGestures）────────────────────────────
+  // ── 指针事件（两阶段交互模型）────────────────────────────────────────────
 
   void handlePointerDown({required int pointer, required double x}) {
     if (_pointer != null) return;
     _pointer = pointer;
+    _downFingerX = x;
+    _downIndicatorValue = _value.value;
+    _hasDragged = false;
     _resetVelocityTracking();
 
     _pressedIndex = itemAt(x);
     onPointerStateChanged();
 
-    // 上游 onDragStarted：先 updateValue，再 press()
-    updateValue(itemAt(x).toDouble());
+    // 按下瞬间：严格保持当前 lens 位置，不能将位置重置为 selectedIndex 或手指位置
+    // 只启动 pressProgress 与 scale 动画
     press();
+
+    // 重置调试指标
+    debugPointerX = x;
+    debugIndicatorX = _indicatorPixelCenter(_value.value);
+    debugError = 0.0;
+    maxErrorSlow = 0.0;
+    maxErrorFast = 0.0;
+    debugSampleCount = 0;
   }
 
   void handlePointerMove({
@@ -260,16 +292,54 @@ class LiquidGlassNavController {
     required double previousX,
   }) {
     if (_pointer != pointer) return;
-    // 上游：当前与上一帧都在栏内才处理
     if (!_canDrag(x) || !_canDrag(previousX)) return;
+    if (tabWidth <= 0) return;
 
-    final dragAmount = x - previousX;
-    if (tabWidth <= 0 || dragAmount == 0) return;
+    final totalDeltaX = x - _downFingerX;
+    if (!_hasDragged && totalDeltaX.abs() > 4.0) {
+      _hasDragged = true;
+    }
 
-    // 上游 onDrag：只更新位置，**不回调 onSelect**（切页推迟到松手）
-    final next = (_targetValue + dragAmount / tabWidth * (rtl ? -1.0 : 1.0))
-        .clamp(_valueRangeStart, _valueRangeEnd);
-    updateValue(next);
+    if (_hasDragged) {
+      final deltaVal = (totalDeltaX / tabWidth) * (rtl ? -1.0 : 1.0);
+      final rawVal = _downIndicatorValue + deltaVal;
+
+      final boundedVal = rawVal.clamp(_valueRangeStart, _valueRangeEnd);
+
+      // 【核心改动：两阶段模型第 1 阶段（手指按住并拖动期间）】
+      // 目标：indicator 几乎直接跟随手指，严禁使用普通 Spring 作为主要追踪机制。
+      // 使用 snapTo 零延迟直接更新 Lens 当前位置，彻底消除二阶 Spring 滞后！
+      _value.snapTo(boundedVal);
+      _targetValue = boundedVal;
+
+      // 同步更新 velocity tracking
+      _updateVelocity();
+
+      // 计算调试指标：pointerX, indicatorX, error
+      debugPointerX = x;
+      debugIndicatorX = _indicatorPixelCenter(boundedVal);
+      final idealIndicatorX =
+          _indicatorPixelCenter(_downIndicatorValue) + totalDeltaX * (rtl ? -1.0 : 1.0);
+      debugError = (idealIndicatorX - debugIndicatorX).abs();
+
+      final vAbs = _velocity.value.abs();
+      if (vAbs < 1.0) {
+        if (debugError > maxErrorSlow) maxErrorSlow = debugError;
+      } else {
+        if (debugError > maxErrorFast) maxErrorFast = debugError;
+      }
+      debugSampleCount++;
+      if (debugSampleCount % 4 == 0) {
+        // ignore: avoid_print
+        print(
+          '[LiquidLag] DRAG MOVE #$debugSampleCount | pointerX: ${x.toStringAsFixed(1)} | indicatorX: ${debugIndicatorX.toStringAsFixed(1)} | error: ${debugError.toStringAsFixed(2)}px | vel: ${_velocity.value.toStringAsFixed(2)} | maxSlow: ${maxErrorSlow.toStringAsFixed(2)}px | maxFast: ${maxErrorFast.toStringAsFixed(2)}px',
+        );
+        AppLogger.d(
+          'LiquidLag',
+          'DRAG MOVE #$debugSampleCount | pointerX: ${x.toStringAsFixed(1)} | indicatorX: ${debugIndicatorX.toStringAsFixed(1)} | error: ${debugError.toStringAsFixed(2)}px | vel: ${_velocity.value.toStringAsFixed(2)} | maxSlow: ${maxErrorSlow.toStringAsFixed(2)}px | maxFast: ${maxErrorFast.toStringAsFixed(2)}px',
+        );
+      }
+    }
 
     final item = itemAt(x);
     if (item != _pressedIndex) {
@@ -281,17 +351,56 @@ class LiquidGlassNavController {
   void handlePointerUp(int pointer) {
     if (_pointer != pointer) return;
     _pointer = null;
+    final pressed = _pressedIndex;
     _pressedIndex = -1;
     onPointerStateChanged();
 
-    // 上游 onDragStopped：**这里才**决定切页
-    final target = _targetValue.round().clamp(0, itemCount - 1);
-    if (_index != target) {
-      _index = target;
-      onSelect(target);
+    if (_hasDragged) {
+      // 【核心改动：两阶段模型第 2 阶段（手指松开以后）】
+      // current position + release velocity → spring → target tab
+      final releasePxPerSec = _velocityTracker.getVelocity().pixelsPerSecond.dx;
+      final releaseTabPerSec =
+          (tabWidth > 0 ? (releasePxPerSec / tabWidth) : 0.0) * (rtl ? -1.0 : 1.0);
+
+      // 结合惯性速度预测目标项（约 120ms 动量前瞻）
+      final momentum = releaseTabPerSec * 0.12;
+      final projected = (_value.value + momentum).round().clamp(0, itemCount - 1);
+
+      final target = projected;
+      _targetValue = target.toDouble();
+      _holdPageSyncForBarSelection();
+      if (_index != target) {
+        _index = target;
+        onSelect(target);
+      }
+
+      // ignore: avoid_print
+      print(
+        '[LiquidLag] DRAG RELEASE -> target: $target | from: ${_value.value.toStringAsFixed(3)} | vel: ${releaseTabPerSec.toStringAsFixed(2)} tabs/s | maxSlowErr: ${maxErrorSlow.toStringAsFixed(2)}px | maxFastErr: ${maxErrorFast.toStringAsFixed(2)}px',
+      );
+      AppLogger.i(
+        'LiquidLag',
+        'DRAG RELEASE -> target: $target | from: ${_value.value.toStringAsFixed(3)} | vel: ${releaseTabPerSec.toStringAsFixed(2)} tabs/s | maxSlowErr: ${maxErrorSlow.toStringAsFixed(2)}px | maxFastErr: ${maxErrorFast.toStringAsFixed(2)}px',
+      );
+
+      // 松手后由高刚度弹簧带着初速度落位目标项
+      _value.controller.animateWith(
+        SpringSimulation(
+          LiquidGlassSprings.position,
+          _value.value,
+          _targetValue,
+          releaseTabPerSec.clamp(-25.0, 25.0),
+        ),
+      );
+      release();
+    } else {
+      // 未发生拖拽（纯点击）：通过 animateToValue 平滑滑向点击项
+      if (pressed >= 0 && pressed < itemCount && pressed != _index) {
+        animateToValue(pressed.toDouble());
+      } else {
+        release();
+      }
     }
-    updateValue(target.toDouble());
-    release();
   }
 
   void handlePointerCancel(int pointer) {
@@ -299,8 +408,16 @@ class LiquidGlassNavController {
     _pointer = null;
     _pressedIndex = -1;
     onPointerStateChanged();
-    // 上游 onDragCancelled：回到当前选中项
-    updateValue(_index.toDouble());
+    // 取消时回到当前选中项
+    _targetValue = _index.toDouble();
+    _value.controller.animateWith(
+      SpringSimulation(
+        LiquidGlassSprings.position,
+        _value.value,
+        _targetValue,
+        0.0,
+      ),
+    );
     release();
   }
 
@@ -308,77 +425,65 @@ class LiquidGlassNavController {
 
   /// 按下：三个动画并行推进
   void press() {
-    _releasePending = false;
     _resetVelocityTracking();
     _press.animateTo(1.0, LiquidGlassSprings.pressProgress);
     _scaleX.animateTo(_pressedScale, LiquidGlassSprings.scaleX);
     _scaleY.animateTo(_pressedScale, LiquidGlassSprings.scaleY);
   }
 
-  /// 松手：**先等位置收敛**，再收起按压与缩放
-  ///
-  /// ⚠️ 这里**不能**用 `AnimationStatus.completed` 监听。踩过的坑：
-  /// 控制器若已经处于 `completed` 状态、而新的位置动画又立即结束
-  /// （目标 == 当前值），状态**没有变化就不会发通知** →
-  /// `_performRelease()` 永远不执行 → 缩放卡在按压值不回落
-  /// （实机表现：点一次底栏后，指示器永久停留在 1.393x 的放大态）。
-  /// 改用 `animateWith` 返回的 `TickerFuture`，它无论正常结束还是被打断
-  /// 都会回调。
+  /// 松手：位置与按压/缩放动画彻底解耦，立即独立回弹！
   void release() {
-    _releasePending = true;
-    final pending = _valueFuture;
-    if (pending == null || !_value.isAnimating) {
-      _performRelease();
-      return;
-    }
-    pending.whenComplete(() {
-      // 若期间又开始了新的位置动画，说明还在拖，等下一次松手
-      if (_releasePending && !_value.isAnimating) _performRelease();
-    });
-  }
-
-  void _performRelease() {
-    if (!_releasePending) return;
-    _releasePending = false;
+    // 松手后的位移弹簧已拿到 release velocity；视觉形变不能停在最后一帧速度。
+    _velocity.snapTo(0.0);
     _press.animateTo(0.0, LiquidGlassSprings.pressProgress);
     _scaleX.animateTo(_initialScale, LiquidGlassSprings.scaleX);
     _scaleY.animateTo(_initialScale, LiquidGlassSprings.scaleY);
   }
 
-  /// 位置动画的 TickerFuture（release 用它判断「位置已收敛」）
-  TickerFuture? _valueFuture;
-
-  /// 实时更新位置（对应上游 updateValue）
-  void updateValue(double v) {
-    _targetValue = v.clamp(_valueRangeStart, _valueRangeEnd);
-    if (disabledMotion) {
-      _value.snapTo(_targetValue);
-      return;
-    }
-    _valueFuture = _value.controller.animateWith(
+  /// 点击切页：位置 spring 独立飞向目标，按压与缩放立即独立回弹！
+  void animateToValue(double v) {
+    final target = v.clamp(_valueRangeStart, _valueRangeEnd);
+    _holdPageSyncForBarSelection();
+    _index = target.round().clamp(0, itemCount - 1);
+    onSelect(_index);
+    _targetValue = target;
+    _value.controller.animateWith(
       SpringSimulation(
         LiquidGlassSprings.position,
         _value.value,
         _targetValue,
-        _value.controller.velocity,
+        0.0,
       ),
     );
-    _updateVelocity();
-  }
-
-  /// 点击切页：press → 移动 → 收力（对应上游 animateToValue）
-  void animateToValue(double v) {
-    final target = v.clamp(_valueRangeStart, _valueRangeEnd);
-    _tapAnimating = true;
-    _index = target.round().clamp(0, itemCount - 1);
-    onSelect(_index);
-    press();
-    updateValue(target);
     _velocity.snapTo(0.0);
     release();
-    Future<void>.delayed(const Duration(milliseconds: 320), () {
-      _tapAnimating = false;
+  }
+
+  // PageView 从旧页滚到新页时不能把已经跟手到目标附近的 Lens 拉回旧位置。
+  void _holdPageSyncForBarSelection() {
+    _tapAnimating = true;
+    final epoch = ++_barSelectionEpoch;
+    Future<void>.delayed(const Duration(milliseconds: 400), () {
+      if (_barSelectionEpoch == epoch) _tapAnimating = false;
     });
+  }
+
+  /// 外部状态更新（如外部直接设置 selectedIndex）
+  void updateValue(double v) {
+    final target = v.clamp(_valueRangeStart, _valueRangeEnd);
+    _targetValue = target;
+    if (disabledMotion) {
+      _value.snapTo(_targetValue);
+      return;
+    }
+    _value.controller.animateWith(
+      SpringSimulation(
+        LiquidGlassSprings.position,
+        _value.value,
+        _targetValue,
+        0.0,
+      ),
+    );
   }
 
   /// 用位置序列喂 VelocityTracker 得平滑速度（对应上游 updateVelocity）
@@ -387,10 +492,15 @@ class LiquidGlassNavController {
         (_valueRangeEnd - _valueRangeStart).clamp(1e-6, double.infinity);
     _velocityTracker.addPosition(
       Duration(milliseconds: _startMark.elapsedMilliseconds),
-      Offset(_value.value, 0.0),
+      Offset(_value.value * (tabWidth > 0 ? tabWidth : 1.0), 0.0),
     );
-    final v = _velocityTracker.getVelocity().pixelsPerSecond.dx / span;
-    _velocity.snapTo(v.clamp(-8.0, 8.0));
+    final pxPerSec = _velocityTracker.getVelocity().pixelsPerSecond.dx;
+    final tabPerSec = tabWidth > 0 ? (pxPerSec / tabWidth) : 0.0;
+    final normalizedVel = tabPerSec / span;
+    _velocity.animateTo(
+      normalizedVel.clamp(-6.0, 6.0),
+      LiquidGlassSprings.velocity,
+    );
   }
 
   /// 外部（页面滑动）驱动位置
@@ -401,7 +511,10 @@ class LiquidGlassNavController {
   }
 
   void updateSelectedIndex(int index) => _index = index;
-  void cancelTapAnimation() => _tapAnimating = false;
+  void cancelTapAnimation() {
+    ++_barSelectionEpoch;
+    _tapAnimating = false;
+  }
 
   /// 显示 / 隐藏
   void setVisible(bool visible) {

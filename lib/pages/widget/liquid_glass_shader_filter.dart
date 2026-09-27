@@ -53,22 +53,28 @@ class LiquidGlassShaderLibrary {
   static const String plainAssetKey = 'shaders/liquid_refract.frag';
 
   /// 折射 + 7 抽色散 —— 对应上游 `RoundedRectRefractionWithDispersionShaderString`
-  static const String dispersionAssetKey = 'shaders/liquid_refract_dispersion.frag';
+  static const String dispersionAssetKey =
+      'shaders/liquid_refract_dispersion.frag';
 
   /// 方向性高光 —— 对应上游 `DefaultHighlightShaderString`
   static const String highlightAssetKey = 'shaders/liquid_highlight.frag';
+
+  static const String iconRefractionAssetKey =
+      'shaders/liquid_icon_refract.frag';
 
   static bool _initCalled = false;
   static ui.FragmentProgram? _plain;
   static ui.FragmentProgram? _dispersion;
   static ui.FragmentProgram? _highlight;
+  static ui.FragmentProgram? _iconRefraction;
   static Object? _loadError;
 
-  /// program 就绪状态。就绪后置 true，监听方据此重建以切到折射路径。
+  /// 任一 program 加载完成都触发重建，避免 plain 比 dispersion 先完成时
+  /// 指示器永久停留在无折射路径。
   ///
   /// ⚠️ 加载是异步的，**调用方必须监听** —— 否则底栏会在 program 就绪后
   /// 依然停在降级路径（实机 A/B 验证曾因此误判为「shader 从未生效」）。
-  static final ValueNotifier<bool> ready = ValueNotifier<bool>(false);
+  static final ValueNotifier<int> revision = ValueNotifier<int>(0);
 
   /// 当前渲染后端是否支持 `ImageFilter.shader`（仅 Impeller 为 true）
   static bool get isBackendSupported => ui.ImageFilter.isShaderFilterSupported;
@@ -96,11 +102,17 @@ class LiquidGlassShaderLibrary {
       return;
     }
 
-    _load(dispersionAssetKey, (p) => _dispersion = p);
+    _load(dispersionAssetKey, (p) {
+      _dispersion = p;
+      AppLogger.i(_tag, '色散折射着色器加载完成');
+    });
+    _load(iconRefractionAssetKey, (p) {
+      _iconRefraction = p;
+      AppLogger.i(_tag, '图标边缘折射着色器加载完成');
+    });
     _load(plainAssetKey, (p) {
       _plain = p;
       AppLogger.i(_tag, '折射着色器加载完成，已启用');
-      ready.value = true;
     });
   }
 
@@ -109,6 +121,7 @@ class LiquidGlassShaderLibrary {
       (ui.FragmentProgram program) {
         onOk(program);
         _loadError = null;
+        revision.value++;
       },
       onError: (Object error, StackTrace stack) {
         _loadError = error;
@@ -122,7 +135,11 @@ class LiquidGlassShaderLibrary {
       (dispersion ? _dispersion : _plain)?.fragmentShader();
 
   /// 供高光绘制取用；外部不应直接调用
-  static ui.FragmentShader? newHighlightShader() => _highlight?.fragmentShader();
+  static ui.FragmentShader? newHighlightShader() =>
+      _highlight?.fragmentShader();
+
+  static ui.FragmentShader? newIconRefractionShader() =>
+      _iconRefraction?.fragmentShader();
 }
 
 /// 一次折射渲染所需的参数（也是复用缓存的键）
@@ -262,4 +279,58 @@ class LiquidGlassRefraction {
 
   /// 必须在 `State.dispose()` 里调用
   void dispose() => _release();
+}
+
+/// 对完整图标行取样；同一个 shader 同时折射并裁切胶囊。
+class LiquidGlassIconRefraction {
+  ui.FragmentShader? _shader;
+  ui.ImageFilter? _filter;
+  ui.Rect? _rect;
+  double? _rowWidth;
+  double? _rowHeight;
+  double? _height;
+  double? _amount;
+
+  ui.ImageFilter? resolve({
+    required ui.Rect lens,
+    required double rowWidth,
+    required double rowHeight,
+    required double refractionHeight,
+    required double refractionAmount,
+  }) {
+    if (!LiquidGlassShaderLibrary.isBackendSupported ||
+        rowWidth <= 0 ||
+        rowHeight <= 0) {
+      return null;
+    }
+    if (_filter != null &&
+        _rect == lens &&
+        _rowWidth == rowWidth &&
+        _rowHeight == rowHeight &&
+        _height == refractionHeight &&
+        _amount == refractionAmount) {
+      return _filter;
+    }
+    final shader = LiquidGlassShaderLibrary.newIconRefractionShader();
+    if (shader == null) return null;
+    // 0..1 的纹理尺寸由引擎填写；矩形按输入行的实际布局范围归一化。
+    shader
+      ..setFloat(2, lens.left / rowWidth)
+      ..setFloat(3, lens.top / rowHeight)
+      ..setFloat(4, lens.width / rowWidth)
+      ..setFloat(5, lens.height / rowHeight)
+      ..setFloat(6, refractionHeight)
+      ..setFloat(7, -refractionAmount);
+    _shader?.dispose();
+    _shader = shader;
+    _filter = ui.ImageFilter.shader(shader);
+    _rect = lens;
+    _rowWidth = rowWidth;
+    _rowHeight = rowHeight;
+    _height = refractionHeight;
+    _amount = refractionAmount;
+    return _filter;
+  }
+
+  void dispose() => _shader?.dispose();
 }

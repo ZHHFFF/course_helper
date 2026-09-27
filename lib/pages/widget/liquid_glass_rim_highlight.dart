@@ -98,6 +98,7 @@ class LiquidGlassRimHighlightShader {
 class LiquidGlassRimHighlightPainter extends CustomPainter {
   const LiquidGlassRimHighlightPainter({
     required this.shaderHolder,
+    required this.devicePixelRatio,
     this.width = 0.5,
     this.blurRadius = 0.25,
     this.alpha = 1.0,
@@ -107,6 +108,7 @@ class LiquidGlassRimHighlightPainter extends CustomPainter {
   });
 
   final LiquidGlassRimHighlightShader shaderHolder;
+  final double devicePixelRatio;
 
   /// 对应上游 `Highlight.width`（默认 0.5dp）
   final double width;
@@ -138,7 +140,7 @@ class LiquidGlassRimHighlightPainter extends CustomPainter {
     );
     final cornerRadii = <double>[radius, radius, radius, radius];
 
-    // 上游：color 传给 shader 时 alpha 置 1，整体 alpha 由图层承担
+    // Shader 使用不透明 RGB；颜色 alpha 与动画 alpha 在合成时相乘。
     final shader = shaderHolder.configure(
       size: size,
       cornerRadii: cornerRadii,
@@ -152,7 +154,8 @@ class LiquidGlassRimHighlightPainter extends CustomPainter {
     // ⚠️ 反直觉但必须照搬：0.5dp @ dpr3.5 → ceil(1.75)=2 → **4px**
     //    （`ceil` 是 num 的方法，dart:math 没有顶层 ceil）
     final clamped = math.min(width, size.shortestSide / 2.0);
-    final strokeWidth = clamped.ceilToDouble() * 2.0;
+    final strokeWidth =
+        (clamped * devicePixelRatio).ceilToDouble() * 2.0 / devicePixelRatio;
 
     final paint = Paint()
       ..style = PaintingStyle.stroke
@@ -166,7 +169,7 @@ class LiquidGlassRimHighlightPainter extends CustomPainter {
 
     // 上游把整层设成 alpha + BlendMode.Plus 再合成
     final layerPaint = Paint()
-      ..color = Color.fromRGBO(0, 0, 0, alpha.clamp(0.0, 1.0))
+      ..color = Color.fromRGBO(0, 0, 0, (alpha * color.a).clamp(0.0, 1.0))
       ..blendMode = BlendMode.plus;
 
     canvas.saveLayer(Offset.zero & size, layerPaint);
@@ -178,6 +181,7 @@ class LiquidGlassRimHighlightPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(LiquidGlassRimHighlightPainter old) =>
+      old.devicePixelRatio != devicePixelRatio ||
       old.width != width ||
       old.blurRadius != blurRadius ||
       old.alpha != alpha ||
