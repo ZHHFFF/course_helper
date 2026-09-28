@@ -375,7 +375,7 @@ void main() {
 
       // 2. 模糊
       expect(find.text('模糊'), findsOneWidget);
-      expect(find.text('啟用頂欄和底欄的模糊效果'), findsOneWidget);
+      expect(find.text('關閉後頂欄與底欄使用實心背景'), findsOneWidget);
 
       // 3. 懸浮底欄
       expect(find.text('懸浮底欄'), findsOneWidget);
@@ -383,7 +383,7 @@ void main() {
 
       // 4. 液態玻璃
       expect(find.text('液態玻璃'), findsOneWidget);
-      expect(find.text('啟用懸浮底欄的液態玻璃效果'), findsOneWidget);
+      expect(find.text('控制懸浮底欄 Lens，與模糊設定獨立'), findsOneWidget);
 
       // 5. 預測性返回手勢
       expect(find.text('預測性返回手勢'), findsOneWidget);
