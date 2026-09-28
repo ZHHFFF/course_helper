@@ -9,6 +9,7 @@ import '../models/user.dart';
 import '../session/account.dart';
 import '../utils/encrypt.dart';
 import '../platform.dart';
+import '../setting/theme_setting.dart';
 
 /// 登录成功处理
 ///
@@ -887,7 +888,7 @@ class _LoginPageState extends State<LoginPage> {
         topBar: MiuixTopAppBar(
           title: title,
           largeTitle: title,
-          blurred: true,
+          blurred: ThemeSetting.blurOf(context),
           // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
           // 与底栏是同一套玻璃口径（见 widget/miuix_glass_spec.dart）。
           scrollBehavior: _topBarBehavior,

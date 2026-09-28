@@ -9,6 +9,7 @@ import '../widget/log_viewer.dart';
 import '../widget/miuix_nav_metrics.dart';
 import 'about.dart';
 import 'appearance.dart';
+import '../../setting/theme_setting.dart';
 
 /// 「设置」Tab
 ///
@@ -79,7 +80,7 @@ class _SettingsPageState extends State<SettingsPage> {
       topBar: MiuixTopAppBar(
         title: '设置',
         largeTitle: '设置',
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         scrollBehavior: _topBarBehavior,
       ),
       // 底栏是全局叠加的，不在本页脚手架里。透明占位一次解决两件事：

@@ -33,6 +33,15 @@ class ThemeSetting {
   static final ValueNotifier<bool> blurEnabled =
       ValueNotifier<bool>(true);
 
+  /// 讓所有頁面的頂欄在模糊開關變更時即時重建。
+  static Widget blurScope(Widget child) =>
+      _BlurSettingScope(notifier: blurEnabled, child: child);
+
+  static bool blurOf(BuildContext context) {
+    context.dependOnInheritedWidgetOfExactType<_BlurSettingScope>();
+    return blurEnabled.value;
+  }
+
   /// 悬浮底栏开关。默认关闭 (false，保持传统 Miuix 底栏)，开启后切换为悬浮胶囊底栏
   static final ValueNotifier<bool> floatingNavBar =
       ValueNotifier<bool>(false);
@@ -135,4 +144,8 @@ class ThemeSetting {
         return ThemeMode.system;
     }
   }
+}
+
+class _BlurSettingScope extends InheritedNotifier<ValueNotifier<bool>> {
+  const _BlurSettingScope({required super.notifier, required super.child});
 }

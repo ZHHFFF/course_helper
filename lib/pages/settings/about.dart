@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_miuix/miuix.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../setting/theme_setting.dart';
 
 /// 「关于」页
 ///
@@ -32,7 +33,7 @@ class AboutPage extends StatelessWidget {
     return MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: '关于',
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         // ⚠️ `MiuixTopAppBar` 没有 `onBack`，返回键要自己塞 `navigationIcon`
         navigationIcon: MiuixIconButton(
           onPressed: () => Navigator.of(context).maybePop(),

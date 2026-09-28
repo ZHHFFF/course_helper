@@ -88,7 +88,7 @@ class _AppearanceSettingsPageState extends State<AppearanceSettingsPage> {
                           // 2. 模糊
                           MiuixSwitchPreference(
                             title: '模糊',
-                            summary: '啟用頂欄和底欄的模糊效果',
+                            summary: '關閉後頂欄與底欄使用實心背景',
                             value: blurEnabled,
                             onChanged: (v) => ThemeSetting.setBlurEnabled(v),
                           ),
@@ -115,7 +115,7 @@ class _AppearanceSettingsPageState extends State<AppearanceSettingsPage> {
                                 builder: (context, liquidGlass, _) =>
                                     MiuixSwitchPreference(
                                   title: '液態玻璃',
-                                  summary: '啟用懸浮底欄的液態玻璃效果',
+                                  summary: '控制懸浮底欄 Lens，與模糊設定獨立',
                                   value: liquidGlass,
                                   enabled: floating,
                                   onChanged: (v) =>

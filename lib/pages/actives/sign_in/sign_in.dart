@@ -21,6 +21,7 @@ import 'code.dart';
 import 'qrcode.dart';
 import 'location.dart';
 import 'attend_list.dart';
+import '../../../setting/theme_setting.dart';
 
 
 class SignParams {
@@ -396,7 +397,7 @@ class SignInPageState extends State<SignInPage> {
       return MiuixScaffold(
         topBar: MiuixTopAppBar(
           title: widget.active.name,
-          blurred: true,
+          blurred: ThemeSetting.blurOf(context),
           navigationIcon: MiuixIconButton(
             onPressed: () => Navigator.of(context).maybePop(),
             child: const Icon(Icons.arrow_back_ios_new, size: 20),
@@ -411,7 +412,7 @@ class SignInPageState extends State<SignInPage> {
     return MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: widget.active.name,
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         navigationIcon: MiuixIconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           child: const Icon(Icons.arrow_back_ios_new, size: 20),
@@ -883,7 +884,7 @@ class SignLocationUi {
         builder: (context) => MiuixScaffold(
           topBar: MiuixTopAppBar(
             title: '选择签到位置',
-            blurred: true,
+            blurred: ThemeSetting.blurOf(context),
             navigationIcon: MiuixIconButton(
               onPressed: () => Navigator.of(context).maybePop(),
               child: const Icon(Icons.arrow_back_ios_new, size: 20),

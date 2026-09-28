@@ -47,6 +47,7 @@ import '../courses/content.dart';
 import '../presentation.dart';
 import '../widget/miuix_nav_metrics.dart';
 import 'viewer.dart';
+import '../../setting/theme_setting.dart';
 
 /// 课件页当前所在层
 enum _Stage { courseList, pptList, viewer }
@@ -712,6 +713,9 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
   /// 逐层退回（viewer → pptList → courseList）
   void _goBack() {
+    if (_stage == _Stage.viewer && _viewerKey.currentState?.exitSinglePage() == true) {
+      return;
+    }
     setState(() {
       switch (_stage) {
         case _Stage.viewer:
@@ -757,7 +761,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
           title: _topBarTitle,
           // 大标题只在顶层出现；内层标题可能很长（课程名），用小标题即可
           largeTitle: _stage == _Stage.courseList ? '课件' : null,
-          blurred: true,
+          blurred: ThemeSetting.blurOf(context),
           scrollBehavior: _topBarBehavior,
           // ⚠️ `MiuixTopAppBar` 没有 `onBack`，返回键自己塞 `navigationIcon`
           navigationIcon: _stage == _Stage.courseList
@@ -851,6 +855,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
           lessonId: ppt.lessonId,
           presentationId: ppt.presentationId,
           title: ppt.displayTitle,
+          topInset: _topBarInset,
         );
     }
   }

@@ -9,6 +9,7 @@ import '../../../models/active.dart';
 import '../../../session/account.dart';
 import '../widget/accounts_selector.dart';
 import '../widget/avatar.dart';
+import '../../setting/theme_setting.dart';
 
 class TopicDiscussPage extends StatefulWidget {
   final Active active;
@@ -435,7 +436,7 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
     return MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: '主题讨论',
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         navigationIcon: MiuixIconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           child: const Icon(Icons.arrow_back_ios_new, size: 20),

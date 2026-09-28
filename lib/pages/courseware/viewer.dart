@@ -37,6 +37,7 @@ class CoursewareViewer extends StatefulWidget {
     required this.lessonId,
     required this.presentationId,
     required this.title,
+    required this.topInset,
   });
 
   /// 缓存目录身份（`lessons/<lessonId>/`）
@@ -46,6 +47,7 @@ class CoursewareViewer extends StatefulWidget {
 
   /// 导出 PDF 时的文件名主体
   final String title;
+  final double topInset;
 
   @override
   State<CoursewareViewer> createState() => CoursewareViewerState();
@@ -55,7 +57,12 @@ class CoursewareViewerState extends State<CoursewareViewer> {
   static const String _tag = 'CoursewareViewer';
 
   final PageController _pageController = PageController();
+  final ScrollController _listController = ScrollController();
   int _index = 0;
+  bool _singlePage = false;
+  bool _zoomed = false;
+  double _listOffset = 0;
+  int _openedIndex = 0;
   bool _exporting = false;
   late Future<Presentation?> _future;
   Presentation? _cachedPresentation;
@@ -71,7 +78,31 @@ class CoursewareViewerState extends State<CoursewareViewer> {
   @override
   void dispose() {
     _pageController.dispose();
+    _listController.dispose();
     super.dispose();
+  }
+
+  bool exitSinglePage() {
+    if (!_singlePage) return false;
+    if (_index != _openedIndex && _cachedPresentation != null) {
+      final presentation = _cachedPresentation!;
+      final ratio = presentation.width > 0 && presentation.height > 0
+          ? presentation.width / presentation.height : 4 / 3;
+      _listOffset = widget.topInset +
+          _index * (MediaQuery.sizeOf(context).width / ratio + 10);
+    }
+    setState(() {
+      _singlePage = false;
+      _zoomed = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _listController.hasClients) {
+        _listController.jumpTo(
+          _listOffset.clamp(0.0, _listController.position.maxScrollExtent),
+        );
+      }
+    });
+    return true;
   }
 
   /// 供外部顶栏 actions 调用的全屏入口
@@ -151,128 +182,81 @@ class CoursewareViewerState extends State<CoursewareViewer> {
   }
 
   Widget _buildViewer(BuildContext context, Presentation presentation) {
-    final colors = MiuixTheme.of(context).colors;
     final total = presentation.slides.length;
+    if (_singlePage) {
+      return Padding(
+        padding: EdgeInsets.only(
+          top: widget.topInset,
+          bottom: miuixNavBarOccupied(context),
+        ),
+        child: Stack(
+          children: [
+            PageView.builder(
+              controller: _pageController,
+              physics: _zoomed ? const NeverScrollableScrollPhysics() : null,
+              itemCount: total,
+              onPageChanged: (i) => setState(() {
+                _index = i;
+                _zoomed = false;
+              }),
+              itemBuilder: (context, i) => _ZoomableSlide(
+                key: ValueKey(i),
+                onZoomChanged: (zoomed) {
+                  if (i == _index && _zoomed != zoomed) {
+                    setState(() => _zoomed = zoomed);
+                  }
+                },
+                child: _buildSlide(context, presentation.slides[i]),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 16,
+              child: Text('${_index + 1} / $total'),
+            ),
+          ],
+        ),
+      );
+    }
 
-    return Column(
-      children: [
-        Expanded(
-          child: Stack(
-            children: [
-              PageView.builder(
-                controller: _pageController,
-                itemCount: total,
-                onPageChanged: (i) => setState(() => _index = i),
-                itemBuilder: (context, i) => _buildSlide(context, presentation.slides[i]),
-              ),
-              // 上一页箭头微件
-              if (_index > 0)
-                Positioned(
-                  left: 10,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(
-                    child: Material(
-                      color: Colors.black26,
-                      shape: const CircleBorder(),
-                      child: InkWell(
-                        customBorder: const CircleBorder(),
-                        onTap: () => _pageController.previousPage(
-                          duration: const Duration(milliseconds: 250),
-                          curve: Curves.easeOutCubic,
-                        ),
-                        child: const Padding(
-                          padding: EdgeInsets.all(8),
-                          child: Icon(Icons.chevron_left, color: Colors.white, size: 28),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              // 下一页箭头微件
-              if (_index < total - 1)
-                Positioned(
-                  right: 10,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(
-                    child: Material(
-                      color: Colors.black26,
-                      shape: const CircleBorder(),
-                      child: InkWell(
-                        customBorder: const CircleBorder(),
-                        onTap: () => _pageController.nextPage(
-                          duration: const Duration(milliseconds: 250),
-                          curve: Curves.easeOutCubic,
-                        ),
-                        child: const Padding(
-                          padding: EdgeInsets.all(8),
-                          child: Icon(Icons.chevron_right, color: Colors.white, size: 28),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-            ],
+    return LayoutBuilder(builder: (context, constraints) {
+      final width = constraints.maxWidth;
+      final ratio = presentation.width > 0 && presentation.height > 0
+          ? presentation.width / presentation.height
+          : 4 / 3;
+      final itemHeight = width / ratio + 10;
+      return ListView.builder(
+        controller: _listController,
+        padding: EdgeInsets.only(
+          top: widget.topInset,
+          bottom: miuixNavBarOccupied(context) + 12,
+        ),
+        itemExtent: itemHeight,
+        itemCount: total,
+        itemBuilder: (context, i) => Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: GestureDetector(
+            onTap: () {
+              _listOffset = _listController.offset;
+              _openedIndex = i;
+              setState(() {
+                _index = i;
+                _singlePage = true;
+              });
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && _pageController.hasClients) {
+                  _pageController.jumpToPage(i);
+                }
+              });
+            },
+            child: AspectRatio(
+              aspectRatio: ratio,
+              child: _buildSlide(context, presentation.slides[i]),
+            ),
           ),
         ),
-        // 底部操作条：必须显式给底部叠加 miuixNavBarOccupied(context)，
-        // 彻底解决玻璃底栏遮挡导致的「转换为 PDF 的按钮消失」问题。
-        Container(
-          padding: EdgeInsets.fromLTRB(
-            16,
-            10,
-            16,
-            10 + miuixNavBarOccupied(context),
-          ),
-          decoration: BoxDecoration(
-            color: colors.surfaceContainer,
-            border: Border(top: BorderSide(color: colors.dividerLine, width: .5)),
-          ),
-          child: Row(
-            children: [
-              MiuixText(
-                '${_index + 1} / $total',
-                fontSize: 14,
-                color: colors.onSurfaceVariantSummary,
-              ),
-              const Spacer(),
-              MiuixButton(
-                onPressed: () => _openFullscreen(presentation),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.fullscreen, size: 16),
-                    SizedBox(width: 4),
-                    MiuixText('全屏横屏'),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              MiuixButton(
-                onPressed: _exporting ? null : () => _exportPdf(presentation),
-                colors: MiuixButtonDefaults.buttonColorsPrimary(context),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_exporting)
-                      const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                      )
-                    else
-                      const Icon(Icons.picture_as_pdf_outlined, size: 16),
-                    const SizedBox(width: 4),
-                    MiuixText(_exporting ? '导出中…' : '导出 PDF'),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
+      );
+    });
   }
 
   Future<void> _openFullscreen(Presentation presentation) async {
@@ -288,7 +272,19 @@ class CoursewareViewerState extends State<CoursewareViewer> {
     );
     if (result != null && mounted) {
       setState(() => _index = result);
-      _pageController.jumpToPage(result);
+      if (_singlePage && _pageController.hasClients) {
+        _pageController.jumpToPage(result);
+      }
+      if (!_singlePage && _listController.hasClients) {
+        final ratio = presentation.width > 0 && presentation.height > 0
+            ? presentation.width / presentation.height : 4 / 3;
+        final itemHeight = MediaQuery.sizeOf(context).width / ratio + 10;
+        _listController.jumpTo(
+          (widget.topInset + result * itemHeight).clamp(
+            0.0, _listController.position.maxScrollExtent,
+          ),
+        );
+      }
     }
   }
 
@@ -303,9 +299,7 @@ class CoursewareViewerState extends State<CoursewareViewer> {
       );
     }
 
-    return InteractiveViewer(
-      maxScale: 4,
-      child: Image(
+    return Image(
         // `SlideImage` 是走磁盘缓存的 ImageProvider：命中磁盘直接解码，
         // 没命中才下载。离线时没缓存会走 errorBuilder，不会白屏。
         image: SlideImage(widget.lessonId, url),
@@ -354,7 +348,6 @@ class CoursewareViewerState extends State<CoursewareViewer> {
             ),
           ),
         ),
-      ),
     );
   }
 
@@ -418,6 +411,61 @@ class CoursewareViewerState extends State<CoursewareViewer> {
       if (mounted) setState(() => _exporting = false);
     }
   }
+}
+
+class _ZoomableSlide extends StatefulWidget {
+  const _ZoomableSlide({super.key, required this.child, required this.onZoomChanged});
+
+  final Widget child;
+  final ValueChanged<bool> onZoomChanged;
+
+  @override
+  State<_ZoomableSlide> createState() => _ZoomableSlideState();
+}
+
+class _ZoomableSlideState extends State<_ZoomableSlide> {
+  final TransformationController _transform = TransformationController();
+  bool _zoomed = false;
+
+  @override
+  void dispose() {
+    _transform.dispose();
+    super.dispose();
+  }
+
+  void _syncZoom() {
+    final zoomed = _transform.value.getMaxScaleOnAxis() > 1.01;
+    if (zoomed == _zoomed) return;
+    setState(() => _zoomed = zoomed);
+    widget.onZoomChanged(zoomed);
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) => GestureDetector(
+      onDoubleTap: () {
+        if (_zoomed) {
+          _transform.value = Matrix4.identity();
+        } else {
+          final center = Offset(constraints.maxWidth / 2, constraints.maxHeight / 2);
+          _transform.value = Matrix4.identity()
+            ..setEntry(0, 0, 2)
+            ..setEntry(1, 1, 2)
+            ..setTranslationRaw(-center.dx, -center.dy, 0);
+        }
+        _syncZoom();
+      },
+      child: InteractiveViewer(
+        transformationController: _transform,
+        minScale: 1,
+        maxScale: 4,
+        panEnabled: _zoomed,
+        onInteractionUpdate: (_) => _syncZoom(),
+        onInteractionEnd: (_) => _syncZoom(),
+        child: widget.child,
+      ),
+    ),
+  );
 }
 
 /// 课件全屏横屏沉浸浏览路由

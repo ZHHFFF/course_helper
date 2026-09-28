@@ -14,6 +14,7 @@ import '../../api/answer_search.dart';
 import '../../setting/auto_answer_setting.dart';
 // [新增] 卡片内容的标准内边距（MiuixCard 默认是 0，裸用会贴边，见该文件注释）
 import 'miuix_card_metrics.dart';
+import '../../setting/theme_setting.dart';
 
 class AnswerSearchSettingsPage extends StatefulWidget {
   const AnswerSearchSettingsPage({super.key});
@@ -196,7 +197,7 @@ class _AnswerSearchSettingsPageState extends State<AnswerSearchSettingsPage> {
       topBar: MiuixTopAppBar(
         title: '答案检索设置',
         largeTitle: '答案检索设置',
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
         // 与底栏是同一套玻璃口径（见 miuix_glass_spec.dart）。
         scrollBehavior: _topBarBehavior,

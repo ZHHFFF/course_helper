@@ -48,6 +48,7 @@ class MiuixLiquidGlassNavigationBar extends StatefulWidget {
     this.height = 54,
     this.blurRadius = 20,
     this.blurTintAlpha = .55,
+    this.solidBackgroundColor,
     this.shape,
     this.stroke,
     this.shadow = MiuixGlassShadows.floating,
@@ -71,6 +72,9 @@ class MiuixLiquidGlassNavigationBar extends StatefulWidget {
 
   /// 模糊之上叠加的色调不透明度 [0,1]
   final double blurTintAlpha;
+
+  /// 關閉模糊時的實心外殼；鏡片由底欄類型獨立控制。
+  final Color? solidBackgroundColor;
 
   final MiuixGlassShape? shape;
   final MiuixGlassStroke? stroke;
@@ -580,11 +584,25 @@ class _MiuixLiquidGlassNavigationBarState
     final borderRadius = BorderRadius.circular(height / 2);
     final theme = MiuixTheme.of(context);
 
-    // Kyant0 / KernelSU 风格：surfaceContainer 半透底色
-    final surfaceContainer = theme.colors.surfaceContainer;
-    final containerColor = dark
-        ? surfaceContainer.withValues(alpha: 0.30 * widget.alpha)
-        : surfaceContainer.withValues(alpha: 0.65 * widget.alpha);
+    if (widget.solidBackgroundColor case final color?) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: borderRadius,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: dark ? 0.30 : 0.10),
+              blurRadius: 18,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final containerColor = theme.colors.surface.withValues(
+      alpha: widget.blurTintAlpha * widget.alpha,
+    );
 
     // ── vibrancy（上游 ColorFilter.kt）────────────────────────────────────
     //   `vibrancy()` = `colorControlsColorFilter(saturation = 1.5f)`
@@ -778,10 +796,17 @@ class _MiuixLiquidGlassNavigationBarState
     required Rect rect,
   }) {
     final localCenter = rect.center;
-    final indicatorCenter =
-        _barBox?.localToGlobal(localCenter) ??
+    var indicatorCenter =
         Offset(0.0, MediaQuery.sizeOf(context).height - outerBarHeight) +
             localCenter;
+    try {
+      final box = _barBox;
+      if (box != null && box.hasSize) {
+        indicatorCenter = box.localToGlobal(localCenter);
+      }
+    } catch (_) {
+      // 路由跟手返回時，父級 Transform 可能尚未完成佈局；本幀用屏幕座標。
+    }
 
     return Positioned(
       left: rect.left,

@@ -5,6 +5,7 @@ import '../../api/course.dart';
 import '../../models/active.dart';
 import 'list.dart';
 import 'settings.dart';
+import '../../setting/theme_setting.dart';
 
 class CourseContentPage extends StatefulWidget {
   final String courseId;
@@ -84,7 +85,7 @@ class _CourseContentPageState extends State<CourseContentPage> {
     return MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: widget.courseName,
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         navigationIcon: MiuixIconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           child: const Icon(Icons.arrow_back_ios_new, size: 20),

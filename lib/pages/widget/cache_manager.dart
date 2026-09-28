@@ -23,6 +23,7 @@ import '../../cache/ppt_cache.dart';
 import '../../cache/course_cache.dart';
 // [新增] 卡片内容的标准内边距（MiuixCard 默认是 0，裸用会贴边）
 import 'miuix_card_metrics.dart';
+import '../../setting/theme_setting.dart';
 
 class CacheManagerPage extends StatefulWidget {
   const CacheManagerPage({super.key});
@@ -124,7 +125,7 @@ class _CacheManagerPageState extends State<CacheManagerPage> {
         // 缓存只是实现细节；而且本页也确实是管理缓存用的，两者不冲突。
         title: '课件缓存',
         largeTitle: '课件缓存',
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
         // 与底栏是同一套玻璃口径（见 miuix_glass_spec.dart）。
         scrollBehavior: _topBarBehavior,

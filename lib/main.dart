@@ -147,7 +147,7 @@ class MyApp extends StatelessWidget {
           darkTheme: _buildDarkTheme(predictiveBack: predictiveBack),
           themeMode: themeMode,
           builder: (context, child) {
-            return _MiuixScope(child: child);
+            return ThemeSetting.blurScope(_MiuixScope(child: child));
           },
           home: const _GlassNavInsets(child: MyHomePage()),
           routes: {

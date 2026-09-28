@@ -36,6 +36,7 @@ import '../utils/problem_publish.dart';
 import '../utils/ppt_exporter.dart';
 import 'widget/answer_search_dialog.dart';
 import 'widget/suggested_answer_card.dart';
+import '../setting/theme_setting.dart';
 // [/新增]
 
 // 前台服务的启动/停止/权限申请/跨 isolate 上报，全部搬到了
@@ -1856,7 +1857,7 @@ class _PresentationPageState extends State<PresentationPage>
     return MiuixScaffold(
       topBar: _isFullScreen ? null : MiuixTopAppBar(
         title: widget.title,
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         navigationIcon: MiuixIconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           child: const Icon(Icons.arrow_back_ios_new, size: 20),

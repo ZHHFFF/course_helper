@@ -169,7 +169,10 @@ class NavigationBarHost extends StatelessWidget {
       height: miuixNavBarContentHeight,
       bottomPadding: 0,
       pageController: pageController,
-      blurRadius: blurEnabled ? 20 : 0,
+      blurRadius: blurEnabled ? MiuixGlassSpec.barBlurRadius : 0,
+      blurTintAlpha: MiuixGlassSpec.barTintAlpha,
+      solidBackgroundColor:
+          blurEnabled ? null : MiuixTheme.of(context).colors.surface,
       shape: const MiuixGlassShape(cornerRadius: 999),
       shadow: MiuixGlassShadows.floating,
     );
@@ -182,9 +185,9 @@ class NavigationBarHost extends StatelessWidget {
   }) {
     final colors = MiuixTheme.of(context).colors;
     final borderRadius = BorderRadius.circular(999);
-    final bg = colors.surface.withValues(
-      alpha: blurEnabled ? MiuixGlassSpec.barTintAlpha : 1.0,
-    );
+    final bg = blurEnabled
+        ? colors.surface.withValues(alpha: MiuixGlassSpec.barTintAlpha)
+        : colors.surface;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -201,7 +204,10 @@ class NavigationBarHost extends StatelessWidget {
         borderRadius: borderRadius,
         child: blurEnabled
             ? BackdropFilter(
-                filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                filter: ui.ImageFilter.blur(
+                  sigmaX: MiuixGlassSpec.sigmaOf(MiuixGlassSpec.barBlurRadius),
+                  sigmaY: MiuixGlassSpec.sigmaOf(MiuixGlassSpec.barBlurRadius),
+                ),
                 child: ColoredBox(
                   color: bg,
                   child: _buildCapsuleContent(context),

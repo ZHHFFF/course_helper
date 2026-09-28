@@ -17,6 +17,7 @@ import 'package:flutter_miuix/miuix.dart';
 import '../../utils/app_logger.dart';
 // [新增] 卡片内容的标准内边距（MiuixCard 默认是 0，裸用会贴边）
 import 'miuix_card_metrics.dart';
+import '../../setting/theme_setting.dart';
 
 class LogViewerPage extends StatefulWidget {
   const LogViewerPage({super.key});
@@ -147,7 +148,7 @@ class _LogViewerPageState extends State<LogViewerPage> {
       topBar: MiuixTopAppBar(
         title: '运行日志',
         largeTitle: '运行日志',
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         // 不传 `blurRadius` / `blurTintAlpha` → 用库默认（24 / 0.55），
         // 与底栏是同一套玻璃口径（见 miuix_glass_spec.dart）。
         scrollBehavior: _topBarBehavior,

@@ -13,6 +13,7 @@ import 'widget/miuix_nav_metrics.dart';
 // [新增] 开发期压测假数据（--dart-define=SEED_TEST_DATA=N 时才有内容）
 import '../utils/test_data_seeder.dart';
 import 'login.dart';
+import '../setting/theme_setting.dart';
 
 // [移除] 2026-09-22：账号页右上角**只保留「切换雨课堂 / 学习通」**，
 // 其余入口（答案检索设置 / 外观设置 / 运行日志 / 课件缓存 / 前台服务自检 /
@@ -85,7 +86,11 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   Rect _anchorBoundsOf(GlobalKey key) {
     final box = key.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return Rect.zero;
-    return box.localToGlobal(Offset.zero) & box.size;
+    try {
+      return box.localToGlobal(Offset.zero) & box.size;
+    } catch (_) {
+      return Rect.zero;
+    }
   }
 
   /// 把 `MiuixDropdownEntriesPopupContent` 的 `(组下标, 项下标)` 回调派发到
@@ -139,7 +144,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     ];
     return MiuixOverlayListPopup(
       show: _showMoreMenu,
-      anchorBounds: _anchorBoundsOf(_moreMenuAnchor),
+      anchorBounds: _showMoreMenu ? _anchorBoundsOf(_moreMenuAnchor) : Rect.zero,
       alignment: MiuixPopupAlign.end,
       onDismissRequest: () => setState(() => _showMoreMenu = false),
       content: MiuixListPopupColumn(
@@ -680,7 +685,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       topBar: MiuixTopAppBar(
         title: '账号',
         largeTitle: '账号',
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         scrollBehavior: _topBarBehavior,
         actions: [
           // 注：这里的动作按钮直接用 `MiuixIconButton`（自带手势）。

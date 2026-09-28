@@ -26,6 +26,7 @@ import '../actives/vote.dart';
 import '../actives/questionnaire.dart';
 import 'content.dart';
 import '../presentation.dart';
+import '../../setting/theme_setting.dart';
 
 
 class CoursesPage extends StatefulWidget {
@@ -598,7 +599,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         topBar: MiuixTopAppBar(
           title: '课程',
           largeTitle: '课程',
-          blurred: true,
+          blurred: ThemeSetting.blurOf(context),
           scrollBehavior: _topBarBehavior,
           actions: [
             MiuixIconButton(

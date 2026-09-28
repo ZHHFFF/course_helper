@@ -9,6 +9,7 @@ import '../../api/api_service.dart';
 import '../../models/course.dart';
 import '../../setting/course_setting.dart';
 import '../widget/baidu_map.dart';
+import '../../setting/theme_setting.dart';
 
 
 class CourseSettingsPage extends StatefulWidget {
@@ -188,7 +189,7 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
         builder: (context) => MiuixScaffold(
           topBar: MiuixTopAppBar(
             title: '选择位置',
-            blurred: true,
+            blurred: ThemeSetting.blurOf(context),
             navigationIcon: MiuixIconButton(
               onPressed: () => Navigator.of(context).maybePop(),
               child: const Icon(Icons.arrow_back_ios_new, size: 20),
@@ -328,7 +329,7 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
     return MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: '课程设置',
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         navigationIcon: MiuixIconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           child: const Icon(Icons.arrow_back_ios_new, size: 20),

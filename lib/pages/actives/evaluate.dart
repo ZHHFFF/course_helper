@@ -8,6 +8,7 @@ import '../../../api/evaluate.dart';
 import '../../../models/user.dart';
 import '../../../models/active.dart';
 import '../widget/accounts_selector.dart';
+import '../../setting/theme_setting.dart';
 
 class EvaluatePage extends StatefulWidget {
   final Active active;
@@ -303,7 +304,7 @@ class _EvaluatePageState extends State<EvaluatePage> {
     return MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: widget.active.name,
-        blurred: true,
+        blurred: ThemeSetting.blurOf(context),
         navigationIcon: MiuixIconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           child: const Icon(Icons.arrow_back_ios_new, size: 20),
