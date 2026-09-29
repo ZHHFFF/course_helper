@@ -1068,6 +1068,11 @@ class AnswerSearchApi {
     }
 
     final bodyText = StandardizedQuestion.extractPlainText(problem.body);
+    final questionImages = <String>[
+      ...StandardizedQuestion.extractImageUrls(problem.body),
+      for (final option in problem.options ?? <ProblemOption>[])
+        ...StandardizedQuestion.extractImageUrls(option.value),
+    ];
 
     return StandardizedQuestion(
       questionText: bodyText,
@@ -1075,7 +1080,8 @@ class AnswerSearchApi {
       options: options,
       rawAnswerData: null,
       slideText: slideText,
-      imageUrls: imageUrl.trim().isEmpty ? const [] : [imageUrl.trim()],
+      imageUrls: imageUrl.trim().isEmpty ? questionImages : [imageUrl.trim()],
+      questionImageUrls: questionImages,
       imageHeaders: imageHeaders,
       problemId: problem.problemId,
     );

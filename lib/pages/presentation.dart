@@ -13,6 +13,7 @@ import '../api/course.dart';
 import '../api/image.dart';
 import '../api/api_service.dart';
 import '../models/presentation.dart';
+import '../models/user.dart';
 import '../session/account.dart';
 import '../platform.dart';
 // [新增] 答案检索模块导入
@@ -38,6 +39,59 @@ import 'widget/answer_search_dialog.dart';
 import 'widget/suggested_answer_card.dart';
 import '../setting/theme_setting.dart';
 // [/新增]
+
+enum _SubmitOutcome { success, transportFailure, rejected }
+
+class _SubmitSnapshot {
+  final String problemId;
+  final int problemType;
+  final List<String>? options;
+  final String? content;
+  final List<String> imageUrls;
+  final bool retry;
+  final int? time;
+
+  _SubmitSnapshot({
+    required this.problemId,
+    required this.problemType,
+    required List<String>? options,
+    required this.content,
+    required List<String> imageUrls,
+    required this.retry,
+    required this.time,
+  }) : options = options == null ? null : List<String>.unmodifiable(options),
+       imageUrls = List<String>.unmodifiable(imageUrls);
+}
+
+class _AccountSubmitResult {
+  final User user;
+  final _SubmitOutcome outcome;
+  final String message;
+
+  const _AccountSubmitResult(this.user, this.outcome, this.message);
+}
+
+class _SubmitBatchResult {
+  final List<_AccountSubmitResult> accounts;
+
+  const _SubmitBatchResult(this.accounts);
+
+  int get successCount => accounts
+      .where((result) => result.outcome == _SubmitOutcome.success)
+      .length;
+  int get transportFailureCount => accounts
+      .where((result) => result.outcome == _SubmitOutcome.transportFailure)
+      .length;
+  List<User> get transportFailedUsers => [
+    for (final result in accounts)
+      if (result.outcome == _SubmitOutcome.transportFailure) result.user,
+  ];
+  List<String> get failedAccounts => [
+    for (final result in accounts)
+      if (result.outcome != _SubmitOutcome.success)
+        '${result.user.name}: ${result.message}',
+  ];
+}
 
 // 前台服务的启动/停止/权限申请/跨 isolate 上报，全部搬到了
 // `lib/utils/keep_alive_service.dart`。
@@ -138,11 +192,16 @@ class _PresentationPageState extends State<PresentationPage>
 
   // ============ [新增] 自动答题 ============
 
-  /// 已经自动提交过的指纹（防重复提交）
+  /// 所有目标账号均已确认成功的发题 ID（供重连补查去重）
   final Set<String> _autoSubmitted = {};
+
+  /// 部分成功时保留已成功账号，下一次只补交尚未成功的账号
+  final Map<String, Set<String>> _autoSucceededByProblem = {};
 
   /// 待自动提交的题目队列（串行处理，避免连发两题时丢掉后一道）
   final List<String> _autoSubmitQueue = [];
+  bool _autoSubmitProcessing = false;
+  String? _autoSubmitActiveId;
 
   // ============ 已发布题目的「单一事实来源」 ============
   //
@@ -292,7 +351,7 @@ class _PresentationPageState extends State<PresentationPage>
     await AnswerCache.preload(widget.lessonId);
     AnswerQueue.resetCounters();
 
-    _connectWebSocket();
+    _connectWebSocket(recheckTokenIfMissing: false);
   }
 
   /// 后台队列检索完一题
@@ -426,32 +485,55 @@ class _PresentationPageState extends State<PresentationPage>
         setState(() => _publishedSlideOf[index] = problemId);
         AppLogger.i('自动答题', '已记录发布位置：第 ${index + 1} 页 ← $problemId');
       } else {
-        AppLogger.w('自动答题',
-            '解析不出 $problemId 对应哪一页，「提交」按钮可能不会出现');
+        AppLogger.w('自动答题', '解析不出 $problemId 对应哪一页，「提交」按钮可能不会出现');
       }
 
       if (!AutoAnswerSetting.autoSubmit.value) {
         AppLogger.i('自动答题', '「自动提交」开关是关的，只记录发布位置');
         return;
       }
-      if (_autoSubmitted.contains(problemId)) {
+      final succeeded = _autoSucceededByProblem[problemId];
+      if (_autoSubmitted.contains(problemId) &&
+          AccountManager.allAccounts.isNotEmpty &&
+          AccountManager.allAccounts.every(
+            (user) => succeeded?.contains(user.uid) ?? false,
+          )) {
         AppLogger.i('自动答题', '题目 $problemId 已经提交过，跳过');
         return;
       }
-      if (_autoSubmitQueue.contains(problemId)) return;
+      _autoSubmitted.remove(problemId);
+      if (_autoSubmitActiveId == problemId ||
+          _autoSubmitQueue.contains(problemId)) {
+        return;
+      }
 
       _autoSubmitQueue.add(problemId);
-
-      // 已经有消费者在跑了 → 它会把这道题也处理掉，这里直接返回
-      if (_autoSubmitQueue.length > 1) return;
-
-      while (_autoSubmitQueue.isNotEmpty) {
-        if (!mounted) break;
-        final id = _autoSubmitQueue.removeAt(0);
-        await _doAutoSubmit(id);
-      }
+      unawaited(_drainAutoSubmitQueue());
     } catch (e, st) {
       AppLogger.e('自动答题', '自动提交调度出错：$e\n$st');
+    }
+  }
+
+  Future<void> _drainAutoSubmitQueue() async {
+    if (_autoSubmitProcessing) return;
+    _autoSubmitProcessing = true;
+    try {
+      while (mounted && _autoSubmitQueue.isNotEmpty) {
+        final id = _autoSubmitQueue.removeAt(0);
+        _autoSubmitActiveId = id;
+        try {
+          await _doAutoSubmit(id);
+        } catch (e, st) {
+          AppLogger.e('自动答题', '处理题目 $id 失败：$e\n$st');
+        } finally {
+          _autoSubmitActiveId = null;
+        }
+      }
+    } finally {
+      _autoSubmitProcessing = false;
+      if (mounted && _autoSubmitQueue.isNotEmpty) {
+        unawaited(_drainAutoSubmitQueue());
+      }
     }
   }
 
@@ -467,9 +549,18 @@ class _PresentationPageState extends State<PresentationPage>
       // 这一步必须**排在等答案前面**：切过去之后「提交」按钮会立刻出现，
       // 就算答案还没搜好、用户等不及了，他也能自己点提交，不至于干瞪眼。
       final index = await _waitForProblemSlide(problemId);
+      if (!mounted) return;
       if (index < 0) {
-        AppLogger.w('自动答题',
-            '题目 $problemId 在这份 PPT 里找不到对应页（PPT 共 ${_slideModels.length} 页）');
+        AppLogger.w(
+          '自动答题',
+          '题目 $problemId 在这份 PPT 里找不到对应页（PPT 共 ${_slideModels.length} 页）',
+        );
+        return;
+      }
+      final targetProblemId = _slideModels[index].problem?.problemId;
+      final targetPresentationId = _currentPresentationId;
+      if (targetProblemId == null || targetProblemId.isEmpty) {
+        AppLogger.w('自动答题', '第 ${index + 1} 页没有可提交的题目');
         return;
       }
       AppLogger.i('自动答题', '题目 $problemId 在第 ${index + 1} 页');
@@ -478,7 +569,15 @@ class _PresentationPageState extends State<PresentationPage>
         _toSlide(index + 1, animate: false);
         await Future<void>.delayed(const Duration(milliseconds: 300));
       }
-      if (!mounted) return;
+      if (!mounted ||
+          _currentPresentationId != targetPresentationId ||
+          _currentSlideIndex != index ||
+          _currentProblem?.problemId != targetProblemId) {
+        return;
+      }
+      if (_answerOwnerProblemId != targetProblemId) {
+        _syncAnswerOwner();
+      }
 
       // 把当前页题目的 problemId 也补进「已解锁」。
       //
@@ -492,8 +591,7 @@ class _PresentationPageState extends State<PresentationPage>
       if (curId != null &&
           curId.isNotEmpty &&
           !_unlockedProblemIds.contains(curId)) {
-        AppLogger.i('自动答题',
-            '当前页 problemId=$curId 不在已解锁列表里，补进去（让提交按钮出现）');
+        AppLogger.i('自动答题', '当前页 problemId=$curId 不在已解锁列表里，补进去（让提交按钮出现）');
         setState(() => _unlockedProblemIds.add(curId));
       }
 
@@ -509,10 +607,7 @@ class _PresentationPageState extends State<PresentationPage>
       // 需要识图）。这种情况下等下去也没用，直接放弃，别白等 25 秒。
       final scanned = _scan.byHash[hash];
       if (scanned == null) {
-        AppLogger.w(
-          '自动答题',
-          '指纹 ${_short(hash)} 不在扫描结果里（题干为空或题目是图片），放弃自动提交',
-        );
+        AppLogger.w('自动答题', '指纹 ${_short(hash)} 不在扫描结果里（题干为空或题目是图片），放弃自动提交');
         return;
       }
       if (scanned.needsVision) {
@@ -532,8 +627,7 @@ class _PresentationPageState extends State<PresentationPage>
         // 留 2 秒余量给「填写 + 提交」这两步。
         final remain = _countdownSeconds;
         final budget = (remain != null && remain > 0)
-            ? Duration(
-                seconds: (remain - 2).clamp(1, answerWait.inSeconds))
+            ? Duration(seconds: (remain - 2).clamp(1, answerWait.inSeconds))
             : answerWait;
         AppLogger.i(
           '自动答题',
@@ -543,11 +637,18 @@ class _PresentationPageState extends State<PresentationPage>
         cached = await _waitForAnswer(hash, timeout: budget);
       }
       if (cached == null || !cached.usable || cached.results.isEmpty) {
-        AppLogger.w('自动答题',
-            '等到超时仍没拿到可用答案（status=${cached?.status}），放弃自动提交');
+        AppLogger.w('自动答题', '等到超时仍没拿到可用答案（status=${cached?.status}），放弃自动提交');
         return;
       }
       if (!mounted) return;
+
+      bool isCurrentTarget() =>
+          mounted &&
+          _currentPresentationId == targetPresentationId &&
+          _currentSlideIndex == index &&
+          _currentProblem?.problemId == targetProblemId &&
+          _answerOwnerProblemId == targetProblemId &&
+          _currentHash == hash;
 
       // ---- 第 2.5 步：确认还停在题目所在的页 ----
       //
@@ -555,17 +656,17 @@ class _PresentationPageState extends State<PresentationPage>
       // 这时候往下走，答案会被填到**当前页别的题**上，提交也就交错了题。
       // 所以提交前必须复核一次，不在了就切回去。
       if (_currentSlideIndex != index) {
+        if (_currentPresentationId != targetPresentationId) return;
         AppLogger.w(
           '自动答题',
           '等答案期间页面被翻到第 ${_currentSlideIndex + 1} 页，切回第 ${index + 1} 页',
         );
         _toSlide(index + 1, animate: false);
         await Future<void>.delayed(const Duration(milliseconds: 300));
-        if (!mounted) return;
-        if (_currentHash != hash) {
-          AppLogger.w('自动答题', '切回来之后指纹对不上了，放弃自动提交');
-          return;
-        }
+      }
+      if (!isCurrentTarget()) {
+        AppLogger.w('自动答题', '题目 $problemId 的页面或作答归属已改变，放弃自动提交');
+        return;
       }
 
       // ---- 第 3 步：填答案 ----
@@ -574,72 +675,146 @@ class _PresentationPageState extends State<PresentationPage>
         await Future<void>.delayed(const Duration(milliseconds: 150));
       }
 
-      if (!mounted) return;
-      if (!_isAnswerFilled()) {
+      if (!isCurrentTarget() || !_isAnswerFilled()) {
         AppLogger.w('自动答题', '答案没能填进作答区，放弃自动提交');
         return;
       }
+
+      // 在随机延迟前复制真正送给 API 的内容；之后不再读取当前页的作答状态。
+      final currentProblem = _currentProblem!;
+      final isTimeout = _countdownSeconds != null && _countdownSeconds! <= 0;
+      final snapshot = _SubmitSnapshot(
+        problemId: problemId,
+        problemType: currentProblem.problemType,
+        options: _answer,
+        content: _textAnswer,
+        imageUrls: _uploadedImageUrls,
+        retry: isTimeout,
+        time: isTimeout ? currentProblem.dt : null,
+      );
 
       // ---- 第 4 步：拟人化延迟后提交 ----
       final delay = AutoAnswerSetting.randomDelay();
       AppLogger.i('自动答题', '${delay.inMilliseconds}ms 后自动提交题目 $problemId');
       await Future<void>.delayed(delay);
-      if (!mounted) return;
-
-      _autoSubmitted.add(problemId);
-
-      // 提交可能因为网络抖动失败 —— 那就**静默丢答案**了。
-      //
-      // 重试的两条边界：
-      // 1. 只重试「网络失败」（请求根本没到服务器）。
-      //    服务端明确拒绝（比如题已关闭）不重试 —— 重试没意义，还可能重复提交。
-      // 2. 只在**没带图片**时重试。图片提交完就被清掉了，
-      //    带图重试会变成空答案，反而更糟。
-      //
-      // ⚠️ 另外要认清一件事：这里的「网络失败」其实**分不出**
-      //   「请求根本没到服务器」和「到了但回包丢了」—— 超时就是这种模糊态。
-      //   所以重试本质是 at-least-once，理论上可能重复提交。
-      //   同一道题交两次、服务端按最后一次算，影响可控，可以接受。
-      final hadImages = _uploadedImageUrls.isNotEmpty;
-      var netFails = await _submitAnswer(
-          auto: true, problemIdOverride: problemId, silent: true);
-
-      var attempt = 0;
-      while (netFails > 0 && attempt < 2 && !hadImages && mounted) {
-        attempt++;
-        AppLogger.w(
-          '自动答题',
-          '提交 $problemId 有 $netFails 个账号网络失败，第 $attempt 次重试',
-        );
-        await Future<void>.delayed(Duration(milliseconds: 600 * attempt));
-        if (!mounted) break;
-        netFails = await _submitAnswer(
-            auto: true, problemIdOverride: problemId, silent: true);
+      if (!mounted ||
+          _currentPresentationId != targetPresentationId ||
+          index >= _slideModels.length ||
+          _slideModels[index].problem?.problemId != targetProblemId) {
+        AppLogger.w('自动答题', '题目 $problemId 已不在原课件，取消自动提交');
+        return;
       }
 
-      // 日志必须说实话 —— 现在它是我唯一的验证手段。
-      //
-      // 原来这里无条件打「已自动提交」，于是：
-      //   - 重试 2 次后仍网络失败 → 照样打成功
-      //   - 这题带图（按设计不重试）而第一次就失败 → 也照样打成功
-      // 结果日志一片祥和、答案其实丢了，照日志根本查不出问题。
-      if (netFails > 0) {
-        AppLogger.e(
-          '自动答题',
-          '题目 $problemId 提交失败：仍有 $netFails 个账号网络异常，'
-              '${hadImages ? "这题带图，按设计不重试（重试会变成空答案）" : "已重试 $attempt 次"}'
-              ' —— 答案没交上去，需要手动补交',
-        );
-        _toast('自动提交失败：$netFails 个账号网络异常，请手动补交');
-      } else {
-        AppLogger.i('自动答题', '已自动提交题目 $problemId（请求已到达服务器）');
-        _toast('已自动提交');
-      }
+      await _submitAutoSnapshot(
+        snapshot,
+        targetProblemId,
+        hash,
+        targetPresentationId,
+      );
     } catch (e, st) {
       // unawaited() 会把异常吞掉，日志里什么都看不到 —— 必须自己兜住
       AppLogger.e('自动答题', '自动提交题目 $problemId 时出错：$e\n$st');
-      _autoSubmitted.remove(problemId); // 允许下次重试
     }
+  }
+
+  Future<void> _submitAutoSnapshot(
+    _SubmitSnapshot snapshot,
+    String ownerProblemId,
+    String hash,
+    String? presentationId,
+  ) async {
+    final accounts = List<User>.of(AccountManager.allAccounts);
+    if (accounts.isEmpty) {
+      _toast('自动提交失败：没有可用的账号');
+      return;
+    }
+
+    final succeeded = _autoSucceededByProblem.putIfAbsent(
+      snapshot.problemId,
+      () => <String>{},
+    );
+    var pending = accounts
+        .where((user) => !succeeded.contains(user.uid))
+        .toList();
+    if (pending.isEmpty) {
+      _autoSubmitted.add(snapshot.problemId);
+      return;
+    }
+    final latest = <String, _AccountSubmitResult>{};
+    var retries = 0;
+
+    while (pending.isNotEmpty && mounted) {
+      final batch = await _submitForAccounts(snapshot, pending);
+      for (final result in batch.accounts) {
+        latest[result.user.uid] = result;
+        if (result.outcome == _SubmitOutcome.success) {
+          succeeded.add(result.user.uid);
+        }
+      }
+
+      // 仅补发未确认结果的账号；超时也可能已到服务器，重试最多两次。
+      // 成功账号和明确拒绝的账号都不重试。
+      pending = batch.transportFailedUsers;
+      if (pending.isEmpty || retries >= 2 || snapshot.imageUrls.isNotEmpty) {
+        break;
+      }
+      retries++;
+      AppLogger.w(
+        '自动答题',
+        '题目 ${snapshot.problemId} 有 ${pending.length} 个账号网络/HTTP 失败，第 $retries 次重试',
+      );
+      await Future<void>.delayed(Duration(milliseconds: 600 * retries));
+    }
+    if (!mounted) return;
+
+    final failures = [
+      for (final user in accounts)
+        if (!succeeded.contains(user.uid))
+          latest[user.uid] ??
+              _AccountSubmitResult(
+                user,
+                _SubmitOutcome.transportFailure,
+                '未确认提交结果',
+              ),
+    ];
+    if (failures.isEmpty) {
+      if (AccountManager.allAccounts.every(
+        (user) => succeeded.contains(user.uid),
+      )) {
+        _autoSubmitted.add(snapshot.problemId);
+      }
+      if (_currentPresentationId == presentationId &&
+          _currentProblem?.problemId == ownerProblemId &&
+          _currentHash == hash) {
+        setState(() {
+          _countdownSeconds = 0;
+          _selectedImages.clear();
+          _uploadedImageUrls.clear();
+        });
+      }
+      AppLogger.i(
+        '自动答题',
+        '题目 ${snapshot.problemId} 已确认全部提交成功（${accounts.length}/${accounts.length}）',
+      );
+      _toast('已自动提交（${accounts.length}/${accounts.length}）');
+      return;
+    }
+
+    _autoSubmitted.remove(snapshot.problemId);
+    final transportCount = failures
+        .where((result) => result.outcome == _SubmitOutcome.transportFailure)
+        .length;
+    final rejectedCount = failures.length - transportCount;
+    AppLogger.e(
+      '自动答题',
+      '题目 ${snapshot.problemId} 提交未完成：成功 ${accounts.length - failures.length}/${accounts.length}，'
+          '网络/HTTP 失败 $transportCount，业务/凭证失败 $rejectedCount；'
+          '${failures.map((result) => '${result.user.name}: ${result.message}').join('；')}',
+    );
+    _toast(
+      '自动提交未完成：成功 ${accounts.length - failures.length}/${accounts.length}，'
+      '网络/HTTP $transportCount，业务/凭证 $rejectedCount',
+    );
   }
 
   /// 等某道题的答案就绪（AI 检索要几秒）
@@ -923,15 +1098,17 @@ class _PresentationPageState extends State<PresentationPage>
     // [/新增]
 
   Future<void> _checkToken() async {
-    final lessonToken = RCCourseApi().lessonToken;
-    if (lessonToken == null) {
-      final allAccounts = AccountManager.allAccounts;
+    final accountsToCheckIn = RCCourseApi.accountsNeedingCheckIn(
+      AccountManager.allAccounts,
+      widget.lessonId,
+    );
+    if (accountsToCheckIn.isNotEmpty) {
 
       // [新增] 记录网络异常，避免和业务错误混在一起
       final Map<String, String> errorByUid = {};
 
       final results = await ApiService.sendForEachUser(
-        allAccounts,
+        accountsToCheckIn,
         (user) async {
           try {
             final api = RCCourseApi(user);
@@ -945,7 +1122,7 @@ class _PresentationPageState extends State<PresentationPage>
 
       for (int i = 0; i < results.length; i++) {
         final result = results[i];
-        final user = allAccounts[i];
+        final user = accountsToCheckIn[i];
 
         final netError = errorByUid[user.uid.toString()];
         if (netError != null) {
@@ -1018,10 +1195,19 @@ class _PresentationPageState extends State<PresentationPage>
   ///    连接已死 → 触发 `onDone` → 走重连。这是「发现死连接」的关键。
   /// 2. `onDone` / `onError` → 退避重连。
   /// 3. 回前台时主动补检一次（见 `_ensureWebSocketAlive`）。
-  Future<void> _connectWebSocket() async {
+  Future<void> _connectWebSocket({bool recheckTokenIfMissing = true}) async {
     if (_wsClosedByUs) return;
-
     final generation = ++_wsGeneration;
+    if (recheckTokenIfMissing &&
+        RCCourseApi().lessonTokenFor(widget.lessonId) == null) {
+      await _checkToken();
+    }
+    if (_wsClosedByUs || generation != _wsGeneration) return;
+    if (RCCourseApi().lessonTokenFor(widget.lessonId) == null) {
+      AppLogger.w('WebSocket', '当前账号没有本课堂的 lessonToken，跳过连接');
+      return;
+    }
+
     try {
       late String lessonUrl;
       final currentServerName = PlatformManager().currentServer.name;
@@ -1036,6 +1222,14 @@ class _PresentationPageState extends State<PresentationPage>
         return;
       }
 
+      // 连接期间账号或活跃课时可能改变；hello 使用连接完成时的同一账号凭证。
+      final uid = AccountManager.currentSessionId;
+      final lessonToken = RCCourseApi().lessonTokenFor(widget.lessonId);
+      if (uid == null || lessonToken == null) {
+        unawaited(ws.close());
+        return;
+      }
+
       _ws = ws;
       _wsRetryCount = 0;
 
@@ -1044,9 +1238,9 @@ class _PresentationPageState extends State<PresentationPage>
 
       final helloData = {
         "op": "hello",
-        "userid": AccountManager.currentSessionId,
+        "userid": uid,
         "role": "student",
-        "auth": RCCourseApi().lessonToken,
+        "auth": lessonToken,
         "lessonid": widget.lessonId
       };
 
@@ -1559,8 +1753,15 @@ class _PresentationPageState extends State<PresentationPage>
   ///
   /// 队列自带并发闸门（2）和 in-flight 去重，所以这里可以放心地一次全丢进去。
   Future<void> _enqueueScan(SlideScanResult scan) async {
+    await AutoAnswerSetting.ensureLoaded();
+    if (!mounted) return;
+    if (!AutoAnswerSetting.autoSearch.value) {
+      AppLogger.i('Presentation', '自动检索已关闭，跳过整份 PPT 预搜');
+      return;
+    }
     await AnswerSearchApi.initialize();
     if (!mounted) return;
+    if (!AutoAnswerSetting.autoSearch.value) return;
 
     if (!AnswerSearchApi.isAIConfigured) {
       AppLogger.i('Presentation', '未配置 AI，跳过自动检索（只展示已有缓存）');
@@ -2404,135 +2605,145 @@ class _PresentationPageState extends State<PresentationPage>
     }
   }
 
-  /// 提交答案
-  ///
-  /// [problemIdOverride] 用于自动提交：直接传**服务器发题时给的 ID**（`prob`），
-  /// 而不是用 `_currentProblem.problemId`。
-  /// 两个字段名不同，万一值也不一样，用 PPT 里那个 ID 提交会被服务器拒。
-  /// 返回**网络失败**的账号数（0 = 没有网络问题）
-  ///
-  /// 注意只统计「请求没到服务器」这类网络异常，
-  /// 服务端明确拒绝（比如题已关闭）不算 —— 那种重试没意义还可能重复提交。
-  Future<int> _submitAnswer({
-    bool auto = false,
-    String? problemIdOverride,
-    bool silent = false,
-  }) async {
-    final problemId =
-        problemIdOverride ?? _currentProblem?.problemId ?? _timelineProblemId;
-    if (problemId == null) return 0;
-
-    final problemType = _currentProblem?.problemType ?? 0;
-    final problemDt = _currentProblem?.dt;
+  /// 手动提交仍取当前作答区；自动提交只走预先冻结的 _SubmitSnapshot。
+  Future<void> _submitAnswer() async {
+    final problemId = _currentProblem?.problemId ?? _timelineProblemId;
+    if (problemId == null) return;
 
     if (_answer == null && _textAnswer == null && _uploadedImageUrls.isEmpty) {
-      if (mounted && !silent) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请先选择或填写答案')),
-        );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请先选择或填写答案')));
       }
-      return 0;
+      return;
+    }
+
+    final accounts = List<User>.of(AccountManager.allAccounts);
+    if (accounts.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('没有可用的账号')));
+      }
+      return;
     }
 
     final isTimeout = _countdownSeconds != null && _countdownSeconds! <= 0;
-
-    return await _submitForAllAccounts(problemId, problemType,
-        _uploadedImageUrls, isTimeout, problemDt,
-        auto: auto, silent: silent);
-  }
-
-  /// 返回**网络失败**的账号数（0 = 没有网络问题）
-  Future<int> _submitForAllAccounts(String problemId, int problemType,
-      List<String>? imageUrls, bool isTimeout, int? problemDt,
-      {bool auto = false, bool silent = false}) async {
-    final allAccounts = AccountManager.allAccounts;
-
-    if (allAccounts.isEmpty) {
-      if (mounted && !silent) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('没有可用的账号')),
-        );
-      }
-      return 0;
-    }
-
-    int successCount = 0;
-    final List<String> failedAccounts = [];
-
-    // [新增] 记录每个账号的异常原因，用于区分网络失败与业务失败
-    final Map<String, String> errorByUid = {};
-
-    final results = await ApiService.sendForEachUser(
-      allAccounts,
-      (user) async {
-        try {
-          final api = RCCourseApi(user);
-          return await api.answer(
-            problemId,
-            problemType,
-            retry: isTimeout,
-            time: isTimeout ? problemDt : null,
-            options: _answer,
-            content: _textAnswer,
-            imageUrls: imageUrls
-          );
-        } catch (e) {
-          errorByUid[user.uid.toString()] = describeErrorShort(e);
-          rethrow;
-        }
-      },
+    final snapshot = _SubmitSnapshot(
+      problemId: problemId,
+      problemType: _currentProblem?.problemType ?? 0,
+      options: _answer,
+      content: _textAnswer,
+      imageUrls: _uploadedImageUrls,
+      retry: isTimeout,
+      time: isTimeout ? _currentProblem?.dt : null,
     );
-
-    int networkFailCount = 0;
-
-    for (int i = 0; i < results.length; i++) {
-      final result = results[i];
-      final user = allAccounts[i];
-
-      if (result != null && result['code'] == 0) {
-        successCount++;
-      } else {
-        final netError = errorByUid[user.uid.toString()];
-        if (netError != null) {
-          networkFailCount++;
-          failedAccounts.add('${user.name}: [网络异常] $netError');
-        } else {
-          failedAccounts.add('${user.name}: ${result?["msg"] ?? "提交失败"}');
-        }
+    final result = await _submitForAccounts(snapshot, accounts);
+    final succeeded = _autoSucceededByProblem.putIfAbsent(
+      snapshot.problemId,
+      () => <String>{},
+    );
+    for (final account in result.accounts) {
+      if (account.outcome == _SubmitOutcome.success) {
+        succeeded.add(account.user.uid);
       }
     }
+    if (AccountManager.allAccounts.isNotEmpty &&
+        AccountManager.allAccounts.every(
+          (user) => succeeded.contains(user.uid),
+        )) {
+      _autoSubmitted.add(snapshot.problemId);
+    } else {
+      _autoSubmitted.remove(snapshot.problemId);
+    }
+    if (!mounted) return;
 
-      // silent：自动提交的重试过程中不弹结果，等重试全部走完再统一报一次，
-      // 否则「网络异常」和「全部提交成功」会先后叠两条 SnackBar，自相矛盾。
-      if (!silent) {
-        _showSubmitResult(
-          successCount,
-          allAccounts.length,
-          failedAccounts,
-          networkFailCount: networkFailCount,
-          auto: auto,
-        );
-      }
-
+    _showSubmitResult(
+      result.successCount,
+      accounts.length,
+      result.failedAccounts,
+      networkFailCount: result.transportFailureCount,
+    );
     setState(() {
       _countdownSeconds = 0;
       _selectedImages.clear();
       _uploadedImageUrls.clear();
     });
-
-    return networkFailCount;
   }
 
-    void _showSubmitResult(
-      int successCount,
-      int totalCount,
-      List<String> failedAccounts, {
-      int networkFailCount = 0,
-      bool auto = false,
-    }) {
-      if (!mounted) return;
+  /// 唯一的答题 API 出口；逐账号保留成功、网络/HTTP 失败和业务拒绝。
+  Future<_SubmitBatchResult> _submitForAccounts(
+    _SubmitSnapshot snapshot,
+    List<User> accounts,
+  ) async {
+    final results = await ApiService.sendForEachUser<_AccountSubmitResult>(
+      accounts,
+      (user) async {
+        try {
+          final api = RCCourseApi(user);
+          if (api.bearerToken == null) {
+            return _AccountSubmitResult(
+              user,
+              _SubmitOutcome.rejected,
+              '缺少课堂凭证',
+            );
+          }
+          final response = await api.answer(
+            snapshot.problemId,
+            snapshot.problemType,
+            retry: snapshot.retry,
+            time: snapshot.time,
+            options: snapshot.options,
+            content: snapshot.content,
+            imageUrls: snapshot.imageUrls,
+          );
+          if (response == null) {
+            return _AccountSubmitResult(
+              user,
+              _SubmitOutcome.transportFailure,
+              '[网络/HTTP 异常] 请求无响应',
+            );
+          }
+          if (response['code'] == 0) {
+            return _AccountSubmitResult(user, _SubmitOutcome.success, '提交成功');
+          }
+          return _AccountSubmitResult(
+            user,
+            _SubmitOutcome.rejected,
+            response['msg']?.toString() ?? '提交失败',
+          );
+        } catch (e) {
+          return _AccountSubmitResult(
+            user,
+            _SubmitOutcome.transportFailure,
+            '[网络/HTTP 异常] ${describeErrorShort(e)}',
+          );
+        }
+      },
+    );
 
-    final bool allNetworkFailed = successCount == 0 &&
+    return _SubmitBatchResult([
+      for (var i = 0; i < accounts.length; i++)
+        results[i] ??
+            _AccountSubmitResult(
+              accounts[i],
+              _SubmitOutcome.transportFailure,
+              '[网络/HTTP 异常] 请求失败',
+            ),
+    ]);
+  }
+
+  void _showSubmitResult(
+    int successCount,
+    int totalCount,
+    List<String> failedAccounts, {
+    int networkFailCount = 0,
+  }) {
+    if (!mounted) return;
+
+    final bool allNetworkFailed =
+        successCount == 0 &&
         networkFailCount > 0 &&
         networkFailCount == failedAccounts.length;
 
@@ -2549,28 +2760,17 @@ class _PresentationPageState extends State<PresentationPage>
 
     String message = '答案提交完成！\n成功：$successCount/$totalCount';
     if (networkFailCount > 0) {
-      message += '\n网络异常：$networkFailCount 个账号';
-      message += '\n\n提示：网络异常表示请求没有到达服务器，'
-          '通常是断网、超时或接口无法访问。请检查手机网络后重新提交。';
+      message += '\n网络/HTTP 异常：$networkFailCount 个账号';
+      message +=
+          '\n\n提示：超时不能确认请求是否已到达服务器，'
+          '请检查提交状态后再决定是否重试。';
     }
-      if (failedAccounts.isNotEmpty) {
-        message += '\n\n失败账号:\n${failedAccounts.join('\n')}';
-      }
+    if (failedAccounts.isNotEmpty) {
+      message += '\n\n失败账号:\n${failedAccounts.join('\n')}';
+    }
 
-      // 自动提交不弹模态框：课堂上弹窗会挡住界面、还得手动关，
-      // 连发几道题就会叠一堆。改成 SnackBar，瞄一眼就知道结果。
-      if (auto) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('$title（$successCount/$totalCount）'),
-            duration: const Duration(seconds: 3),
-          ),
-        );
-        return;
-      }
-
-      showDialog(
-        context: context,
+    showDialog(
+      context: context,
       builder: (context) => AlertDialog(
         title: Text(
           title,
@@ -2939,8 +3139,10 @@ class _PresentationPageState extends State<PresentationPage>
 
     // [防呆] 必须整份课件都缓存完才能导，否则会生成残缺 PDF。
     // 实测 bug：第二次进课堂时缓存还没开始下，导出只拿到 1/42 页。
+    final pageUrls = SlideScanner.exportPageUrlsOf(_slideModels);
     final urls = _allSlideImageUrls();
-    final missing = await _missingSlideCount(urls);
+    final missing = await _missingSlideCount(urls) +
+        pageUrls.where((url) => url.isEmpty).length;
     if (missing > 0) {
       final p = SlideImagePrefetcher.progress.value;
       AppLogger.w(
@@ -2954,20 +3156,24 @@ class _PresentationPageState extends State<PresentationPage>
     setState(() => _isExporting = true);
 
     try {
-      // 1. 逐页取本地文件（上面已确认全部命中，这里只读盘、不下载）
-      final paths = <String>[];
+      // 1. 每份资源只查一次磁盘，再按原始 slide 序列映射到 PDF 页。
+      final pathByUrl = <String, String>{};
       for (final url in urls) {
         final file = await SlideImageStore.existing(widget.lessonId, url);
-        if (file != null) paths.add(file.path);
+        if (file != null) pathByUrl[url] = file.path;
       }
+      final paths = <String>[
+        for (final url in pageUrls)
+          if (pathByUrl[url] != null) pathByUrl[url]!,
+      ];
 
       // 2. 最终完整性校验：拿到的必须一页不少
-      if (paths.length != urls.length) {
-        AppLogger.w('导出PDF', '完整性校验失败：${paths.length}/${urls.length}');
-        _toast('课件缓存发生变化（${paths.length}/${urls.length}），请等缓存完成');
+      if (paths.length != pageUrls.length) {
+        AppLogger.w('导出PDF', '完整性校验失败：${paths.length}/${pageUrls.length}');
+        _toast('课件缓存发生变化（${paths.length}/${pageUrls.length}），请等缓存完成');
         return;
       }
-      AppLogger.i('导出PDF', '完整性校验通过：${paths.length}/${urls.length}');
+      AppLogger.i('导出PDF', '完整性校验通过：${paths.length}/${pageUrls.length}');
 
       if (paths.isEmpty) {
         throw Exception('没有取到任何幻灯片图片');

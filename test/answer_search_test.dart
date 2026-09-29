@@ -4,10 +4,33 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:course_helper/api/answer_search.dart';
 import 'package:course_helper/models/answer_result.dart';
+import 'package:course_helper/models/presentation.dart';
 import 'package:course_helper/utils/network_error.dart';
 
 void main() {
   group('StandardizedQuestion', () {
+    test('雨课堂题目 HTML 图片与 PPT 整页图片分别记录', () {
+      final problem = Problem(
+        problemId: 'p1', problemType: 1,
+        body: '根据图示作答<img src="https://cdn/questions/a.png?token=one">',
+        score: 1, remark: '', answers: const [], hasRemark: false,
+        options: [
+          ProblemOption(key: 'A', value: '甲'),
+          ProblemOption(key: 'B', value: '<img src="https://cdn/options/b.png">'),
+        ],
+      );
+      final question = AnswerSearchApi.fromRainClassroomProblem(
+        problem, imageUrl: 'https://cdn/slides/whole-page.png',
+      );
+      expect(question.questionImageUrls, [
+        'https://cdn/questions/a.png?token=one',
+        'https://cdn/options/b.png',
+      ]);
+      expect(question.imageUrls, ['https://cdn/slides/whole-page.png']);
+      expect(AnswerSearchApi.fromRainClassroomProblem(problem).imageUrls,
+          question.questionImageUrls);
+    });
+
     test('fromChaoxing should extract question text and options', () {
       final quiz = {
         'type': 0,

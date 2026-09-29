@@ -100,6 +100,56 @@ void main() {
   });
 
   group('去重', () {
+    test('同文字同选项但题目 HTML 图片不同 → 保留两题', () {
+      final result = SlideScanner.scanSlides([
+        _slide(
+          index: 1,
+          coverAlt: 'https://cdn/slides/a.png',
+          problem: _problem(
+            problemId: 'p1',
+            body: '根据图示选择正确答案<img src="https://cdn/questions/a.png">',
+          ),
+        ),
+        _slide(
+          index: 2,
+          coverAlt: 'https://cdn/slides/b.png',
+          problem: _problem(
+            problemId: 'p2',
+            body: '根据图示选择正确答案<img src="https://cdn/questions/b.png">',
+          ),
+        ),
+      ]);
+
+      expect(result.total, 2);
+      expect(result.duplicateCount, 0);
+      expect(result.questions.map((q) => q.hash).toSet().length, 2);
+    });
+
+    test('只有整页图片的读图题依题号区分，普通文字题仍跨背景去重', () {
+      final visual = SlideScanner.scanSlides([
+        _slide(index: 1, cover: 'https://cdn/a.png', problem: _problem(problemId: 'p1', body: '根据图示选择正确答案')),
+        _slide(index: 2, cover: 'https://cdn/b.png', problem: _problem(problemId: 'p2', body: '根据图示选择正确答案')),
+      ]);
+      expect(visual.total, 2);
+
+      final ordinary = SlideScanner.scanSlides([
+        _slide(index: 1, cover: 'https://cdn/a.png', problem: _problem(problemId: 'p1')),
+        _slide(index: 2, cover: 'https://cdn/b.png', problem: _problem(problemId: 'p2')),
+      ]);
+      expect(ordinary.total, 1);
+    });
+
+    test('同一读图 problem 的题目页和结果页截图不同仍去重', () {
+      final result = SlideScanner.scanSlides([
+        _slide(index: 1, cover: 'https://cdn/question.png',
+            problem: _problem(problemId: 'p1', body: '根据图示选择正确答案')),
+        _slide(index: 2, cover: 'https://cdn/result.png',
+            problem: _problem(problemId: 'p1', body: '根据图示选择正确答案')),
+      ]);
+      expect(result.total, 1);
+      expect(result.duplicateCount, 1);
+    });
+
     test('同一道题出现在两页 → 只留第一次出现的那页', () {
       final result = SlideScanner.scanSlides([
         _slide(index: 1, problem: _problem()),
@@ -224,6 +274,36 @@ void main() {
         _slide(index: 4, coverAlt: 'https://img/4.png'),
       ]);
       expect(urls, ['https://img/1.png', 'https://img/4.png']);
+    });
+
+    test('导出页序列保留重复引用与空页，资源列表仍去重', () {
+      final slides = [
+        _slide(index: 1, coverAlt: 'https://img/a.png'),
+        _slide(index: 2, coverAlt: 'https://img/a.png'),
+        _slide(index: 3, coverAlt: 'https://img/b.png'),
+        _slide(index: 4, coverAlt: 'https://img/a.png'),
+        _slide(index: 5),
+      ];
+
+      expect(SlideScanner.imageUrlsOf(slides.take(2).toList()), [
+        'https://img/a.png',
+      ]);
+      expect(SlideScanner.exportPageUrlsOf(slides.take(2).toList()), [
+        'https://img/a.png',
+        'https://img/a.png',
+      ]);
+
+      expect(SlideScanner.imageUrlsOf(slides), [
+        'https://img/a.png',
+        'https://img/b.png',
+      ]);
+      expect(SlideScanner.exportPageUrlsOf(slides), [
+        'https://img/a.png',
+        'https://img/a.png',
+        'https://img/b.png',
+        'https://img/a.png',
+        '',
+      ]);
     });
   });
 }

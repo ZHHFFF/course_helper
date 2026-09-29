@@ -7,6 +7,7 @@ import '../models/active.dart';
 import '../models/course.dart';
 import '../models/presentation.dart';
 import '../models/rc_activity.dart';
+import '../models/user.dart';
 import '../session/account.dart';
 
 class CXCourseApi extends Api {
@@ -147,33 +148,77 @@ class CXCourseApi extends Api {
   }
 }
 
+class _LessonTokens {
+  final String lessonId;
+  final String bearerToken;
+  final String lessonToken;
+
+  const _LessonTokens(this.lessonId, this.bearerToken, this.lessonToken);
+}
+
 class RCCourseApi extends Api {
   RCCourseApi([super.user]);
 
-  // userId -> [bearerToken, lessonToken]
-  static final Map<String, List<String>> _tokens = {};
+  // 每个 uid 只保留一节课的当前 token；三项一起替换。
+  static final Map<String, _LessonTokens> _tokens = {};
+
+  String? get _tokenUid => user?.uid ?? AccountManager.currentSessionId;
+
+  _LessonTokens? get _activeTokens {
+    final uid = _tokenUid;
+    return uid == null || uid.isEmpty ? null : _tokens[uid];
+  }
 
   /// 获取当前用户的 bearerToken
   String? get bearerToken {
-    final uid = user?.uid ?? AccountManager.currentSessionId;
-    if (uid == null || uid.isEmpty) return null;
-    final token = _tokens[uid]?[0];
+    final token = _activeTokens?.bearerToken;
     return (token != null && token.isNotEmpty) ? token : null;
   }
 
   String? get lessonToken {
-    final uid = user?.uid ?? AccountManager.currentSessionId;
-    if (uid == null || uid.isEmpty) return null;
-    final token = _tokens[uid]?[1];
+    final token = _activeTokens?.lessonToken;
     return (token != null && token.isNotEmpty) ? token : null;
   }
 
-  void _setToken(String bearerToken, String lessonToken) {
-    final uid = user?.uid ?? AccountManager.currentSessionId;
-    if (uid != null && uid.isNotEmpty) {
-      _tokens[uid] = [bearerToken, lessonToken];
+  String? lessonTokenFor(String lessonId) =>
+      _activeTokens?.lessonId == lessonId ? lessonToken : null;
+
+  bool hasTokensForLesson(String lessonId) =>
+      _activeTokens?.lessonId == lessonId &&
+      bearerToken != null &&
+      lessonToken != null;
+
+  static List<User> accountsNeedingCheckIn(
+    List<User> accounts,
+    String lessonId,
+  ) => [
+        for (final account in accounts)
+          if (!RCCourseApi(account).hasTokensForLesson(lessonId)) account,
+      ];
+
+  void _discardOtherLessonTokens(String lessonId) {
+    final uid = _tokenUid;
+    if (uid != null && _tokens[uid]?.lessonId != lessonId) {
+      _tokens.remove(uid);
     }
   }
+
+  void _setToken(String lessonId, String bearerToken, String lessonToken) {
+    final uid = _tokenUid;
+    if (uid != null && uid.isNotEmpty) {
+      _tokens[uid] = _LessonTokens(lessonId, bearerToken, lessonToken);
+    }
+  }
+
+  @visibleForTesting
+  void debugStoreTokensForLesson(
+    String lessonId,
+    String bearerToken,
+    String lessonToken,
+  ) => _setToken(lessonId, bearerToken, lessonToken);
+
+  @visibleForTesting
+  static void debugClearTokens() => _tokens.clear();
 
   static Future<Map<String, dynamic>?> getCourses() async {
     final url = '/v/course_meta/learning_list/';
@@ -304,6 +349,8 @@ class RCCourseApi extends Api {
       );
 
   Future<int?> checkIn(String lessonId, {String? classroomId}) async {
+    // 签到新课失败时也不能继续把上一节课的 bearer 当作当前凭证。
+    _discardOtherLessonTokens(lessonId);
     final url = '/api/v3/lesson/checkin';
     final jsonData = <String, dynamic>{
       'lessonId': lessonId,
@@ -326,7 +373,7 @@ class RCCourseApi extends Api {
       final bearerToken = response.headers.value('set-auth') ?? '';
       final lessonToken = data['data']?['lessonToken']?.toString() ?? '';
       if (bearerToken.isNotEmpty || lessonToken.isNotEmpty) {
-        _setToken(bearerToken, lessonToken);
+        _setToken(lessonId, bearerToken, lessonToken);
       }
       return 0;
     } else {

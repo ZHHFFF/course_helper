@@ -518,53 +518,51 @@ class SignInPageState extends State<SignInPage> {
   Future<void> _performMultiSign() async {
     if (_selectedAccounts.isEmpty || _currentStrategy == null) return;
     if (_isMultiSigning) return;
-  
+    final originalSessionId = AccountManager.currentSessionId;
+
     setState(() {
       _isLoading = true;
       _isMultiSigning = true;
     });
 
-    final isQrCodeSign = widget.active.signType == SignType.qrCode;
+    try {
+      final isQrCodeSign = widget.active.signType == SignType.qrCode;
 
-    // 除二维码签到以外 其他签到预先处理验证码
-    if (_needCaptcha && !isQrCodeSign) {
-      for (var user in _selectedAccounts) {
-        AccountManager.setCurrentSessionTemp(user.uid);
+      // 除二维码签到以外 其他签到预先处理验证码
+      if (_needCaptcha && !isQrCodeSign) {
+        for (var user in _selectedAccounts) {
+          AccountManager.setCurrentSessionTemp(user.uid);
 
-        if (!await _handleCaptcha(user.uid)) {
-          if (mounted) {
-            setState(() {
-              _isLoading = false;
-              _isMultiSigning = false;
-            });
+          if (!await _handleCaptcha(user.uid)) {
+            _showErrorMessage('验证码取消或失败');
+            setUserStatus(user.uid, AccountStatus.error, message: '验证码取消或失败');
+            return;
           }
-          _showErrorMessage('验证码取消或失败');
-          setUserStatus(user.uid, AccountStatus.error, message: '验证码取消或失败');
-          return;
         }
+        AccountManager.setCurrentSessionTemp(originalSessionId);
       }
-      AccountManager.setCurrentSessionTemp(_currentUser!.uid);
-    }
 
-    final results = await ApiService.sendForEachUser(
-      _selectedAccounts,
-      (user) async {
-        return await _currentStrategy!.signForAccount(user, _signParams, this);
+      final results = await ApiService.sendForEachUser(
+        _selectedAccounts,
+        (user) async {
+          return await _currentStrategy!.signForAccount(user, _signParams, this);
+        },
+      );
+
+      // 统一处理所有签到结果
+      for (int i = 0; i < _selectedAccounts.length; i++) {
+        final user = _selectedAccounts[i];
+        final result = results[i];
+        await _handleSignResult(result, user);
       }
-    );
-    
-    // 统一处理所有签到结果
-    for (int i = 0; i < _selectedAccounts.length; i++) {
-      final user = _selectedAccounts[i];
-      final result = results[i];
-      await _handleSignResult(result, user);
-    }
-  
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-        _isMultiSigning = false;
-      });
+    } finally {
+      AccountManager.setCurrentSessionTemp(originalSessionId);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isMultiSigning = false;
+        });
+      }
     }
   }
 

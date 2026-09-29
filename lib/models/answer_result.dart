@@ -22,6 +22,9 @@ class StandardizedQuestion {
   /// 带题图片地址列表（雨课堂当前页 PPT 封面 / 学习通题干里的插图）
   final List<String> imageUrls;
 
+  /// 题目 HTML 自身引用的图片，不包含 PPT 整页封面。
+  final List<String> questionImageUrls;
+
   /// 拉取图片所需的请求头（学习通图片需要鉴权）
   final Map<String, String>? imageHeaders;
 
@@ -38,6 +41,7 @@ class StandardizedQuestion {
     this.rawAnswerData,
     this.slideText = '',
     this.imageUrls = const [],
+    this.questionImageUrls = const [],
     this.imageHeaders,
     this.problemId = '',
   });
@@ -157,6 +161,7 @@ class StandardizedQuestion {
       options: options,
       rawAnswerData: quiz,
       imageUrls: imageUrls,
+      questionImageUrls: imageUrls,
       imageHeaders: imageHeaders,
     );
   }

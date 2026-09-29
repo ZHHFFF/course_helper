@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:course_helper/pages/courseware/list.dart';
 import 'package:course_helper/platform.dart';
+import 'package:course_helper/session/account.dart';
 import 'package:course_helper/utils/storage.dart';
 import 'support/cache_test_env.dart';
 
@@ -136,27 +137,39 @@ void main() {
     test('setServer 切换雨课堂服务器不会误触发 platformNotifier', () async {
       final pm = PlatformManager();
       int notifyCount = 0;
+      int serverNotifyCount = 0;
 
       void listener() => notifyCount++;
+      void serverListener() => serverNotifyCount++;
       pm.platformNotifier.addListener(listener);
+      pm.serverNotifier.addListener(serverListener);
 
       await pm.setServer(RainClassroomServerType.huanghe);
       expect(notifyCount, equals(0));
+      expect(serverNotifyCount, equals(1));
       expect(pm.currentServer, equals(RainClassroomServerType.huanghe));
+      expect(pm.serverNotifier.value, equals(RainClassroomServerType.huanghe));
+
+      await pm.setServer(RainClassroomServerType.huanghe);
+      expect(serverNotifyCount, equals(1));
 
       pm.platformNotifier.removeListener(listener);
+      pm.serverNotifier.removeListener(serverListener);
     });
 
     test('initialize() 从持久化存储还原平台并同步 platformNotifier', () async {
       final pm = PlatformManager();
       // 在存储中模拟已保存 rainClassroom
       StorageManager.prefs.setString('current_platform', 'rainclassroom');
+      StorageManager.prefs.setString('current_server', 'pro');
 
       await pm.initialize();
 
       expect(pm.currentPlatform, equals(PlatformType.rainClassroom));
       expect(pm.platformNotifier.value, equals(PlatformType.rainClassroom));
       expect(pm.isYuketang, isTrue);
+      expect(pm.currentServer, equals(RainClassroomServerType.pro));
+      expect(pm.serverNotifier.value, equals(RainClassroomServerType.pro));
     });
 
     test('debugReset() 恢复管理器默认状态', () async {
@@ -273,6 +286,9 @@ void main() {
       // dispose 后切换平台，确保无任何内存泄漏异常或使用已销毁 State 的异常
       await PlatformManager().setPlatform(PlatformType.rainClassroom);
       expect(PlatformManager().currentPlatform, equals(PlatformType.rainClassroom));
+      await PlatformManager().setServer(RainClassroomServerType.pro);
+      AccountChangeNotifier().notifyAccountChanged();
+      await tester.pump();
     });
 
     testWidgets('高频往复并发切换平台（50次压力测试）保持最终一致性且无死锁', (tester) async {

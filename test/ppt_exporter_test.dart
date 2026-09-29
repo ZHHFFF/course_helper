@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -14,6 +15,9 @@ String _fakeSlide(Directory dir, int index, {required bool png}) {
   File(path).writeAsBytesSync(bytes);
   return path;
 }
+
+int _pdfPageCount(List<int> bytes) =>
+    RegExp(r'/Type\s*/Page\b').allMatches(latin1.decode(bytes, allowInvalid: true)).length;
 
 void main() {
   late Directory dir;
@@ -46,13 +50,26 @@ void main() {
     expect(String.fromCharCodes(result.bytes!.take(5)), '%PDF-');
   });
 
-  test('去重：同一张图重复传只写一页', () async {
+  test('同一路径被两页引用时写出两页', () async {
     final p = _fakeSlide(dir, 0, png: false);
-    final result = await PptExporter.build([p, p, p]);
+    final result = await PptExporter.build([p, p]);
 
     expect(result.ok, isTrue, reason: result.error);
-    expect(result.total, 1);
-    expect(result.written, 1);
+    expect(result.total, 2);
+    expect(result.written, 2);
+    expect(_pdfPageCount(result.bytes!), 2);
+  });
+
+  test('混合重复路径仍按输入顺序写出四页', () async {
+    final a = _fakeSlide(dir, 0, png: false);
+    final b = _fakeSlide(dir, 1, png: true);
+    final result = await PptExporter.build([a, a, b, a]);
+
+    expect(result.ok, isTrue, reason: result.error);
+    expect(result.total, 4);
+    expect(result.written, 4);
+    expect(result.skipped, isEmpty);
+    expect(_pdfPageCount(result.bytes!), 4);
   });
 
   test('坏文件被跳过，不影响其它页', () async {

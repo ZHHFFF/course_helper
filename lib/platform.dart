@@ -54,6 +54,10 @@ class PlatformManager {
   final ValueNotifier<PlatformType> platformNotifier =
       ValueNotifier<PlatformType>(PlatformType.chaoxing);
 
+  /// 雨课堂服务器变更通知器，供保活页面刷新远端数据。
+  final ValueNotifier<RainClassroomServerType> serverNotifier =
+      ValueNotifier<RainClassroomServerType>(RainClassroomServerType.changjiang);
+
   /// 雨课堂服务器的**新装默认值**。
   ///
   /// 2026-09-22 用户要求「雨课堂默认为长江雨课堂」。
@@ -111,9 +115,9 @@ class PlatformManager {
             break;
         }
       }
-      
       // 触发平台变化回调，初始化 headers
       ApiService.onPlatformChange?.call();
+      serverNotifier.value = _currentServer;
     } catch (e) {
       debugPrint('加载平台失败：$e');
     }
@@ -149,6 +153,7 @@ class PlatformManager {
         debugPrint('保存服务器失败：$e');
       }
       ApiService.onPlatformChange?.call();
+      serverNotifier.value = server;
     }
   }
 
@@ -158,5 +163,6 @@ class PlatformManager {
     _instance._currentPlatform = PlatformType.chaoxing;
     _instance._currentServer = RainClassroomServerType.changjiang;
     _instance.platformNotifier.value = PlatformType.chaoxing;
+    _instance.serverNotifier.value = RainClassroomServerType.changjiang;
   }
 }

@@ -14,6 +14,8 @@
 ///    导致 A 题复用 B 题的答案。
 /// 4. 题干和选项都为空时（题目完全只存在于图片里），内容指纹毫无区分度，
 ///    退化为使用服务器给的 problemId
+/// 5. 题目 HTML 中的图片参与内容指纹；整页截图仅在题干明确要求读图时
+///    用 problemId（没有 ID 时用稳定图片 URL）区分，避免普通文字题随背景变化。
 library;
 
 import 'dart:convert';
@@ -21,6 +23,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
 import '../models/answer_result.dart';
+import '../utils/image_cache_key.dart';
 
 class QuestionHash {
   QuestionHash._();
@@ -46,13 +49,44 @@ class QuestionHash {
         return 'pid-${_sha256(problemId)}';
       }
       // 连 problemId 都没有（理论上不会发生），退到图片地址，至少能区分不同页
-      final image =
-          question.imageUrls.isEmpty ? '' : question.imageUrls.first.trim();
+      final image = question.imageUrls
+          .map(imageCacheIdentity)
+          .firstWhere((url) => url.isNotEmpty, orElse: () => '');
       return 'img-${_sha256(image)}';
     }
 
-    return _sha256('$body|${question.questionType}|$options');
+    final content = '$body|${question.questionType}|$options';
+    final ownImages = question.questionImageUrls
+        .map(imageCacheIdentity)
+        .where((url) => url.isNotEmpty)
+        .toList();
+    if (ownImages.isNotEmpty) {
+      // 题干/选项 HTML 内的图片就是题目内容，按出现顺序保留。
+      return _sha256('$content|question-images:${jsonEncode(ownImages)}');
+    }
+
+    // 雨课堂只给整页截图时，只有明确要求读图的题才需要图片语境。
+    // 同一 problem 的题目页/答题页截图可能不同，因此优先用服务器题号；
+    // 没有题号时才退到稳定的图片 URL 身份。
+    if (_refersToImage(body) && question.hasImage) {
+      final problemId = question.problemId.trim();
+      if (problemId.isNotEmpty) {
+        return _sha256('$content|visual-problem:$problemId');
+      }
+      final image = question.imageUrls
+          .map(imageCacheIdentity)
+          .firstWhere((url) => url.isNotEmpty);
+      return _sha256('$content|visual-image:$image');
+    }
+
+    return _sha256(content);
   }
+
+  static bool _refersToImage(String body) => RegExp(
+        r'(?:根据|根據|依据|依據|依照|观察|觀察|参照|參照|参考|參考|结合|結合|看)(?:下|上|这|這|该|該)?(?:张|張)?(?:图片|圖片|图示|圖示|图像|圖像|图形|圖形|图表|圖表|图|圖)|'
+        r'(?:下|上|这|這|该|該)(?:张|張)?(?:图片|圖片|图示|圖示|图像|圖像|图形|圖形|图表|圖表|图|圖)|如图|如圖|图中|圖中|'
+    r'(?:shownin|lookat|accordingto)(?:the)?(?:figure|image|picture|diagram)',
+  ).hasMatch(body);
 
   /// 归一化单段文本
   ///

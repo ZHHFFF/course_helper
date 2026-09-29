@@ -361,19 +361,24 @@ class CoursewareViewerState extends State<CoursewareViewer> {
     setState(() => _exporting = true);
 
     try {
+      final pageUrls = SlideScanner.exportPageUrlsOf(presentation.slides);
+      if (pageUrls.isEmpty) throw Exception('这份课件没有任何图片');
       final urls = SlideScanner.imageUrlsOf(presentation.slides);
-      if (urls.isEmpty) throw Exception('这份课件没有任何图片');
 
-      // 只读盘、不下载（离线语义）
-      final paths = <String>[];
+      // 资源只查一次磁盘，再按 slide 原顺序生成页面（离线、不下载）。
+      final pathByUrl = <String, String>{};
       for (final url in urls) {
         final file = await SlideImageStore.existing(widget.lessonId, url);
-        if (file != null) paths.add(file.path);
+        if (file != null) pathByUrl[url] = file.path;
       }
+      final paths = <String>[
+        for (final url in pageUrls)
+          if (pathByUrl[url] != null) pathByUrl[url]!,
+      ];
 
-      if (paths.length != urls.length) {
-        AppLogger.w(_tag, '拒绝导出：只有 ${paths.length}/${urls.length} 页有缓存');
-        _toast('还有 ${urls.length - paths.length} 页没缓存，导出会缺页。'
+      if (paths.length != pageUrls.length) {
+        AppLogger.w(_tag, '拒绝导出：只有 ${paths.length}/${pageUrls.length} 页有缓存');
+        _toast('还有 ${pageUrls.length - paths.length} 页没缓存，导出会缺页。'
             '请先进课堂把这节课的课件缓存完整');
         return;
       }

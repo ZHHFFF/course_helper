@@ -36,7 +36,10 @@ import 'package:flutter_miuix/miuix.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../api/course.dart';
+import '../../api/rc_crawler.dart';
+import '../../cache/cached_image.dart';
 import '../../cache/course_cache.dart';
+import '../../cache/ppt_cache.dart';
 import '../../models/course.dart';
 import '../../models/rc_activity.dart';
 import '../../platform.dart';
@@ -126,6 +129,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
   bool _pptLoading = false;
   List<CachedPresentation> _presentations = [];
+  final Set<String> _completePresentationKeys = {};
 
   CachedPresentation? _viewerPpt;
 
@@ -196,11 +200,16 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
   /// 请求防竞态版本号：快速切换平台或重复触发时，保证只有最后一次请求生效
   int _loadToken = 0;
+  late final StreamSubscription<void> _accountChanges;
 
   @override
   void initState() {
     super.initState();
     PlatformManager().platformNotifier.addListener(_onPlatformChanged);
+    PlatformManager().serverNotifier.addListener(_onServerChanged);
+    _accountChanges = AccountChangeNotifier().accountChanges.listen((_) {
+      _reloadForSourceChange('账号');
+    });
     _loadPinnedKeys();
     _loadCourses();
   }
@@ -208,13 +217,23 @@ class _CoursewarePageState extends State<CoursewarePage> {
   @override
   void dispose() {
     PlatformManager().platformNotifier.removeListener(_onPlatformChanged);
+    PlatformManager().serverNotifier.removeListener(_onServerChanged);
+    unawaited(_accountChanges.cancel());
     _snackbarHost.dispose();
     super.dispose();
   }
 
-  void _onPlatformChanged() {
+  void _onPlatformChanged() => _reloadForSourceChange('平台');
+
+  void _onServerChanged() {
+    if (PlatformManager().isRainClassroom) {
+      _reloadForSourceChange('雨课堂服务器');
+    }
+  }
+
+  void _reloadForSourceChange(String source) {
     if (!mounted) return;
-    AppLogger.i(_tag, '平台发生变更（${PlatformManager().currentPlatform.name}），重置课件页状态');
+    AppLogger.i(_tag, '$source 发生变更，重置课件页状态');
     _loadToken++;
     setState(() {
       _stage = _Stage.courseList;
@@ -223,6 +242,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
       _entry = null;
       _pptLoading = false;
       _presentations = [];
+      _completePresentationKeys.clear();
       _viewerPpt = null;
       _activities = [];
       _activitiesLoading = false;
@@ -432,22 +452,14 @@ class _CoursewarePageState extends State<CoursewarePage> {
       _stage = _Stage.pptList;
       _pptLoading = true;
       _presentations = [];
+      _completePresentationKeys.clear();
       _activities = [];
       _activitiesLoading = false;
       _topBarInset = 0;
     });
 
-    final all = <CachedPresentation>[];
-    for (final lessonId in entry.lessonIds) {
-      all.addAll(await CourseCache.listPresentations(lessonId));
-    }
-    all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
-
+    await _refreshPresentations(entry);
     if (!mounted || _entry != entry) return;
-    setState(() {
-      _presentations = all;
-      _pptLoading = false;
-    });
 
     // 自动拉取该课程的云端教学活动与课件
     _loadActivities(entry);
@@ -486,8 +498,46 @@ class _CoursewarePageState extends State<CoursewarePage> {
         p.presentationId == act.id);
   }
 
+  String _presentationKey(CachedPresentation ppt) =>
+      '${ppt.lessonId}/${ppt.presentationId}';
+
+  Future<void> _refreshPresentations(_CourseEntry entry) async {
+    final all = <CachedPresentation>[];
+    for (final lessonId in entry.lessonIds) {
+      all.addAll(await CourseCache.listPresentations(lessonId));
+    }
+    all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+
+    final complete = <String>{};
+    for (final ppt in all) {
+      final data = await PptCache.load(ppt.lessonId, ppt.presentationId);
+      if (data != null &&
+          await SlideImageStore.hasAllSlides(ppt.lessonId, data.slides)) {
+        complete.add(_presentationKey(ppt));
+      }
+    }
+    if (!mounted || _entry != entry) return;
+    setState(() {
+      _presentations = all;
+      _completePresentationKeys
+        ..clear()
+        ..addAll(complete);
+      entry.presentationCount = all.length;
+      _pptLoading = false;
+    });
+  }
+
+  void _rememberActivityLessonIds(_CourseEntry entry, RCActivity act) {
+    for (final id in [act.coursewareId, act.id, act.presentationId ?? '']) {
+      if (id.isNotEmpty && !entry.lessonIds.contains(id)) entry.lessonIds.add(id);
+    }
+  }
+
   /// 判定活动是否已有本地缓存
-  bool _isActivityCached(RCActivity act) => _findCachedPresentation(act) != null;
+  bool _isActivityCached(RCActivity act) {
+    final ppt = _findCachedPresentation(act);
+    return ppt != null && _completePresentationKeys.contains(_presentationKey(ppt));
+  }
 
   /// 抓取单个活动对应的课件 PPT
   Future<void> _crawlActivity(RCActivity act) async {
@@ -500,12 +550,17 @@ class _CoursewarePageState extends State<CoursewarePage> {
     _toast('正在抓取「${act.title}」课件 PPT...');
 
     try {
+      final cached = _findCachedPresentation(act);
       final pres = await RCCourseApi.crawlLessonPresentation(
-        lessonId: act.coursewareId,
+        lessonId: act.coursewareId.isNotEmpty
+            ? act.coursewareId
+            : (cached?.lessonId ?? act.id),
         courseId: entry.courseId,
         courseName: entry.name,
         classroomId: entry.classId.isNotEmpty ? entry.classId : act.classroomId,
-        presentationId: act.presentationId,
+        presentationId: act.presentationId?.isNotEmpty == true
+            ? act.presentationId
+            : cached?.presentationId,
         presentationIds: act.presentationIds,
         activity: act,
       );
@@ -513,29 +568,15 @@ class _CoursewarePageState extends State<CoursewarePage> {
       if (!mounted || _entry != entry) return;
       if (pres != null) {
         _toast('抓取成功：${pres.title.isNotEmpty ? pres.title : act.title}（${pres.slides.length} 页）');
-        if (act.coursewareId.isNotEmpty && !entry.lessonIds.contains(act.coursewareId)) {
-          entry.lessonIds.add(act.coursewareId);
-        }
-        if (act.id.isNotEmpty && !entry.lessonIds.contains(act.id)) {
-          entry.lessonIds.add(act.id);
-        }
-        if (act.presentationId != null && act.presentationId!.isNotEmpty && !entry.lessonIds.contains(act.presentationId!)) {
-          entry.lessonIds.add(act.presentationId!);
-        }
-        final all = <CachedPresentation>[];
-        for (final lid in entry.lessonIds) {
-          all.addAll(await CourseCache.listPresentations(lid));
-        }
-        all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
-        if (mounted && _entry == entry) {
-          setState(() {
-            _presentations = all;
-            entry.presentationCount = all.length;
-          });
-        }
+        _rememberActivityLessonIds(entry, act);
+        await _refreshPresentations(entry);
       } else {
         _toast('未抓取到有效 PPT（可能老师未上传或该活动无课件）');
       }
+    } on IncompletePresentationException {
+      _toast('课件未完整下载，已下载部分已保留；再次抓取可补齐');
+      _rememberActivityLessonIds(entry, act);
+      await _refreshPresentations(entry);
     } catch (e) {
       AppLogger.w(_tag, '抓取课件失败：$e');
       _toast('抓取课件失败：$e');
@@ -546,7 +587,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
     }
   }
 
-  /// 批量抓取所有未缓存的历史课堂课件（支持课堂教学 Type 14 与课件资料 Type 2）
+  /// 批量抓取未完整的历史课堂课件（支持课堂教学 Type 14 与课件资料 Type 2）
   Future<void> _crawlAllUncached() async {
     if (_batchCrawling) return;
     final entry = _entry;
@@ -555,7 +596,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
     final targets = _activities.where((a) => (a.isLesson || a.isCourseware) && !_isActivityCached(a)).toList();
 
     if (targets.isEmpty) {
-      _toast('没有需要抓取的课件（全部已缓存或暂无课件活动）');
+      _toast('没有需要抓取的课件（全部已完整缓存或暂无课件活动）');
       return;
     }
 
@@ -563,45 +604,40 @@ class _CoursewarePageState extends State<CoursewarePage> {
     _toast('开始批量抓取 ${targets.length} 份课件...');
 
     var successCount = 0;
+    var incompleteCount = 0;
+    var metadataFailedCount = 0;
     for (final act in targets) {
       if (!mounted || _entry != entry) break;
       final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
       setState(() => _crawlingIds.add(crawlKey));
       try {
+        final cached = _findCachedPresentation(act);
         final pres = await RCCourseApi.crawlLessonPresentation(
-          lessonId: act.coursewareId,
+          lessonId: act.coursewareId.isNotEmpty
+              ? act.coursewareId
+              : (cached?.lessonId ?? act.id),
           courseId: entry.courseId,
           courseName: entry.name,
           classroomId: entry.classId.isNotEmpty ? entry.classId : act.classroomId,
-          presentationId: act.presentationId,
+          presentationId: act.presentationId?.isNotEmpty == true
+              ? act.presentationId
+              : cached?.presentationId,
           presentationIds: act.presentationIds,
           activity: act,
         );
         if (pres != null) {
           successCount++;
-          if (act.coursewareId.isNotEmpty && !entry.lessonIds.contains(act.coursewareId)) {
-            entry.lessonIds.add(act.coursewareId);
-          }
-          if (act.id.isNotEmpty && !entry.lessonIds.contains(act.id)) {
-            entry.lessonIds.add(act.id);
-          }
-          if (act.presentationId != null && act.presentationId!.isNotEmpty && !entry.lessonIds.contains(act.presentationId!)) {
-            entry.lessonIds.add(act.presentationId!);
-          }
-          // 实时增量更新已缓存列表与计数，给用户即时反馈
-          final all = <CachedPresentation>[];
-          for (final lid in entry.lessonIds) {
-            all.addAll(await CourseCache.listPresentations(lid));
-          }
-          all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
-          if (mounted && _entry == entry) {
-            setState(() {
-              _presentations = all;
-              entry.presentationCount = all.length;
-            });
-          }
+          _rememberActivityLessonIds(entry, act);
+          await _refreshPresentations(entry);
+        } else {
+          metadataFailedCount++;
         }
+      } on IncompletePresentationException {
+        incompleteCount++;
+        _rememberActivityLessonIds(entry, act);
+        await _refreshPresentations(entry);
       } catch (e) {
+        metadataFailedCount++;
         AppLogger.w(_tag, '批量抓取课件出错 $crawlKey：$e');
       } finally {
         if (mounted) {
@@ -611,18 +647,13 @@ class _CoursewarePageState extends State<CoursewarePage> {
     }
 
     if (mounted && _entry == entry) {
-      final all = <CachedPresentation>[];
-      for (final lid in entry.lessonIds) {
-        all.addAll(await CourseCache.listPresentations(lid));
-      }
-      all.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+      await _refreshPresentations(entry);
       if (mounted && _entry == entry) {
         setState(() {
-          _presentations = all;
-          entry.presentationCount = all.length;
           _batchCrawling = false;
         });
-        _toast('批量抓取完成：成功 $successCount / ${targets.length} 份');
+        _toast('批量抓取完成：完整 $successCount，未完整 $incompleteCount，'
+            '未抓到课件 $metadataFailedCount。未完整课件可再次批量抓取补齐');
       }
     }
   }
@@ -678,6 +709,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
       _presentations.removeWhere((p) =>
           p.lessonId == ppt.lessonId &&
           p.presentationId == ppt.presentationId);
+      _completePresentationKeys.remove(_presentationKey(ppt));
     });
 
     // 第一层的计数同步（`_entry` 是同一个对象引用，改完即可）
@@ -1199,7 +1231,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                             const SizedBox(width: 4),
                           ],
                           MiuixText(
-                            _batchCrawling ? '正在批量抓取...' : '抓取全部未缓存 ($uncachedLessons 份)',
+                            _batchCrawling ? '正在批量抓取...' : '抓取或补齐课件 ($uncachedLessons 份)',
                           ),
                         ],
                       ),
@@ -1256,6 +1288,8 @@ class _CoursewarePageState extends State<CoursewarePage> {
     final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
     final isCrawling = _crawlingIds.contains(crawlKey);
     final isCached = cachedPpt != null;
+    final isComplete = cachedPpt != null &&
+        _completePresentationKeys.contains(_presentationKey(cachedPpt));
 
     IconData typeIcon;
     Color iconColor;
@@ -1330,7 +1364,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                               ),
                             ),
                             const SizedBox(width: 6),
-                            if (isCached)
+                            if (isComplete)
                               Container(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 5,
@@ -1357,7 +1391,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                                   borderRadius: BorderRadius.circular(4),
                                 ),
                                 child: MiuixText(
-                                  '未缓存',
+                                  isCached ? '未完整' : '未缓存',
                                   fontSize: 10,
                                   color: colors.onSecondaryContainer,
                                 ),
@@ -1393,7 +1427,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                         const SizedBox(height: 4),
                         MiuixText(
                           isCached
-                              ? '${cachedPpt.slideCount} 页 · ${_formatDate(cachedPpt.savedAt)} · ${_formatBytes(cachedPpt.bytes)}'
+                              ? '${isComplete ? '' : '图片未完整 · '}${cachedPpt.slideCount} 页 · ${_formatDate(cachedPpt.savedAt)} · ${_formatBytes(cachedPpt.bytes)}'
                               : (dateStr.isNotEmpty ? dateStr : '点击可抓取课件到本地'),
                           fontSize: 12,
                           color: colors.onSurfaceVariantSummary,
@@ -1412,20 +1446,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                       '回放视频',
                       onPressed: () => _showReplayDialog(act),
                     ),
-                  if (isCached) ...[
-                    MiuixTextButton(
-                      '查看课件',
-                      onPressed: () => _openViewer(cachedPpt),
-                    ),
-                    MiuixIconButton(
-                      onPressed: () => _askDelete(cachedPpt),
-                      child: Icon(
-                        Icons.delete_outline,
-                        size: 20,
-                        color: colors.onSurfaceVariantActions,
-                      ),
-                    ),
-                  ] else if (isCrawling) ...[
+                  if (isCrawling) ...[
                     const SizedBox(
                       width: 16,
                       height: 16,
@@ -1438,6 +1459,24 @@ class _CoursewarePageState extends State<CoursewarePage> {
                       color: colors.primary,
                     ),
                     const SizedBox(width: 8),
+                  ] else if (isCached) ...[
+                    MiuixTextButton(
+                      '查看课件',
+                      onPressed: () => _openViewer(cachedPpt),
+                    ),
+                    if (!isComplete)
+                      MiuixTextButton(
+                        '继续抓取',
+                        onPressed: () => _crawlActivity(act),
+                      ),
+                    MiuixIconButton(
+                      onPressed: () => _askDelete(cachedPpt),
+                      child: Icon(
+                        Icons.delete_outline,
+                        size: 20,
+                        color: colors.onSurfaceVariantActions,
+                      ),
+                    ),
                   ] else if (act.isLesson || act.isCourseware) ...[
                     MiuixTextButton(
                       '抓取课件',
@@ -1500,6 +1539,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                     ),
                     const SizedBox(height: 5),
                     MiuixText(
+                      '${_completePresentationKeys.contains(_presentationKey(ppt)) ? '' : '图片未完整 · '}'
                       '${ppt.slideCount} 页 · ${_formatDate(ppt.savedAt)} · '
                       '${_formatBytes(ppt.bytes)}',
                       fontSize: 12,

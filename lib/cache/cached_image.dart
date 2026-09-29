@@ -27,7 +27,9 @@ import 'package:path/path.dart' as p;
 
 import '../utils/app_logger.dart';
 import '../utils/image_cache_key.dart';
+import '../models/presentation.dart';
 import 'course_cache.dart';
+import 'slide_scanner.dart';
 
 /// 幻灯片图片的磁盘存储
 class SlideImageStore {
@@ -44,15 +46,20 @@ class SlideImageStore {
       receiveTimeout: const Duration(seconds: 30),
       followRedirects: true,
       // 图片挂了不该抛到 UI 上，交给调用方按 null/异常处理
-      validateStatus: (status) => status != null && status >= 200 && status < 400,
+      validateStatus: (status) =>
+          status != null && status >= 200 && status < 400,
     ),
   );
 
-  static Future<Directory> imageDir(String lessonId,
-      {bool create = true}) async {
+  static Future<Directory> imageDir(
+    String lessonId, {
+    bool create = true,
+  }) async {
     final dir = Directory(
-      p.join((await CourseCache.pptDir(lessonId, create: create)).path,
-          _imagesDirName),
+      p.join(
+        (await CourseCache.pptDir(lessonId, create: create)).path,
+        _imagesDirName,
+      ),
     );
     if (create && !await dir.exists()) {
       await dir.create(recursive: true);
@@ -71,7 +78,12 @@ class SlideImageStore {
     try {
       final file = await fileFor(lessonId, url);
       if (!await file.exists()) return null;
-      if (await file.length() == 0) return null;
+      final reader = await file.open();
+      try {
+        if (!_isSupportedImage(await reader.read(32))) return null;
+      } finally {
+        await reader.close();
+      }
       return file;
     } catch (e) {
       AppLogger.d(_tag, '查图片缓存失败：$e');
@@ -135,8 +147,8 @@ class SlideImageStore {
     final response = await _dio.get<List<int>>(url);
     final data = response.data;
 
-    if (data == null || data.isEmpty) {
-      throw StateError('图片内容为空');
+    if (data == null || !_isSupportedImage(data)) {
+      throw StateError('图片内容不是受支持的图片');
     }
 
     // 临时文件名带自增序号：就算磁盘上有上次残留的 .tmp 也不会互相踩
@@ -157,6 +169,53 @@ class SlideImageStore {
     return target;
   }
 
+  // 只检查文件头，不在列表完整性检查时解码整张图片。PDF 与 Flutter
+  // ImageProvider 均支持这些课件图片格式；HTML/JSON 错误页不能进入缓存。
+  static bool _isSupportedImage(List<int> bytes) {
+    if (bytes.length >= 4 &&
+        bytes[0] == 0xff &&
+        bytes[1] == 0xd8 &&
+        bytes[2] == 0xff) {
+      return true; // JPEG
+    }
+    if (bytes.length >= 24 &&
+        bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4e &&
+        bytes[3] == 0x47 &&
+        bytes[4] == 0x0d &&
+        bytes[5] == 0x0a &&
+        bytes[6] == 0x1a &&
+        bytes[7] == 0x0a &&
+        bytes[12] == 0x49 &&
+        bytes[13] == 0x48 &&
+        bytes[14] == 0x44 &&
+        bytes[15] == 0x52) {
+      return true; // PNG IHDR
+    }
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50) {
+      return true; // WebP
+    }
+    if (bytes.length >= 10 &&
+        bytes[0] == 0x47 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x38 &&
+        (bytes[4] == 0x37 || bytes[4] == 0x39) &&
+        bytes[5] == 0x61) {
+      return true; // GIF87a / GIF89a
+    }
+    return false;
+  }
+
   /// 缓存键统一由 `utils/image_cache_key.dart` 推导。
   ///
   /// 落盘文件名、并发去重键、队列去重键**三者必须是同一个身份**。
@@ -171,6 +230,49 @@ class SlideImageStore {
   /// 而落盘文件名就是 `<digest>.bin` —— 所以这个推导必须是公开的，
   /// 不能各写一份（写歪了就变成「明明缓存了却显示不出来」）。
   static String digestOf(String url) => _digest(url);
+
+  /// 历史课件的离线完整性：每页都要有图片地址，且共享资源已落盘。
+  static Future<bool> hasAllSlides(
+    String lessonId,
+    List<PresentationSlide> slides,
+  ) async {
+    final pages = SlideScanner.exportPageUrlsOf(slides);
+    if (pages.isEmpty || pages.any((url) => url.isEmpty)) return false;
+    final seen = <String>{};
+    for (final url in SlideScanner.imageUrlsOf(slides)) {
+      if (!seen.add(_digest(url))) continue;
+      if (await existing(lessonId, url) == null) return false;
+    }
+    return true;
+  }
+
+  /// 等待缺失图片补齐；下载失败保留已成功资源，供下次重试。
+  static Future<bool> ensureAllSlides(
+    String lessonId,
+    List<PresentationSlide> slides, {
+    Future<File> Function(String lessonId, String url)? downloadMissing,
+  }) async {
+    final urls = <String>[];
+    final seen = <String>{};
+    for (final url in SlideScanner.imageUrlsOf(slides)) {
+      if (seen.add(_digest(url))) urls.add(url);
+    }
+    final fetch = downloadMissing ?? download;
+    // 只对缺失资源发请求，最多 4 个同时下载；不使用会被课堂切页重置的全局预取队列。
+    for (var i = 0; i < urls.length; i += 4) {
+      await Future.wait(
+        urls.skip(i).take(4).map((url) async {
+          if (await existing(lessonId, url) != null) return;
+          try {
+            await fetch(lessonId, url);
+          } catch (e) {
+            AppLogger.w(_tag, '历史课件图片下载失败（$url）：$e');
+          }
+        }),
+      );
+    }
+    return hasAllSlides(lessonId, slides);
+  }
 }
 
 /// 走磁盘缓存的 `ImageProvider`
@@ -251,10 +353,10 @@ class SlidePrefetchProgress {
   });
 
   const SlidePrefetchProgress.idle()
-      : downloaded = 0,
-        skipped = 0,
-        failed = 0,
-        total = 0;
+    : downloaded = 0,
+      skipped = 0,
+      failed = 0,
+      total = 0;
 
   int get finished => downloaded + skipped + failed;
 
@@ -302,9 +404,7 @@ class SlideImagePrefetcher {
   static bool paused = false;
 
   static final ValueNotifier<SlidePrefetchProgress> progress =
-      ValueNotifier<SlidePrefetchProgress>(
-    const SlidePrefetchProgress.idle(),
-  );
+      ValueNotifier<SlidePrefetchProgress>(const SlidePrefetchProgress.idle());
 
   /// 整份 PPT 是否已经完整缓存（PDF 导出的前置条件）
   static bool get isComplete => progress.value.isComplete;
@@ -369,16 +469,14 @@ class SlideImagePrefetcher {
 
     try {
       // 起 N 个 worker 抢同一个队列
-      await Future.wait(
-        List.generate(maxConcurrent, (_) => _worker()),
-      );
+      await Future.wait(List.generate(maxConcurrent, (_) => _worker()));
     } finally {
       _running = false;
       _emit();
       AppLogger.i(
         _tag,
         '预取结束：新下载 $_downloaded，已缓存 $_skipped，失败 $_failed'
-            '（$_total 张，${isComplete ? "完整" : "未完整"}）',
+        '（$_total 张，${isComplete ? "完整" : "未完整"}）',
       );
     }
   }

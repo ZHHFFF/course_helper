@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show WebSocket;
 
+import '../cache/cached_image.dart';
 import '../cache/ppt_cache.dart';
 import '../models/course.dart';
 import '../models/presentation.dart';
@@ -19,6 +20,13 @@ import 'course.dart';
 /// - Ajax's Blog: 雨课堂全量活动 `/v2/api/web/logs/learn/{classroom_id}`
 /// - 结课归档接口 `/v2/api/web/classroom_archive` 与 Web 课程 `/v2/api/web/courses/list?identity=2`
 /// - 课堂回放与全量课件 PPT 元数据拉取
+class IncompletePresentationException implements Exception {
+  const IncompletePresentationException();
+
+  @override
+  String toString() => '课件图片未完整下载，已下载部分已保留；再次抓取可补齐';
+}
+
 class RCCrawler {
   static const String _tag = 'RCCrawler';
 
@@ -246,7 +254,7 @@ class RCCrawler {
   ///    - Web 端课后课件接口 (`/v2/api/web/lessonafter/{id}/presentation`)
   ///    - 实时课堂 WebSocket 握手
   ///    - 课件资料卡片接口 (`/v2/api/web/cards/detlist`)
-  /// 4. 多路拉取整份 PPT 元数据并落盘缓存到 `PptCache` 与 `CourseCache`。
+  /// 4. 保存元数据并等待所有投影片图片落盘；缺图时保留元数据供下次补抓。
   static Future<Presentation?> crawlLessonPresentation({
     required String lessonId,
     required String courseId,
@@ -276,12 +284,16 @@ class RCCrawler {
       }
     }
 
-    // 0. 优先命中本地缓存
+    // 0. 只有元数据和每页图片都齐全时，才可以直接命中本地缓存。
+    Presentation? incompleteCached;
     for (final pid in candidatePresIds) {
       final cached = await PptCache.load(lessonId, pid);
       if (cached != null && cached.slides.isNotEmpty) {
-        AppLogger.i(_tag, '命中本地课件缓存：$pid (${cached.slides.length} 页)');
-        return cached;
+        if (await SlideImageStore.hasAllSlides(lessonId, cached.slides)) {
+          AppLogger.i(_tag, '命中完整本地课件缓存：$pid (${cached.slides.length} 页)');
+          return cached;
+        }
+        incompleteCached ??= cached;
       }
     }
 
@@ -358,7 +370,7 @@ class RCCrawler {
     }
 
     // 链路 D：在线实时课堂 WebSocket 握手探测（仅在有 lessonToken 时尝试）
-    final lessonToken = api.lessonToken;
+    final lessonToken = api.lessonTokenFor(lessonId);
     if (candidatePresIds.isEmpty && lessonToken != null) {
       try {
         final currentServerName = PlatformManager().currentServer.name;
@@ -448,9 +460,10 @@ class RCCrawler {
               pptData,
               courseId: courseId,
               courseName: courseName,
+              verifyDisk: true,
             );
             firstPresentation ??= pres;
-            AppLogger.i(_tag, '成功抓取并缓存 PPT: $presId (${pres.slides.length} 页)');
+            AppLogger.i(_tag, '已缓存 PPT 元数据: $presId (${pres.slides.length} 页)，等待图片补齐');
             break;
           }
         }
@@ -494,10 +507,11 @@ class RCCrawler {
                 constructed,
                 courseId: courseId,
                 courseName: courseName,
+                verifyDisk: true,
               );
               final pres = Presentation.fromJson(constructed);
               firstPresentation = pres;
-              AppLogger.i(_tag, '成功从课件资料卡片抓取并缓存 PPT: $lessonId (${pres.slides.length} 页)');
+              AppLogger.i(_tag, '已缓存课件资料卡片元数据: $lessonId (${pres.slides.length} 页)，等待图片补齐');
             }
           }
         }
@@ -506,6 +520,12 @@ class RCCrawler {
       }
     }
 
-    return firstPresentation;
+    final presentation = firstPresentation ?? incompleteCached;
+    if (presentation == null) return null;
+    if (await SlideImageStore.ensureAllSlides(lessonId, presentation.slides)) {
+      AppLogger.i(_tag, '课件元数据与图片均已缓存：$lessonId (${presentation.slides.length} 页)');
+      return presentation;
+    }
+    throw const IncompletePresentationException();
   }
 }

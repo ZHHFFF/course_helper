@@ -13,6 +13,7 @@
 /// 2. 断网/请求失败时可以退回上次的缓存，页面不至于空白
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -75,10 +76,9 @@ class PptCache {
     Map<String, dynamic> raw, {
     String courseId = '',
     String courseName = '',
+    bool verifyDisk = false,
   }) async {
     if (presentationId.trim().isEmpty || raw.isEmpty) return;
-
-    _memory[_key(lessonId, presentationId)] = raw;
 
     try {
       final dir = await CourseCache.pptDir(lessonId);
@@ -88,9 +88,17 @@ class PptCache {
         'savedAt': DateTime.now().millisecondsSinceEpoch,
         'data': raw,
       });
+      if (verifyDisk) {
+        final saved = await CourseCache.readJson(file);
+        if (jsonEncode(saved?['data']) != jsonEncode(raw)) {
+          throw StateError('PPT 元数据未完整落盘：$presentationId');
+        }
+      }
+      _memory[_key(lessonId, presentationId)] = raw;
       AppLogger.i(_tag, '已缓存 PPT 元数据：$presentationId');
     } catch (e) {
       AppLogger.w(_tag, '写 PPT 缓存失败：$e');
+      if (verifyDisk) rethrow;
     }
 
     // 课程身份单独落一份（合并写，不会覆盖已有值）。
@@ -104,6 +112,17 @@ class PptCache {
 
   /// 清掉内存层（换课程 / 退出课堂时调用）
   static void clearMemory() => _memory.clear();
+
+  /// 单份 PPT 从磁盘删除后，清掉同一 lesson 的对应内存项。
+  static void invalidate(String lessonId, String presentationId) {
+    _memory.remove(_key(lessonId, presentationId));
+  }
+
+  /// 整节课的目录删除后，只清掉这节课的内存项。
+  static void invalidateLesson(String lessonId) {
+    final prefix = '${CourseCache.safeName(lessonId)}/';
+    _memory.removeWhere((key, _) => key.startsWith(prefix));
+  }
 
   static Presentation? _parse(Map<String, dynamic> raw) {
     try {

@@ -189,4 +189,9 @@ class SlideScanner {
     }
     return urls;
   }
+
+  /// PDF 的逐页图片地址：每个 slide 保留一个位置，允许重复或缺图。
+  static List<String> exportPageUrlsOf(List<PresentationSlide> slides) => [
+        for (final slide in slides) slideImageOf(slide),
+      ];
 }

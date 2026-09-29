@@ -18,7 +18,7 @@ class PptExporter {
   /// A4 横向（16:9 的 PPT 铺满宽度时留白最少）
   static const PdfPageFormat defaultPageFormat = PdfPageFormat.a4;
 
-  /// 合成 PDF。入参是本地图片文件路径列表，返回 PDF 字节。
+  /// 合成 PDF。入参是逐页的本地图片路径，重复路径仍代表不同页。
   ///
   /// 这是一个**顶层函数**，可直接丢给 `compute()`。
   static Future<PptPdfResult> build(List<String> imagePaths) {
@@ -30,7 +30,7 @@ class PptExporter {
 class PptPdfResult {
   final Uint8List? bytes;
 
-  /// 总页数（去重后的图片数）
+  /// 总页数（调用方传入的页面数，允许重复图片）
   final int total;
 
   /// 实际写入 PDF 的页数
@@ -54,15 +54,7 @@ class PptPdfResult {
 }
 
 Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
-  // 去重，保持顺序
-  final seen = <String>{};
-  final paths = <String>[];
-  for (final p in imagePaths) {
-    if (p.trim().isEmpty) continue;
-    if (seen.add(p)) paths.add(p);
-  }
-
-  if (paths.isEmpty) {
+  if (imagePaths.isEmpty) {
     return const PptPdfResult(
       bytes: null,
       total: 0,
@@ -76,7 +68,7 @@ Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
   final skipped = <String>[];
   var written = 0;
 
-  for (final path in paths) {
+  for (final path in imagePaths) {
     try {
       final raw = await File(path).readAsBytes();
       final jpeg = _normalizeToJpeg(raw);
@@ -101,7 +93,7 @@ Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
   if (written == 0) {
     return PptPdfResult(
       bytes: null,
-      total: paths.length,
+      total: imagePaths.length,
       written: 0,
       skipped: skipped,
       error: '所有图片都无法解码，导出失败',
@@ -112,14 +104,14 @@ Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
     final bytes = await doc.save();
     return PptPdfResult(
       bytes: bytes,
-      total: paths.length,
+      total: imagePaths.length,
       written: written,
       skipped: skipped,
     );
   } catch (e) {
     return PptPdfResult(
       bytes: null,
-      total: paths.length,
+      total: imagePaths.length,
       written: written,
       skipped: skipped,
       error: '生成 PDF 失败：$e',

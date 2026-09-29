@@ -32,6 +32,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../utils/app_logger.dart';
 import '../utils/image_cache_key.dart';
+import 'ppt_cache.dart';
 
 /// 一次清理的结果
 class CacheCleanupReport {
@@ -252,8 +253,12 @@ class CourseCache {
   static Future<int> clearLesson(String lessonId) async {
     try {
       final dir = await lessonDir(lessonId, create: false);
-      if (!await dir.exists()) return 0;
+      if (!await dir.exists()) {
+        PptCache.invalidateLesson(lessonId);
+        return 0;
+      }
       final bytes = await _deleteDir(dir);
+      PptCache.invalidateLesson(lessonId);
       AppLogger.i(_tag, '已清空课程缓存 ${safeName(lessonId)}');
       return bytes;
     } catch (e) {
@@ -267,8 +272,12 @@ class CourseCache {
     try {
       final lessonsRoot =
           Directory(p.join((await root()).path, _lessonsDirName));
-      if (!await lessonsRoot.exists()) return 0;
+      if (!await lessonsRoot.exists()) {
+        PptCache.clearMemory();
+        return 0;
+      }
       final bytes = await _deleteDir(lessonsRoot);
+      PptCache.clearMemory();
       AppLogger.i(_tag, '已清空全部课程缓存');
       return bytes;
     } catch (e) {
@@ -296,6 +305,7 @@ class CourseCache {
 
         final name = p.basename(entity.path);
         final bytes = await _deleteDir(entity);
+        PptCache.invalidateLesson(name);
         report.removedLessons.add(name);
         report.removedBytes += bytes;
         AppLogger.i(_tag, '清理课程缓存 $name（$reason）');
@@ -480,6 +490,7 @@ class CourseCache {
         freed += await target.length();
         await target.delete();
       }
+      PptCache.invalidate(lessonId, presentationId);
       freed += await _sweepOrphanImages(lessonId);
       AppLogger.i(_tag, '已删除课件 $presentationId');
     } catch (e) {

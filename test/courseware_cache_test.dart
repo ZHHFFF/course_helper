@@ -181,6 +181,27 @@ void main() {
   });
 
   group('deletePresentation', () {
+    test('删除后内存缓存失效，同一会话重新保存可落盘', () async {
+      await PptCache.save('lesson-a', 'ppt-1', _pptData('旧课件', []));
+      await PptCache.save('lesson-a', 'ppt-2', _pptData('保留课件', []));
+      expect(await PptCache.load('lesson-a', 'ppt-1'), isNotNull);
+
+      await CourseCache.deletePresentation('lesson-a', 'ppt-1');
+
+      expect(await PptCache.load('lesson-a', 'ppt-1'), isNull);
+      expect(await PptCache.load('lesson-a', 'ppt-2'), isNotNull);
+      final file = File(p.join(
+        (await CourseCache.pptDir('lesson-a', create: false)).path,
+        '${CourseCache.safeFile('ppt-1')}.json',
+      ));
+      expect(await file.exists(), isFalse);
+
+      await PptCache.save('lesson-a', 'ppt-1', _pptData('重新抓取', []));
+      expect(await file.exists(), isTrue);
+      PptCache.clearMemory();
+      expect((await PptCache.load('lesson-a', 'ppt-1'))?.title, '重新抓取');
+    });
+
     test('删掉 json，并清掉只被它引用的图片', () async {
       const url = 'https://x.cn/a.jpg';
       await PptCache.save('lesson-a', 'ppt-1', _pptData('唯一', [url]));
@@ -252,6 +273,8 @@ void main() {
 
       final left = await CourseCache.listLessons();
       expect(left.map((l) => l.lessonId).toList(), ['lesson-3']);
+      expect(await PptCache.load('lesson-1', 'ppt-1'), isNull);
+      expect(await PptCache.load('lesson-3', 'ppt-3'), isNotNull);
     });
   });
 
@@ -278,6 +301,7 @@ void main() {
 
       await CourseCache.deletePresentation('lesson-a', 'has/slash');
       expect(await CourseCache.listPresentations('lesson-a'), isEmpty);
+      expect(await PptCache.load('lesson-a', 'has/slash'), isNull);
     });
   });
 }

@@ -16,6 +16,7 @@ StandardizedQuestion _q({
   List<StandardizedOption> options = const [],
   String slideText = '',
   List<String> images = const [],
+  List<String> questionImages = const [],
   String problemId = '',
 }) {
   return StandardizedQuestion(
@@ -24,6 +25,7 @@ StandardizedQuestion _q({
     options: options,
     slideText: slideText,
     imageUrls: images,
+    questionImageUrls: questionImages,
     problemId: problemId,
   );
 }
@@ -87,6 +89,51 @@ void main() {
   });
 
   group('区分度：不同题 → 不同指纹', () {
+    test('同文字选项、不同题目图片 → 指纹不同', () {
+      final options = [_opt('A', '甲'), _opt('B', '乙')];
+      final a = _q(text: '根据图示选择正确答案', options: options,
+          questionImages: ['https://cdn/questions/a.png']);
+      final b = _q(text: '根据图示选择正确答案', options: options,
+          questionImages: ['https://cdn/questions/b.png']);
+      expect(QuestionHash.of(a), isNot(QuestionHash.of(b)));
+    });
+
+    test('同一图片签名 query 变化 → 指纹不变', () {
+      final a = _q(text: '根据图示选择正确答案',
+          questionImages: ['https://cdn/questions/a.png?token=one']);
+      final b = _q(text: '根据图示选择正确答案',
+          questionImages: ['https://cdn/questions/a.png?token=two']);
+      expect(QuestionHash.of(a), QuestionHash.of(b));
+    });
+
+    test('整页读图题依 problemId 区分，同一题不同截图仍稳定', () {
+      final a = _q(text: '根据图示选择正确答案', problemId: 'p1',
+          images: ['https://cdn/slides/question.png']);
+      final b = _q(text: '根据图示选择正确答案', problemId: 'p2',
+          images: ['https://cdn/slides/other.png']);
+      final sameProblem = _q(text: '根据图示选择正确答案', problemId: 'p1',
+          images: ['https://cdn/slides/result.png']);
+      expect(QuestionHash.of(a), isNot(QuestionHash.of(b)));
+      expect(QuestionHash.of(a), QuestionHash.of(sameProblem));
+    });
+
+    test('普通文字题不因无关整页图片失去复用', () {
+      final a = _q(text: '哪个是水果', images: ['https://cdn/a.png']);
+      final b = _q(text: '哪个是水果', images: ['https://cdn/b.png']);
+      expect(QuestionHash.of(a), QuestionHash.of(b));
+    });
+
+    test('没有 problemId 的读图题用稳定整页图片身份区分', () {
+      final a = _q(text: '根據圖示選擇答案',
+          images: ['https://cdn/slides/a.png?token=one']);
+      final sameImage = _q(text: '根據圖示選擇答案',
+          images: ['https://cdn/slides/a.png?token=two']);
+      final b = _q(text: '根據圖示選擇答案',
+          images: ['https://cdn/slides/b.png?token=one']);
+      expect(QuestionHash.of(a), QuestionHash.of(sameImage));
+      expect(QuestionHash.of(a), isNot(QuestionHash.of(b)));
+    });
+
     test('选项顺序不同 → 指纹不同（顺序变了，答案字母的含义就变了）', () {
       final a = _q(
         text: '哪个是水果？',
