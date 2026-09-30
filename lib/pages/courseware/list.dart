@@ -50,6 +50,7 @@ import '../courses/content.dart';
 import '../presentation.dart';
 import '../widget/miuix_nav_metrics.dart';
 import 'viewer.dart';
+import 'course_search.dart';
 import '../../setting/theme_setting.dart';
 
 /// 课件页当前所在层
@@ -124,6 +125,8 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
   bool _loading = true;
   List<_CourseEntry> _entries = [];
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
 
   _CourseEntry? _entry;
 
@@ -220,6 +223,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
     PlatformManager().serverNotifier.removeListener(_onServerChanged);
     unawaited(_accountChanges.cancel());
     _snackbarHost.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -235,7 +239,9 @@ class _CoursewarePageState extends State<CoursewarePage> {
     if (!mounted) return;
     AppLogger.i(_tag, '$source 发生变更，重置课件页状态');
     _loadToken++;
+    _searchController.clear();
     setState(() {
+      _searchQuery = '';
       _stage = _Stage.courseList;
       _topBarInset = 0;
       _entries = [];
@@ -905,16 +911,63 @@ class _CoursewarePageState extends State<CoursewarePage> {
       );
     }
 
+    final visibleEntries = filterCourses(
+      _entries,
+      _searchQuery,
+      nameOf: (entry) => entry.name,
+      teacherOf: (entry) => entry.teacher,
+    );
+
     return RefreshIndicator(
       onRefresh: _loadCourses,
       child: ListView.builder(
-        itemCount: _entries.length,
+        itemCount: visibleEntries.length + 1 + (visibleEntries.isEmpty ? 1 : 0),
         padding: EdgeInsets.only(
           top: _topBarInset,
           bottom: contentPadding.bottom + 16,
         ),
-        itemBuilder: (context, index) =>
-            _buildCourseTile(context, _entries[index]),
+        itemBuilder: (context, index) {
+          if (index == 0) return _buildCourseSearch(context);
+          if (visibleEntries.isEmpty) {
+            return SizedBox(
+              height: 200,
+              child: _buildEmpty(
+                context,
+                title: '没有找到相关课程',
+                summary: '试试课程名称或教师姓名',
+              ),
+            );
+          }
+          return _buildCourseTile(context, visibleEntries[index - 1]);
+        },
+      ),
+    );
+  }
+
+  Widget _buildCourseSearch(BuildContext context) {
+    final colors = MiuixTheme.of(context).colors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: MiuixTextField(
+        controller: _searchController,
+        label: '搜索课程或教师',
+        useLabelAsPlaceholder: true,
+        singleLine: true,
+        insideMargin: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        leadingIcon: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Icon(Icons.search, size: 20, color: colors.onSurfaceVariantSummary),
+        ),
+        trailingIcon: _searchQuery.isEmpty
+            ? null
+            : MiuixIconButton(
+                onPressed: () {
+                  _searchController.clear();
+                  setState(() => _searchQuery = '');
+                },
+                child: Icon(Icons.close, size: 18, color: colors.onSurfaceVariantActions),
+              ),
+        onChanged: (value) => setState(() => _searchQuery = value),
       ),
     );
   }
