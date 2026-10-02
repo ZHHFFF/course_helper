@@ -33,6 +33,7 @@ import 'package:path_provider/path_provider.dart';
 import '../utils/app_logger.dart';
 import '../utils/image_cache_key.dart';
 import '../models/presentation.dart';
+import 'answer_cache.dart';
 import 'ppt_cache.dart';
 
 /// 一次清理的结果
@@ -264,6 +265,8 @@ class CourseCache {
       return bytes;
     } catch (e) {
       AppLogger.w(_tag, '清空课程缓存失败：$e');
+      await PptCache.invalidateMissingFiles(lessonId: lessonId);
+      await AnswerCache.invalidateMissingFiles(lessonId: lessonId);
       rethrow;
     }
   }
@@ -283,6 +286,8 @@ class CourseCache {
       return bytes;
     } catch (e) {
       AppLogger.w(_tag, '清空全部缓存失败：$e');
+      await PptCache.invalidateMissingFiles();
+      await AnswerCache.invalidateMissingFiles();
       rethrow;
     }
   }
@@ -305,11 +310,17 @@ class CourseCache {
         if (reason == null) continue;
 
         final name = p.basename(entity.path);
-        final bytes = await _deleteDir(entity);
-        PptCache.invalidateLesson(name);
-        report.removedLessons.add(name);
-        report.removedBytes += bytes;
-        AppLogger.i(_tag, '清理课程缓存 $name（$reason）');
+        try {
+          final bytes = await _deleteDir(entity);
+          PptCache.invalidateLesson(name);
+          report.removedLessons.add(name);
+          report.removedBytes += bytes;
+          AppLogger.i(_tag, '清理课程缓存 $name（$reason）');
+        } catch (e) {
+          AppLogger.w(_tag, '清理课程缓存 $name 失败：$e');
+          await PptCache.invalidateMissingFiles(lessonId: name);
+          await AnswerCache.invalidateMissingFiles(lessonId: name);
+        }
       }
     } catch (e) {
       AppLogger.w(_tag, '清理缓存失败：$e');

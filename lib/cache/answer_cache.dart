@@ -285,6 +285,25 @@ class AnswerCache {
   /// 清内存层（退出课堂 / 换账号时调用）
   static void clearMemory() => _memory.clear();
 
+  /// 删除部分失败时保留仍在磁盘上的条目，移除已经被删除的答案。
+  static Future<void> invalidateMissingFiles({String? lessonId}) async {
+    final prefix = lessonId == null ? null : '${CourseCache.safeName(lessonId)}/';
+    for (final entry in _memory.entries.toList()) {
+      if (prefix != null && !entry.key.startsWith(prefix)) continue;
+      try {
+        final separator = entry.key.indexOf('/');
+        final dir = await CourseCache.questionsDir(entry.key.substring(0, separator), create: false);
+        final hash = entry.key.substring(separator + 1);
+        final file = File(p.join(dir.path, '${_safeFile(hash)}.json'));
+        if (!await file.exists() && identical(_memory[entry.key], entry.value)) {
+          _memory.remove(entry.key);
+        }
+      } catch (e) {
+        AppLogger.w(_tag, '核对删除后的答案缓存失败：$e');
+      }
+    }
+  }
+
   static void _remember(String key, CachedAnswer value) {
     _memory.remove(key);
     _memory[key] = value;

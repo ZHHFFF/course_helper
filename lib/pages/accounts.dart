@@ -78,6 +78,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   /// 抽屉和弹窗一样是**声明式**的，必须常驻挂载、用 `show` 切换显隐。
   /// Miuix 的 Snackbar 走「host + state」模型，不是 `ScaffoldMessenger`。
   final MiuixSnackbarHostState _snackbarHost = MiuixSnackbarHostState();
+  QRCodeLoginState? _qrState;
 
   /// 取触发器在**窗口坐标系**下的矩形，作为弹窗锚点。
   ///
@@ -296,6 +297,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
 
   @override
   void dispose() {
+    _qrState?.dispose();
     _accountChangeSubscription?.cancel();
     _snackbarHost.dispose();
     super.dispose();
@@ -374,6 +376,8 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
 
   Future<void> _showQRCodeLoginDialog() async {
     final qrState = QRCodeLoginState();
+    _qrState?.dispose();
+    _qrState = qrState;
 
     if (!await qrState.initialize()) {
       if (mounted) _snackbarHost.showSnackbar('获取二维码失败');
@@ -386,7 +390,11 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
     }
 
     qrState.startPolling((bool success) async {
-      if (success && mounted && await handleLoginSuccess(context, snackbarHost: _snackbarHost) && mounted) {
+      if (success && mounted && await handleLoginSuccess(
+        context,
+        snackbarHost: _snackbarHost,
+        isCurrentAttempt: () => !qrState.isDisposed && identical(_qrState, qrState),
+      ) && mounted && !qrState.isDisposed) {
         Navigator.pop(context, true);
         await _loadAccounts();
       }

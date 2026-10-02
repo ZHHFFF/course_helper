@@ -12,18 +12,17 @@
 ///   命中磁盘直接解码，没命中就下载并顺手存下来
 /// - [SlideImagePrefetcher]：串行地把整份 PPT 的图提前拉下来
 ///
-/// 预取**只下载字节、不解码**。80 页 PPT 一次性解码会直接把内存吃爆，
-/// 而且解码出来的位图对「提前存到磁盘」这件事毫无帮助。
+/// 预取通过原生图片解码器验证内容；验证帧立即释放，不保留整份 PPT 的位图。
 library;
 
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:archive/archive.dart' show getCrc32;
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
-import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 
 import '../utils/app_logger.dart';
@@ -45,7 +44,7 @@ class SlideImageStore {
   static void _rememberValid(File file, FileStat stat) {
     _validated.remove(file.path);
     _validated[file.path] = (stat.size, stat.modified);
-    if (_validated.length > 256) _validated.remove(_validated.keys.first);
+    if (_validated.length > 4096) _validated.remove(_validated.keys.first);
   }
 
   /// 下载用：只要字节，不要字符串，不要拦截器（避免把鉴权头带到图片域名上）
@@ -90,7 +89,7 @@ class SlideImageStore {
       if (!await file.exists()) return null;
       final stat = await file.stat();
       if (_validated[file.path] != (stat.size, stat.modified)) {
-        if (!await compute(_isDecodableImage, await file.readAsBytes())) return null;
+        if (!await _isDecodableImage(await file.readAsBytes())) return null;
         _rememberValid(file, stat);
       }
       return file;
@@ -156,7 +155,7 @@ class SlideImageStore {
     final response = await _dio.get<List<int>>(url);
     final data = response.data;
 
-    if (data == null || !await compute(_isDecodableImage, data)) {
+    if (data == null || !await _isDecodableImage(data)) {
       throw StateError('图片内容不是受支持的图片');
     }
 
@@ -178,7 +177,7 @@ class SlideImageStore {
     return target;
   }
 
-  // 先检查文件头，再在后台 isolate 验证解码；只有文件头的半张图片也无效。
+  // 先检查文件头，再通过 Flutter 实际使用的原生解码器验证内容。
   static bool _isSupportedImage(List<int> bytes) {
     if (bytes.length >= 4 &&
         bytes[0] == 0xff &&
@@ -224,13 +223,51 @@ class SlideImageStore {
     return false;
   }
 
-  static bool _isDecodableImage(List<int> bytes) {
+  static Future<bool> _isDecodableImage(List<int> bytes) async {
     if (!_isSupportedImage(bytes)) return false;
+    final data = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
+    // 原生 PNG 解码器会容忍缺尾或错误 CRC，缓存仍须通过结构与关键块校验。
+    if (data[0] == 0x89 && !await compute(_hasCompletePng, data)) return false;
+    ui.Codec? codec;
     try {
-      return img.decodeImage(Uint8List.fromList(bytes)) != null;
+      codec = await ui.instantiateImageCodec(
+        data,
+        targetWidth: 1,
+        targetHeight: 1,
+        allowUpscaling: false,
+      );
+      for (var i = 0; i < codec.frameCount; i++) {
+        final frame = await codec.getNextFrame();
+        frame.image.dispose();
+      }
+      return true;
     } catch (_) {
       return false;
+    } finally {
+      codec?.dispose();
     }
+  }
+
+  static bool _hasCompletePng(Uint8List bytes) {
+    final data = ByteData.sublistView(bytes);
+    var offset = 8;
+    while (offset + 12 <= bytes.length) {
+      final length = data.getUint32(offset);
+      final next = offset + 12 + length;
+      if (next > bytes.length) return false;
+      final type = data.getUint32(offset + 4);
+      // 保留旧解码器对 IHDR、IDAT、PLTE、tRNS 的校验，不扩大到辅助元数据块。
+      if (type == 0x49484452 || type == 0x49444154 ||
+          type == 0x504c5445 || type == 0x74524e53) {
+        if (getCrc32(Uint8List.sublistView(bytes, offset + 4, next - 4)) !=
+            data.getUint32(next - 4)) {
+          return false;
+        }
+      }
+      if (type == 0x49454e44) return length == 0; // IEND
+      offset = next;
+    }
+    return false;
   }
 
   /// 缓存键统一由 `utils/image_cache_key.dart` 推导。

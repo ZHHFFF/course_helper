@@ -121,12 +121,48 @@ Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
 
 /// 保证交给 `pw.MemoryImage` 的一定是 JPEG 字节
 Uint8List _normalizeToJpeg(Uint8List raw) {
-  // 已经是 JPEG（FF D8 开头）直接用，省一次解码
-  if (raw.length > 3 && raw[0] == 0xFF && raw[1] == 0xD8) return raw;
+  // PDF 库只读 JPEG 尺寸就会接受半文件；必须确认主图流完整结束。
+  if (raw.length > 3 && raw[0] == 0xFF && raw[1] == 0xD8) {
+    if (!_hasCompleteJpeg(raw)) throw const FormatException('JPEG 数据不完整');
+    return raw;
+  }
 
   final decoded = img.decodeImage(raw);
   if (decoded == null) {
     throw const FormatException('无法解码图片');
   }
   return Uint8List.fromList(img.encodeJpg(decoded, quality: 88));
+}
+
+bool _hasCompleteJpeg(Uint8List raw) {
+  var offset = 2; // SOI
+  while (offset + 1 < raw.length) {
+    // 和现有 JPEG 解码器一样，容忍数据段之间的额外填充字节。
+    while (offset < raw.length && raw[offset] != 0xff) {
+      offset++;
+    }
+    if (++offset >= raw.length) return false;
+    while (offset < raw.length && raw[offset] == 0xff) {
+      offset++;
+    }
+    if (offset >= raw.length) return false;
+    final marker = raw[offset++];
+    if (marker == 0xd9) return true; // EOI；允许结束块之后有尾随数据。
+    if (marker == 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > raw.length) return false;
+    final length = (raw[offset] << 8) | raw[offset + 1];
+    if (length < 2 || offset + length > raw.length) return false;
+    offset += length; // 跳过 APP/EXIF 等段，不能把缩略图 EOI 当作主图结束。
+    if (marker == 0xda) { // SOS：熵编码数据到下一个非转义、非重启标记为止。
+      while (offset + 1 < raw.length) {
+        final next = raw[offset + 1];
+        if (raw[offset] == 0xff && next != 0 &&
+            !(next >= 0xd0 && next <= 0xd7)) {
+          break;
+        }
+        offset++;
+      }
+    }
+  }
+  return false;
 }

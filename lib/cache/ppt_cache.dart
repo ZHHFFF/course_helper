@@ -124,6 +124,25 @@ class PptCache {
     _memory.removeWhere((key, _) => key.startsWith(prefix));
   }
 
+  /// 递归删除部分失败时，只作废已消失的文件；仍被占用的文件保留热缓存。
+  static Future<void> invalidateMissingFiles({String? lessonId}) async {
+    final prefix = lessonId == null ? null : '${CourseCache.safeName(lessonId)}/';
+    for (final entry in _memory.entries.toList()) {
+      if (prefix != null && !entry.key.startsWith(prefix)) continue;
+      try {
+        final separator = entry.key.indexOf('/');
+        final dir = await CourseCache.pptDir(entry.key.substring(0, separator), create: false);
+        final id = entry.key.substring(separator + 1);
+        final file = File(p.join(dir.path, '${CourseCache.safeFile(id)}.json'));
+        if (!await file.exists() && identical(_memory[entry.key], entry.value)) {
+          _memory.remove(entry.key);
+        }
+      } catch (e) {
+        AppLogger.w(_tag, '核对删除后的 PPT 缓存失败：$e');
+      }
+    }
+  }
+
   static Presentation? _parse(Map<String, dynamic> raw) {
     try {
       return Presentation.fromJson(raw);

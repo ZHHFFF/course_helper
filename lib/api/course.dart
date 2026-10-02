@@ -251,8 +251,8 @@ class RCCourseApi extends Api {
     if (courses == null || onLessonCourses == null) {
       return null;
     }
-    if (courses['data'].isEmpty || courses['data'].isEmpty) {
-      return null;
+    if (courses['data'].isEmpty) {
+      return <Course>[];
     }
 
     Map<String, dynamic> coursesMap = {

@@ -79,6 +79,8 @@ dependencies:
   # 整份 PPT 导出为 PDF
   pdf: ^3.11.1
   image: ^4.3.0
+  # 图片完整性校验使用现有传递依赖的 CRC32，不再解码整张 Dart 位图。
+  archive: ^4.3.0
 
 
 dev_dependencies:

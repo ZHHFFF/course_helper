@@ -90,4 +90,69 @@ void main() {
     expect(result.ok, isFalse);
     expect(result.error, isNotNull);
   });
+
+  test('保留 JPEG 文件头的截断图片仍须拒绝整份导出', () async {
+    final image = img.Image(width: 160, height: 90);
+    for (var y = 0; y < image.height; y++) {
+      for (var x = 0; x < image.width; x++) {
+        image.setPixelRgb(x, y, x % 256, y % 256, (x * y) % 256);
+      }
+    }
+    final jpeg = img.encodeJpg(image);
+    final good = _fakeSlide(dir, 0, png: true);
+    for (final badBytes in [
+      jpeg.take(jpeg.length - 2).toList(),
+      jpeg.take(jpeg.length ~/ 2).toList(),
+      // APP 段里允许有缩略图 EOI；它不能掩盖主图缺失的结束块。
+      [...jpeg.take(2), 0xff, 0xe1, 0, 5, 0xff, 0xd9, 0,
+        ...jpeg.skip(2).take(jpeg.length - 4)],
+    ]) {
+      final bad = File('${dir.path}/truncated.jpg');
+      await bad.writeAsBytes(badBytes);
+      final result = await PptExporter.build([good, bad.path]);
+      expect(result.ok, isFalse);
+      expect(result.bytes, isNull);
+      expect(result.written, 1);
+      expect(result.skipped, [bad.path]);
+    }
+  });
+
+  test('完整 JPEG 带尾随数据或嵌入缩略图结束标记仍可导出', () async {
+    final jpeg = img.encodeJpg(img.Image(width: 160, height: 90));
+    for (final bytes in [
+      [...jpeg, 0, 1, 2, 3],
+      [...jpeg.take(2), 0xff, 0xe1, 0, 5, 0xff, 0xd9, 0, ...jpeg.skip(2)],
+    ]) {
+      final file = File('${dir.path}/complete.jpg');
+      await file.writeAsBytes(bytes);
+      final result = await PptExporter.build([file.path]);
+      expect(result.ok, isTrue, reason: result.error);
+      expect(_pdfPageCount(result.bytes!), 1);
+    }
+  });
+
+  test('多扫描的渐进 JPEG 仍可导出，最后一段扫描截断时拒绝导出', () async {
+    // 本地 Pillow 生成的 16x16 渐进 JPEG，独立于被测 JPEG 解析器。
+    final progressive = base64Decode(
+      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERET'
+      'FhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4ICA4eFBEUHh4eHh4eHh4eHh4e'
+      'Hh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh7/wgARCAAQABADASIAAhEBAxEB/8QA'
+      'FQABAQAAAAAAAAAAAAAAAAAABQf/xAAVAQEBAAAAAAAAAAAAAAAAAAABAv/aAAwDAQACEAMQAAABnrzD'
+      '1n//xAAWEAADAAAAAAAAAAAAAAAAAAAAAwT/2gAIAQEAAQUCRMImETCJj//EABcRAQADAAAAAAAAAAAA'
+      'AAAAAAUAITH/2gAIAQMBAT8BKWy5/8QAFhEAAwAAAAAAAAAAAAAAAAAAAAID/9oACAECAQE/AZOf/8QA'
+      'FRABAQAAAAAAAAAAAAAAAAAAADH/2gAIAQEABj8CiIj/xAAVEAEBAAAAAAAAAAAAAAAAAAAAMf/aAAgB'
+      'AQABPyGJEiRP/9oADAMBAAIAAwAAABD3/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxBH/8QA'
+      'FBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxAf/8QAFRABAQAAAAAAAAAAAAAAAAAAAPH/2gAIAQEA'
+      'AT8QgJCQgP/Z',
+    );
+    final file = File('${dir.path}/progressive.jpg');
+    await file.writeAsBytes(progressive);
+    final valid = await PptExporter.build([file.path]);
+    expect(valid.ok, isTrue, reason: valid.error);
+    expect(_pdfPageCount(valid.bytes!), 1);
+    await file.writeAsBytes(progressive.take(progressive.length - 3).toList());
+    final truncated = await PptExporter.build([file.path]);
+    expect(truncated.ok, isFalse);
+    expect(truncated.bytes, isNull);
+  });
 }

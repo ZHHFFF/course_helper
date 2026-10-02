@@ -153,6 +153,7 @@ class _PresentationPageState extends State<PresentationPage>
 
   bool _isLoading = false;
   int _presentationLoadGeneration = 0;
+  final Map<String, Future<Presentation?>> _presentationLoads = {};
   int _slideRevision = 0;
   bool _isInitialized = false;
   final List<_TimelineEvent> _timeline = [];
@@ -1413,6 +1414,8 @@ class _PresentationPageState extends State<PresentationPage>
           final targetPresId = latestPresId ?? presentationId;
           final targetSlideIndex = latestSlideIndex ?? slideIndex;
           final slideRevision = _slideRevision;
+          // 课堂历史不属于某一次课件加载；后续切换课件也不能将它丢弃。
+          if (timeline != null) _addTimelineEvents(timeline);
 
           if (targetPresId != null) {
             if (!await _loadPresentation(targetPresId)) return;
@@ -1423,8 +1426,6 @@ class _PresentationPageState extends State<PresentationPage>
 
           if (!mounted) return;
           if (timeline != null) {
-            _addTimelineEvents(timeline);
-
             // 只有**重连**才补查（第一次连接不用：那时还没断过线，
             // 而且刚进课堂时若把历史题当成新题补交会交错）。
             if (_wsGeneration > 1) {
@@ -1484,6 +1485,7 @@ class _PresentationPageState extends State<PresentationPage>
           final slideIndex = data['slideindex'];
           final timeline = data['timeline'] as List?;
           final slideRevision = _slideRevision;
+          if (timeline != null) _addTimelineEvents(timeline);
 
           if (presentationId != null) {
             if (!await _loadPresentation(presentationId)) return;
@@ -1494,9 +1496,6 @@ class _PresentationPageState extends State<PresentationPage>
             _toSlide(slideIndex);
           }
 
-          if (timeline != null) {
-            _addTimelineEvents(timeline);
-          }
           break;
 
         case 'slide':
@@ -1660,29 +1659,12 @@ class _PresentationPageState extends State<PresentationPage>
       _isLoading = true;
     });
 
-    Presentation? presentation;
-    try {
-      final pptData = await RCCourseApi().getPresentation(presentationId);
-      if (pptData != null) {
-        // 整份 PPT 元数据落盘：老师来回切同一份时不用重复请求。
-        // 顺手把「这节课属于哪门课」记进 meta.json —— 课件页靠它把
-        // lessonId 目录归到课程名下（老缓存就是缺这个，只能显示一串数字）。
-        unawaited(PptCache.save(
-          widget.lessonId,
-          presentationId,
-          pptData,
-          courseId: widget.courseId,
-          courseName: widget.title,
-        ));
-        presentation = Presentation.fromJson(pptData);
-      }
-    } catch (e) {
-      AppLogger.e('Presentation', '加载 PPT 失败：$e');
-      AppLogger.w('Presentation', '加载 PPT 失败：$e');
+    final pending = _presentationLoads.putIfAbsent(
+      presentationId, () => _fetchPresentation(presentationId));
+    final presentation = await pending;
+    if (identical(_presentationLoads[presentationId], pending)) {
+      _presentationLoads.remove(presentationId);
     }
-
-    // 请求失败就退回上次的缓存，别让界面空着
-    presentation ??= await PptCache.load(widget.lessonId, presentationId);
 
     if (!mounted || generation != _presentationLoadGeneration) return false;
 
@@ -1734,6 +1716,33 @@ class _PresentationPageState extends State<PresentationPage>
       _pageController.jumpToPage(targetIndex);
     });
     return true;
+  }
+
+  Future<Presentation?> _fetchPresentation(String presentationId) async {
+    Presentation? presentation;
+    try {
+      final pptData = await RCCourseApi().getPresentation(presentationId);
+      if (pptData != null) {
+        // 整份 PPT 元数据落盘：老师来回切同一份时不用重复请求。
+        // 顺手把「这节课属于哪门课」记进 meta.json —— 课件页靠它把
+        // lessonId 目录归到课程名下（老缓存就是缺这个，只能显示一串数字）。
+        unawaited(PptCache.save(
+          widget.lessonId,
+          presentationId,
+          pptData,
+          courseId: widget.courseId,
+          courseName: widget.title,
+        ));
+        presentation = Presentation.fromJson(pptData);
+      }
+    } catch (e) {
+      AppLogger.e('Presentation', '加载 PPT 失败：$e');
+      AppLogger.w('Presentation', '加载 PPT 失败：$e');
+    }
+
+    // 请求失败就退回上次的缓存，别让界面空着
+    presentation ??= await PptCache.load(widget.lessonId, presentationId);
+    return presentation;
   }
 
   /// 拿到整份 PPT 后立刻做的事：识题 → 排队检索 → 预取图片

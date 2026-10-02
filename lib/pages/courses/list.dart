@@ -137,6 +137,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
   List<Course> _courses = [];
   bool _isLoading = true;
   int _loadGeneration = 0;
+  int _pollGeneration = 0;
   StreamSubscription? _accountChangeSubscription;
   Timer? _refreshTimer;
   List<dynamic> _lastOnLessonCourses = [];
@@ -219,9 +220,20 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
 
     _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       if (!mounted || !AccountManager.hasActiveSession()) return;
+      final loadGeneration = _loadGeneration;
+      final pollGeneration = ++_pollGeneration;
+      final uid = AccountManager.currentSessionId;
+      final server = PlatformManager().currentServer;
 
       try {
         final onLessonCourses = await RCCourseApi.getOnLesson();
+        if (!mounted || loadGeneration != _loadGeneration ||
+            pollGeneration != _pollGeneration ||
+            uid != AccountManager.currentSessionId ||
+            !PlatformManager().isRainClassroom ||
+            server != PlatformManager().currentServer) {
+          return;
+        }
         if (onLessonCourses != null && mounted) {
           if (!const DeepCollectionEquality().equals(_lastOnLessonCourses, onLessonCourses)) {
             _lastOnLessonCourses = onLessonCourses;

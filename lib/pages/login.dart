@@ -22,7 +22,10 @@ import '../setting/theme_setting.dart';
 Future<bool> handleLoginSuccess(
   BuildContext context, {
   required MiuixSnackbarHostState snackbarHost,
+  bool Function()? isCurrentAttempt,
 }) async {
+  bool isCurrent() => context.mounted && (isCurrentAttempt?.call() ?? true);
+  if (!isCurrent()) return false;
   try {
     late User? user;
     if (PlatformManager().isChaoxing) {
@@ -30,6 +33,7 @@ Future<bool> handleLoginSuccess(
     } else {
       user = await RCLoginApi(User.empty).getUserInfo();
     }
+    if (!isCurrent()) return false;
     if (user == null) {
       if (context.mounted) snackbarHost.showSnackbar('获取用户信息失败');
       return false;
@@ -37,10 +41,11 @@ Future<bool> handleLoginSuccess(
 
     await AccountManager.addAccount(user);
 
-    if (context.mounted) snackbarHost.showSnackbar('${user.name} 登录成功');
+    if (!isCurrent()) return false;
+    snackbarHost.showSnackbar('${user.name} 登录成功');
     return true;
   } catch (e) {
-    if (context.mounted) snackbarHost.showSnackbar('登录处理失败');
+    if (isCurrent()) snackbarHost.showSnackbar('登录处理失败');
     return false;
   }
 }
@@ -63,6 +68,8 @@ class QRCodeLoginState {
   bool isLoading = true;
   bool isRefreshing = false;
   bool isLoginActive = true;
+  bool _disposed = false;
+  bool get isDisposed => _disposed;
 
   Timer? _pollingTimer;
   bool _polling = false;
@@ -207,6 +214,7 @@ class QRCodeLoginState {
   }
 
   void dispose() {
+    _disposed = true;
     isLoginActive = false;
     _pollingTimer?.cancel();
     onRefresh = null;
@@ -290,8 +298,12 @@ class _LoginPageState extends State<LoginPage> {
 
     qrState.startPolling((bool success) async {
       if (success && mounted) {
-        final loginSuccess = await handleLoginSuccess(context, snackbarHost: _snackbarHost);
-        if (loginSuccess && mounted) {
+        final loginSuccess = await handleLoginSuccess(
+          context,
+          snackbarHost: _snackbarHost,
+          isCurrentAttempt: () => !qrState.isDisposed && identical(_qrState, qrState),
+        );
+        if (loginSuccess && mounted && !qrState.isDisposed) {
           Navigator.pop(context, true);
         }
       }
