@@ -1,3 +1,6 @@
+int _parseInt(Object? value, int fallback) =>
+    value is num ? value.toInt() : int.tryParse('$value') ?? fallback;
+
 enum ProblemType {
   single,
   multiple,
@@ -49,9 +52,16 @@ class Presentation {
     required this.slides,
   });
 
+  static List<dynamic>? rawSlidesOf(Map<String, dynamic> json) {
+    final nested = json['presentation'] is Map ? json['presentation'] as Map : null;
+    final slides = json['slides'] ?? json['Slides'] ?? json['slide_list'] ??
+        json['slideList'] ?? nested?['slides'] ?? nested?['Slides'];
+    return slides is List ? slides : null;
+  }
+
   factory Presentation.fromJson(Map<String, dynamic> json) {
     final presInfo = json['presentation'] is Map ? json['presentation'] as Map : null;
-    final rawSlides = json['slides'] ?? json['Slides'] ?? json['slide_list'] ?? json['slideList'] ?? presInfo?['slides'];
+    final rawSlides = rawSlidesOf(json);
 
     List<PresentationSlide> slidesList = [];
     if (rawSlides is List) {
@@ -71,8 +81,8 @@ class Presentation {
 
     return Presentation(
       title: rawTitle.toString(),
-      width: (rawWidth as num?)?.toInt() ?? int.tryParse(rawWidth.toString()) ?? 720,
-      height: (rawHeight as num?)?.toInt() ?? int.tryParse(rawHeight.toString()) ?? 540,
+      width: _parseInt(rawWidth, 720),
+      height: _parseInt(rawHeight, 540),
       version: rawVersion.toString(),
       slides: slidesList,
     );
@@ -109,7 +119,7 @@ class PresentationSlide {
 
     return PresentationSlide(
       id: rawId.toString(),
-      index: (rawIndex as num?)?.toInt() ?? int.tryParse(rawIndex.toString()) ?? 0,
+      index: _parseInt(rawIndex, 0),
       cover: rawCover.toString(),
       coverAlt: rawCoverAlt.toString(),
       thumbnail: rawThumb.toString(),

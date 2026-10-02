@@ -707,8 +707,13 @@ class _CoursewarePageState extends State<CoursewarePage> {
   // ── 第二层：某门课的课件列表 ──────────────────────────────────────────
 
   Future<void> _deletePresentation(CachedPresentation ppt) async {
-    final freed =
-        await CourseCache.deletePresentation(ppt.lessonId, ppt.presentationId);
+    int freed;
+    try {
+      freed = await CourseCache.deletePresentation(ppt.lessonId, ppt.presentationId);
+    } catch (e) {
+      _toast('删除课件失败：$e');
+      return;
+    }
     if (!mounted) return;
 
     setState(() {

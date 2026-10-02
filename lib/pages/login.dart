@@ -65,6 +65,7 @@ class QRCodeLoginState {
   bool isLoginActive = true;
 
   Timer? _pollingTimer;
+  bool _polling = false;
   final _isChaoxing = PlatformManager().isChaoxing;
   VoidCallback? onRefresh;
 
@@ -93,6 +94,7 @@ class QRCodeLoginState {
   Future<bool> initialize() async {
     try {
       final qrData = await _getQRCodeData();
+      if (!isLoginActive) return false;
       if (qrData != null) {
         _updateQRInfo(qrData);
         isLoading = false;
@@ -107,6 +109,7 @@ class QRCodeLoginState {
 
   /// 开始轮询登录状态
   void startPolling(Function(bool success) onLoginComplete, {VoidCallback? onRefresh}) {
+    if (!isLoginActive) return;
     _pollingTimer?.cancel();
     this.onRefresh = onRefresh;
 
@@ -123,14 +126,16 @@ class QRCodeLoginState {
     while (isLoginActive && qrToken != null) {
       try {
         final result = await RCLoginApi.loginQRCode(qrToken!);
+        if (!isLoginActive) return;
         if (result != null) {
           // 登录成功
+          isLoginActive = false;
           onLoginComplete(true);
           return;
         } else {
           // 超时或失败，刷新二维码
           await refreshQRCode();
-          onRefresh?.call();
+          if (isLoginActive) onRefresh?.call();
           if (!isLoginActive || qrToken == null) return;
         }
       } catch (e) {
@@ -139,6 +144,7 @@ class QRCodeLoginState {
       
       // 如果不是活跃状态则退出
       if (!isLoginActive) return;
+      await Future<void>.delayed(const Duration(seconds: 1));
     }
   }
 
@@ -149,28 +155,37 @@ class QRCodeLoginState {
         timer.cancel();
         return;
       }
+      if (_polling) return;
+      _polling = true;
 
       try {
         final result = await CXLoginApi.checkQRAuthStatus(qrUuid!, qrEnc!);
+        if (!isLoginActive) return;
         if (result != null) {
           if (result['status'] == true) {
             timer.cancel();
+            isLoginActive = false;
             onLoginComplete(true);
           } else if (result['type']?.toString() == '2') {
             timer.cancel();
             await refreshQRCode();
-            onRefresh?.call();
+            if (isLoginActive) {
+              onRefresh?.call();
+              _startChaoxingPolling(onLoginComplete);
+            }
           }
         }
       } catch (e) {
         debugPrint('轮询失败: $e');
+      } finally {
+        _polling = false;
       }
     });
   }
 
   /// 刷新二维码
   Future<void> refreshQRCode() async {
-    if (isRefreshing) return;
+    if (isRefreshing || !isLoginActive) return;
 
     isRefreshing = true;
     isLoading = true;
@@ -179,6 +194,7 @@ class QRCodeLoginState {
     
     try {
       final qrData = await _getQRCodeData();
+      if (!isLoginActive) return;
       if (qrData != null) {
         _updateQRInfo(qrData);
       }
@@ -193,10 +209,12 @@ class QRCodeLoginState {
   void dispose() {
     isLoginActive = false;
     _pollingTimer?.cancel();
+    onRefresh = null;
   }
 }
 
 class _LoginPageState extends State<LoginPage> {
+  QRCodeLoginState? _qrState;
   final _formKey = GlobalKey<FormState>();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
@@ -243,6 +261,7 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
+    _qrState?.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
     _captchaController.dispose();
@@ -257,9 +276,11 @@ class _LoginPageState extends State<LoginPage> {
   /// 显示二维码登录对话框
   Future<void> _showQRCodeLogin() async {
     final qrState = QRCodeLoginState();
+    _qrState?.dispose();
+    _qrState = qrState;
 
     final initialized = await qrState.initialize();
-    if (!initialized) {
+    if (!initialized || !mounted) {
       if (mounted) {
         _snackbarHost.showSnackbar('获取二维码失败');
       }
@@ -268,7 +289,7 @@ class _LoginPageState extends State<LoginPage> {
     }
 
     qrState.startPolling((bool success) async {
-      if (success) {
+      if (success && mounted) {
         final loginSuccess = await handleLoginSuccess(context, snackbarHost: _snackbarHost);
         if (loginSuccess && mounted) {
           Navigator.pop(context, true);
@@ -284,7 +305,7 @@ class _LoginPageState extends State<LoginPage> {
         return StatefulBuilder(
           builder: (context, setState) {
             qrState.onRefresh = () {
-              setState(() {});
+              if (context.mounted) setState(() {});
             };
             
             return PopScope(
@@ -364,11 +385,13 @@ class _LoginPageState extends State<LoginPage> {
             _usernameController.text,
             _currentLoginType == '2' ? _captchaController.text : _passwordController.text,
           );
+          if (!mounted) return;
   
           if (result != null && result['status']) {
             if (!result.containsKey('url')) {
               await _showSecurityVerificationDialog();
             }
+            if (!mounted) return;
   
             final success = await handleLoginSuccess(context, snackbarHost: _snackbarHost);
             if (success && mounted) {
@@ -387,6 +410,7 @@ class _LoginPageState extends State<LoginPage> {
                 _usernameController.text,
                 _captchaController.text
             );
+            if (!mounted) return;
         
             if (verifyResult == null || verifyResult['code'] != 0) {
               if (mounted) {
@@ -398,7 +422,7 @@ class _LoginPageState extends State<LoginPage> {
             // 非验证码模式需要腾讯验证码
             if (_ticket == null || _randstr == null){
               final captchaResult = await _showTencentCaptcha();
-              if (captchaResult != true) {
+              if (captchaResult != true || !mounted) {
                 return;
               }
             }
@@ -411,6 +435,7 @@ class _LoginPageState extends State<LoginPage> {
             _currentLoginType == '2' ? '' : (_ticket ?? ''),
             _currentLoginType == '2' ? '' : (_randstr ?? ''),
           );
+          if (!mounted) return;
 
           // 非验证码模式清空验证码凭证
           if (_currentLoginType != '2') {
@@ -462,7 +487,7 @@ class _LoginPageState extends State<LoginPage> {
     // 仅雨课堂需要腾讯验证码验证
     if (PlatformManager().isRainClassroom) {
       final captchaResult = await _showTencentCaptcha();
-      if (captchaResult != true) {
+      if (captchaResult != true || !mounted) {
         return;
       }
   
@@ -483,6 +508,7 @@ class _LoginPageState extends State<LoginPage> {
         
       if (PlatformManager().isChaoxing) {
         result = await CXLoginApi.sendCaptcha(phone);
+        if (!mounted) return;
           
         if (result == null) {
           if (mounted) {
@@ -508,6 +534,7 @@ class _LoginPageState extends State<LoginPage> {
         }
       } else {
         result = await RCLoginApi.sendCaptcha(phone, _ticket!, _randstr!);
+        if (!mounted) return;
           
         if (result == null) {
           if (mounted) {

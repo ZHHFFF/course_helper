@@ -281,6 +281,7 @@ class SignInPageState extends State<SignInPage> {
     try {
       if (isGroupSign) { // 群聊签到
         final groupSignDetail = await SignInApi.getGroupSignDetail(widget.active.id);
+        if (!mounted) return;
         if (groupSignDetail != null) {
           _signTypeId = groupSignDetail['otherId'];
           _needPhoto = groupSignDetail['ifPhoto'] == 1;
@@ -294,6 +295,7 @@ class SignInPageState extends State<SignInPage> {
         ActiveApi.getActiveInfoWeb(widget.active.id),
         SignInApi.getAttendInfoWeb(widget.active.id)
       ]);
+      if (!mounted) return;
   
       final activeInfo = results[0];
       final attendInfo = results[1];
@@ -367,6 +369,7 @@ class SignInPageState extends State<SignInPage> {
     });
 
     await _parseSignInfo();
+    if (!mounted) return;
     
     _currentStrategy = SignStrategyFactory.create(widget.active.signType);
     
@@ -382,6 +385,7 @@ class SignInPageState extends State<SignInPage> {
 
     if (_currentStrategy != null && mounted) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
         _currentStrategy!.execute(context, this, _signParams);
       });
     } else if (mounted) {

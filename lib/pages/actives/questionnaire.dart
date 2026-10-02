@@ -79,6 +79,7 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
         _errorMessage = null;
       });
       final data = await QuizApi.getQuizDetail(widget.active.id, true);
+      if (!mounted) return;
       
       if (data != null && data['questionlist'] != null) {
         setState(() {
@@ -125,6 +126,7 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = '加载数据出错: $e';
         _isLoading = false;
@@ -134,7 +136,9 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
 
   @override
   Widget build(BuildContext context) {
-    return MiuixScaffold(
+    return Material(
+      type: MaterialType.transparency,
+      child: MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: widget.active.name,
         blurred: ThemeSetting.blurOf(context),
@@ -238,7 +242,7 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
           ),
         ],
       ),
-    );
+    ));
   }
 
   Widget _buildQuestionItem(dynamic question, int index) {

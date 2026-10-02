@@ -152,6 +152,8 @@ class _PresentationPageState extends State<PresentationPage>
   final List<String> _unlockedProblemIds = [];
 
   bool _isLoading = false;
+  int _presentationLoadGeneration = 0;
+  int _slideRevision = 0;
   bool _isInitialized = false;
   final List<_TimelineEvent> _timeline = [];
 
@@ -1331,6 +1333,7 @@ class _PresentationPageState extends State<PresentationPage>
   void _toSlide(int slideIndex, {bool animate = true}) {
     final targetIndex = slideIndex - 1;
     if (targetIndex < 0) return;
+    _slideRevision++;
 
     setState(() {
       // _currentLessonSlideIndex = 老师当前所在页（「回到当前页」按钮靠它判断）
@@ -1358,7 +1361,12 @@ class _PresentationPageState extends State<PresentationPage>
     });
   }
 
-  void _handleMessage(dynamic message) async {
+  @visibleForTesting
+  Future<void> debugHandleMessage(Map<String, dynamic> message) =>
+      _handleMessage(jsonEncode(message));
+
+  Future<void> _handleMessage(dynamic message) async {
+    if (!mounted) return;
     // op 提到 try 外面：catch 里要用它。
     // 之前异常只写 '解析消息失败：$e'，**不知道是哪条消息炸的** ——
     // 上课排查时完全靠猜。现在带上 op，一眼能看出是 unlockproblem 还是别的。
@@ -1404,14 +1412,16 @@ class _PresentationPageState extends State<PresentationPage>
 
           final targetPresId = latestPresId ?? presentationId;
           final targetSlideIndex = latestSlideIndex ?? slideIndex;
+          final slideRevision = _slideRevision;
 
           if (targetPresId != null) {
-            await _loadPresentation(targetPresId);
-            if (targetSlideIndex != null && targetSlideIndex > 0) {
+            if (!await _loadPresentation(targetPresId)) return;
+            if (slideRevision == _slideRevision && targetSlideIndex != null && targetSlideIndex > 0) {
               _toSlide(targetSlideIndex, animate: false);
             }
           }
 
+          if (!mounted) return;
           if (timeline != null) {
             _addTimelineEvents(timeline);
 
@@ -1473,12 +1483,14 @@ class _PresentationPageState extends State<PresentationPage>
           final presentationId = data['presentation'];
           final slideIndex = data['slideindex'];
           final timeline = data['timeline'] as List?;
+          final slideRevision = _slideRevision;
 
-          if (presentationId != null && presentationId != _currentPresentationId) {
-            await _loadPresentation(presentationId);
+          if (presentationId != null) {
+            if (!await _loadPresentation(presentationId)) return;
           }
 
-          if (slideIndex != null) {
+          if (!mounted) return;
+          if (slideRevision == _slideRevision && slideIndex != null) {
             _toSlide(slideIndex);
           }
 
@@ -1636,8 +1648,13 @@ class _PresentationPageState extends State<PresentationPage>
     });
   }
 
-  Future<void> _loadPresentation(String presentationId) async {
-    if (_isLoading || presentationId == _currentPresentationId) return;
+  Future<bool> _loadPresentation(String presentationId) async {
+    if (!mounted) return false;
+    final generation = ++_presentationLoadGeneration;
+    if (presentationId == _currentPresentationId) {
+      setState(() => _isLoading = false);
+      return true;
+    }
 
     setState(() {
       _isLoading = true;
@@ -1667,7 +1684,7 @@ class _PresentationPageState extends State<PresentationPage>
     // 请求失败就退回上次的缓存，别让界面空着
     presentation ??= await PptCache.load(widget.lessonId, presentationId);
 
-    if (!mounted) return;
+    if (!mounted || generation != _presentationLoadGeneration) return false;
 
     if (presentation == null) {
       // 修 bug：原实现在 pptData 为 null 时不会复位 _isLoading，
@@ -1678,7 +1695,7 @@ class _PresentationPageState extends State<PresentationPage>
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('PPT 加载失败，可稍后重试')),
       );
-      return;
+      return false;
     }
 
     final slides = presentation.slides;
@@ -1697,17 +1714,26 @@ class _PresentationPageState extends State<PresentationPage>
           .toList();
       _totalCount = slides.length;
       _currentPresentationId = presentationId;
-      if (_slides.isNotEmpty &&
-          _currentSlideIndex >= 0 &&
-          _currentSlideIndex < _slides.length) {
-        _currentProblem = slides[_currentSlideIndex].problem;
-      }
+      _currentSlideIndex = slides.isEmpty ? 0 : _currentSlideIndex.clamp(0, slides.length - 1);
+      _currentProblem = slides.isEmpty ? null : slides[_currentSlideIndex].problem;
+      _syncAnswerOwner();
       _isLoading = false;
+      _isInitialized = true;
     });
 
     // 整份 PPT 到手 = 所有题都到手了。识题是纯内存计算，几十毫秒的事，
     // 所以是「拿到就全判完」，不需要等用户翻页、更不需要等图片下载
     _indexQuestions(slides);
+    final targetIndex = _currentSlideIndex;
+    final slideRevision = _slideRevision;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || generation != _presentationLoadGeneration ||
+          slideRevision != _slideRevision || !_pageController.hasClients) {
+        return;
+      }
+      _pageController.jumpToPage(targetIndex);
+    });
+    return true;
   }
 
   /// 拿到整份 PPT 后立刻做的事：识题 → 排队检索 → 预取图片
@@ -2055,7 +2081,9 @@ class _PresentationPageState extends State<PresentationPage>
 
   @override
   Widget build(BuildContext context) {
-    return MiuixScaffold(
+    return Material(
+      type: MaterialType.transparency,
+      child: MiuixScaffold(
       topBar: _isFullScreen ? null : MiuixTopAppBar(
         title: widget.title,
         blurred: ThemeSetting.blurOf(context),
@@ -2412,7 +2440,7 @@ class _PresentationPageState extends State<PresentationPage>
                   ],
                 ),
       ),
-    );
+    ));
   }
 
   Widget _buildTimelineItem(_TimelineEvent event) {
@@ -2569,8 +2597,9 @@ class _PresentationPageState extends State<PresentationPage>
     if (event.problemId == null || event.presentationId == null) return;
 
     if (event.presentationId != _currentPresentationId) {
-      await _loadPresentation(event.presentationId!);
+      if (!await _loadPresentation(event.presentationId!)) return;
     }
+    if (!mounted) return;
 
     final slideIndex = event.slideIndex;
     if (slideIndex != null && slideIndex > 0) {
@@ -3143,6 +3172,7 @@ class _PresentationPageState extends State<PresentationPage>
     final urls = _allSlideImageUrls();
     final missing = await _missingSlideCount(urls) +
         pageUrls.where((url) => url.isEmpty).length;
+    if (!mounted || _isExporting) return;
     if (missing > 0) {
       final p = SlideImagePrefetcher.progress.value;
       AppLogger.w(

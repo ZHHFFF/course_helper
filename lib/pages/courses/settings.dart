@@ -81,7 +81,7 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
         pickedFiles = [pickedFile];
       }
       
-      if (pickedFiles.isEmpty) return;
+      if (!mounted || pickedFiles.isEmpty) return;
 
       final uploadFutures = pickedFiles.map((pickedFile) async {
         final tempId = 'temp_${DateTime.now().millisecondsSinceEpoch}';
@@ -93,6 +93,7 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
         try {
           final api = CXImageApi();
           final objectId = await api.uploadImage(File(pickedFile.path));
+          if (!mounted) return false;
 
           if (objectId != null) {
             setState(() {
@@ -112,6 +113,7 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
             return false;
           }
         } catch (e) {
+          if (!mounted) return false;
           setState(() {
             _imageObjectIds.remove(tempId);
             _localImagePaths.remove(tempId);
@@ -136,6 +138,7 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
         }
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('选择图片错误：$e')),
       );
@@ -326,7 +329,9 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return MiuixScaffold(
+    return Material(
+      type: MaterialType.transparency,
+      child: MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: '课程设置',
         blurred: ThemeSetting.blurOf(context),
@@ -592,6 +597,6 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                 ],
               ),
             ),
-    );
+    ));
   }
 }

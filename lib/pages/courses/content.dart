@@ -48,6 +48,7 @@ class _CourseContentPageState extends State<CourseContentPage> {
         widget.classId,
         widget.cpi,
       );
+      if (!mounted) return;
 
       if (contentList != null) {
         setState(() {
@@ -66,6 +67,7 @@ class _CourseContentPageState extends State<CourseContentPage> {
         }
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _activeList = [];
         _isContentLoading = false;

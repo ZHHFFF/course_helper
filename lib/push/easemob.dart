@@ -182,7 +182,7 @@ class EasemobIM {
 
       // 始终显示应用内对话框（可选）
       final context = navigatorKey.currentContext;
-      if (context != null) {
+      if (context != null && context.mounted) {
         showDialog(
           context: context,
           builder: (dialogContext) => AlertDialog(
@@ -201,6 +201,7 @@ class EasemobIM {
               FilledButton(
                 onPressed: () async {
                   await PlatformManager().setPlatform(PlatformType.chaoxing);
+                  if (!context.mounted || !dialogContext.mounted) return;
                   Navigator.pop(dialogContext);
                   CoursesPage.navigateToActive(context, active, courseId, classId, '');
                 },
@@ -238,6 +239,7 @@ class EasemobIM {
           FilledButton(
             onPressed: () async {
               await PlatformManager().setPlatform(PlatformType.chaoxing);
+              if (!dialogContext.mounted) return;
               loginCurrentAccount();
               Navigator.pop(dialogContext);
             },

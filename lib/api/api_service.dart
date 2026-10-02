@@ -71,6 +71,10 @@ class HeadersManager {
 
 class ApiService {
   static late Dio _dio;
+  @visibleForTesting
+  static void debugSetHttpClientAdapter(HttpClientAdapter adapter) {
+    _dio.httpClientAdapter = adapter;
+  }
   static void Function()? onPlatformChange;
   static const _uniqueIdKey = 'app_unique_id';
 

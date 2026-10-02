@@ -302,6 +302,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   }
 
   Future<void> _loadAccounts() async {
+    if (!mounted) return;
     setState(() {
       // 压测用假账号只追加到本页的本地列表，**不写 SharedPreferences**，
       // 因此不会污染用户真实的账号列表（详见 test_data_seeder.dart）。
@@ -379,9 +380,13 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
       qrState.dispose();
       return;
     }
+    if (!mounted) {
+      qrState.dispose();
+      return;
+    }
 
     qrState.startPolling((bool success) async {
-      if (success && await handleLoginSuccess(context, snackbarHost: _snackbarHost) && mounted) {
+      if (success && mounted && await handleLoginSuccess(context, snackbarHost: _snackbarHost) && mounted) {
         Navigator.pop(context, true);
         await _loadAccounts();
       }
@@ -395,7 +400,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
         return StatefulBuilder(
           builder: (context, setState) {
             qrState.onRefresh = () {
-              setState(() {});
+              if (context.mounted) setState(() {});
             };
             
             return PopScope(

@@ -23,6 +23,7 @@ import 'dart:ui' as ui;
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 
 import '../utils/app_logger.dart';
@@ -37,6 +38,15 @@ class SlideImageStore {
 
   static const String _tag = 'SlideImageStore';
   static const String _imagesDirName = 'images';
+
+  // 验证过且未变化的文件只做 stat；限制条数，避免长期浏览无限增长。
+  static final Map<String, (int, DateTime)> _validated = {};
+
+  static void _rememberValid(File file, FileStat stat) {
+    _validated.remove(file.path);
+    _validated[file.path] = (stat.size, stat.modified);
+    if (_validated.length > 256) _validated.remove(_validated.keys.first);
+  }
 
   /// 下载用：只要字节，不要字符串，不要拦截器（避免把鉴权头带到图片域名上）
   static final Dio _dio = Dio(
@@ -78,11 +88,10 @@ class SlideImageStore {
     try {
       final file = await fileFor(lessonId, url);
       if (!await file.exists()) return null;
-      final reader = await file.open();
-      try {
-        if (!_isSupportedImage(await reader.read(32))) return null;
-      } finally {
-        await reader.close();
+      final stat = await file.stat();
+      if (_validated[file.path] != (stat.size, stat.modified)) {
+        if (!await compute(_isDecodableImage, await file.readAsBytes())) return null;
+        _rememberValid(file, stat);
       }
       return file;
     } catch (e) {
@@ -147,7 +156,7 @@ class SlideImageStore {
     final response = await _dio.get<List<int>>(url);
     final data = response.data;
 
-    if (data == null || !_isSupportedImage(data)) {
+    if (data == null || !await compute(_isDecodableImage, data)) {
       throw StateError('图片内容不是受支持的图片');
     }
 
@@ -155,8 +164,8 @@ class SlideImageStore {
     final tmp = File('${target.path}.${++_tmpSeq}.tmp');
     try {
       await tmp.writeAsBytes(data, flush: true);
-      if (await target.exists()) await target.delete();
       await tmp.rename(target.path);
+      _rememberValid(target, await target.stat());
     } catch (e) {
       // 别把半个文件留在磁盘上，下次「磁盘里有没有」会被它骗到
       try {
@@ -169,8 +178,7 @@ class SlideImageStore {
     return target;
   }
 
-  // 只检查文件头，不在列表完整性检查时解码整张图片。PDF 与 Flutter
-  // ImageProvider 均支持这些课件图片格式；HTML/JSON 错误页不能进入缓存。
+  // 先检查文件头，再在后台 isolate 验证解码；只有文件头的半张图片也无效。
   static bool _isSupportedImage(List<int> bytes) {
     if (bytes.length >= 4 &&
         bytes[0] == 0xff &&
@@ -214,6 +222,15 @@ class SlideImageStore {
       return true; // GIF87a / GIF89a
     }
     return false;
+  }
+
+  static bool _isDecodableImage(List<int> bytes) {
+    if (!_isSupportedImage(bytes)) return false;
+    try {
+      return img.decodeImage(Uint8List.fromList(bytes)) != null;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 缓存键统一由 `utils/image_cache_key.dart` 推导。
@@ -394,6 +411,7 @@ class SlideImagePrefetcher {
   static final List<String> _queue = [];
   static String? _lessonId;
   static bool _running = false;
+  static int _generation = 0;
 
   static int _total = 0;
   static int _downloaded = 0;
@@ -411,6 +429,7 @@ class SlideImagePrefetcher {
 
   /// 用新的列表替换待预取队列（旧队列立即作废）
   static void start(String lessonId, Iterable<String> urls) {
+    _generation++;
     _lessonId = lessonId;
 
     // 按**落盘身份**（_digest，只看 URL 路径）去重，而不是按完整 URL。
@@ -454,6 +473,7 @@ class SlideImagePrefetcher {
 
   /// 彻底丢弃队列（切到另一份 PPT 时才用）
   static void cancel() {
+    _generation++;
     _queue.clear();
     _lessonId = null;
     _total = 0;
@@ -478,6 +498,8 @@ class SlideImagePrefetcher {
         '预取结束：新下载 $_downloaded，已缓存 $_skipped，失败 $_failed'
         '（$_total 张，${isComplete ? "完整" : "未完整"}）',
       );
+      // start() 可能发生在旧 worker 已结束、旧 pump 尚未退出的间隙。
+      if (_queue.isNotEmpty) unawaited(_pump());
     }
   }
 
@@ -491,18 +513,19 @@ class SlideImagePrefetcher {
 
       final url = _queue.removeAt(0);
       final lessonId = _lessonId;
+      final generation = _generation;
       if (lessonId == null) return;
 
       try {
         final hit = await SlideImageStore.existing(lessonId, url);
         if (hit != null) {
-          _skipped++;
+          if (generation == _generation) _skipped++;
         } else {
           await SlideImageStore.download(lessonId, url);
-          _downloaded++;
+          if (generation == _generation) _downloaded++;
         }
       } catch (e) {
-        _failed++;
+        if (generation == _generation) _failed++;
         AppLogger.d(_tag, '预取失败（$url）：$e');
       }
 

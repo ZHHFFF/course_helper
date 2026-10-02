@@ -59,6 +59,7 @@ class _VotePageState extends State<VotePage> {
   Future<void> _loadVoteData() async {
     try {
       final data = await QuizApi.getQuizDetail(widget.active.id, true);
+      if (!mounted) return;
       if (data != null && data['questionlist'] != null && data['questionlist'].isNotEmpty) {
         final question = data['questionlist'][0];
         final options = question['answer'] as List?;
@@ -98,6 +99,7 @@ class _VotePageState extends State<VotePage> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = '加载数据出错: $e';
         _isLoading = false;
@@ -216,7 +218,9 @@ class _VotePageState extends State<VotePage> {
 
   @override
   Widget build(BuildContext context) {
-    return MiuixScaffold(
+    return Material(
+      type: MaterialType.transparency,
+      child: MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: widget.active.name,
         blurred: ThemeSetting.blurOf(context),
@@ -370,6 +374,6 @@ class _VotePageState extends State<VotePage> {
             ),
         ],
       ),
-    );
+    ));
   }
 }

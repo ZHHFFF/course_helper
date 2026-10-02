@@ -32,6 +32,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../utils/app_logger.dart';
 import '../utils/image_cache_key.dart';
+import '../models/presentation.dart';
 import 'ppt_cache.dart';
 
 /// 一次清理的结果
@@ -263,7 +264,7 @@ class CourseCache {
       return bytes;
     } catch (e) {
       AppLogger.w(_tag, '清空课程缓存失败：$e');
-      return 0;
+      rethrow;
     }
   }
 
@@ -282,7 +283,7 @@ class CourseCache {
       return bytes;
     } catch (e) {
       AppLogger.w(_tag, '清空全部缓存失败：$e');
-      return 0;
+      rethrow;
     }
   }
 
@@ -447,7 +448,7 @@ class CourseCache {
           final json = await readJson(entity);
           if (json == null) continue;
           final data = json['data'];
-          final slides = data is Map ? (data['slides'] ?? data['Slides'] ?? data['presentation']?['slides']) : null;
+          final slides = data is Map ? Presentation.rawSlidesOf(Map<String, dynamic>.from(data)) : null;
 
           result.add(CachedPresentation(
             lessonId: lessonId,
@@ -495,6 +496,7 @@ class CourseCache {
       AppLogger.i(_tag, '已删除课件 $presentationId');
     } catch (e) {
       AppLogger.w(_tag, '删除课件失败：$e');
+      rethrow;
     }
     return freed;
   }
@@ -541,13 +543,15 @@ class CourseCache {
         if (!entity.path.toLowerCase().endsWith('.json')) continue;
         final json = await readJson(entity);
         final data = json?['data'];
-        if (data is! Map) continue;
-        final slides = data['slides'];
-        if (slides is! List) continue;
+        // 无法确定引用关系时保留图片，不能把未知格式当作「无引用」。
+        if (data is! Map) return 0;
+        final raw = Map<String, dynamic>.from(data);
+        final rawSlides = Presentation.rawSlidesOf(raw);
+        if (rawSlides == null) return 0;
+        final slides = Presentation.fromJson(raw).slides;
+        if (slides.length != rawSlides.length) return 0;
         for (final slide in slides) {
-          if (slide is! Map) continue;
-          for (final key in const ['cover', 'coverAlt', 'thumbnail']) {
-            final url = slide[key]?.toString() ?? '';
+          for (final url in [slide.cover, slide.coverAlt, slide.thumbnail]) {
             if (url.trim().isNotEmpty) referenced.add(imageCacheDigest(url));
           }
         }
@@ -560,8 +564,9 @@ class CourseCache {
           continue;
         }
         try {
-          freed += await entity.length();
+          final bytes = await entity.length();
           await entity.delete();
+          freed += bytes;
         } catch (_) {
           // 单个文件删不掉不影响整体
         }
@@ -654,11 +659,7 @@ class CourseCache {
   /// 递归删除并返回释放的字节数
   static Future<int> _deleteDir(Directory dir) async {
     final bytes = await _dirSize(dir);
-    try {
-      await dir.delete(recursive: true);
-    } catch (e) {
-      AppLogger.w(_tag, '删除目录失败 ${dir.path}：$e');
-    }
+    await dir.delete(recursive: true);
     return bytes;
   }
 
@@ -738,7 +739,6 @@ class CourseCache {
 
       tmp = File('${file.path}.${++_tmpSeq}.tmp');
       await tmp.writeAsString(jsonEncode(data), flush: true);
-      if (await file.exists()) await file.delete();
       await tmp.rename(file.path);
     } catch (e) {
       AppLogger.w(_tag, '写入缓存失败 ${p.basename(file.path)}：$e');
@@ -747,6 +747,7 @@ class CourseCache {
       } catch (_) {
         // 清理临时文件失败不影响主流程
       }
+      rethrow;
     }
   }
 }

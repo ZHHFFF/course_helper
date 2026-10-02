@@ -55,6 +55,7 @@ class _EvaluatePageState extends State<EvaluatePage> {
   Future<void> _initialize() async {
     try {
       final data = await ActiveApi.getActiveInfoWeb(widget.active.id);
+      if (!mounted) return;
       if (data != null) {
         setState(() {
           if (data['normList'] != null && data['normList'].isNotEmpty) {
@@ -77,6 +78,7 @@ class _EvaluatePageState extends State<EvaluatePage> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = '加载数据出错: $e';
         _isLoading = false;
@@ -301,7 +303,9 @@ class _EvaluatePageState extends State<EvaluatePage> {
   
   @override
   Widget build(BuildContext context) {
-    return MiuixScaffold(
+    return Material(
+      type: MaterialType.transparency,
+      child: MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: widget.active.name,
         blurred: ThemeSetting.blurOf(context),
@@ -461,6 +465,6 @@ class _EvaluatePageState extends State<EvaluatePage> {
             ),
         ],
       ),
-    );
+    ));
   }
 }

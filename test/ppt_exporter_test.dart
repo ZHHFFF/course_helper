@@ -72,13 +72,14 @@ void main() {
     expect(_pdfPageCount(result.bytes!), 4);
   });
 
-  test('坏文件被跳过，不影响其它页', () async {
+  test('有坏文件时拒绝导出，避免课件缺页', () async {
     final bad = File('${dir.path}/broken.jpg')..writeAsBytesSync([1, 2, 3, 4]);
     final good = _fakeSlide(dir, 0, png: false);
 
     final result = await PptExporter.build([bad.path, good]);
 
-    expect(result.ok, isTrue, reason: result.error);
+    expect(result.ok, isFalse);
+    expect(result.bytes, isNull);
     expect(result.total, 2);
     expect(result.written, 1);
     expect(result.skipped.length, 1);

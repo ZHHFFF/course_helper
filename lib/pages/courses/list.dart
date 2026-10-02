@@ -136,6 +136,7 @@ final GlobalKey coursesPageKey = GlobalKey();
 class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
   List<Course> _courses = [];
   bool _isLoading = true;
+  int _loadGeneration = 0;
   StreamSubscription? _accountChangeSubscription;
   Timer? _refreshTimer;
   List<dynamic> _lastOnLessonCourses = [];
@@ -251,6 +252,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     List<dynamic>? onLessonCourses,
     bool silent = false,
   }) async {
+    final generation = ++_loadGeneration;
     if (!silent) {
       setState(() {
         _isLoading = true;
@@ -258,7 +260,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     }
 
     if (!AccountManager.hasActiveSession()) {
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _courses = [];
         _isLoading = false;
@@ -269,7 +271,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     // 开发期压测：短路掉网络请求，直接给一长串假课程（详见 test_data_seeder.dart）。
     // 未传 --dart-define=SEED_TEST_DATA 时这里是编译期常量 false，会被 tree-shake。
     if (TestDataSeeder.enabled) {
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _courses = TestDataSeeder.buildFakeCourses(TestDataSeeder.count);
         _isLoading = false;
@@ -288,7 +290,12 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
       // 请求回来时页面可能已经被销毁 —— 不查 mounted 直接 setState 会抛
       // `setState() called after dispose()`。课程页现在是 Offstage 常驻、
       // 平时很难触发，但进程退出/热重载时仍会撞上。
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
+
+      if (silent && coursesData == null) {
+        if (_isLoading) setState(() => _isLoading = false);
+        return;
+      }
 
       final next = (coursesData != null && coursesData.isNotEmpty)
           ? coursesData
@@ -301,6 +308,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
       // （顺带也解释了旧代码为什么看起来「一直在重载」：数据其实没变，
       //   但每次都判定成变了。）
       if (silent && _sameCourseList(_courses, next)) {
+        if (_isLoading) setState(() => _isLoading = false);
         return;
       }
 
@@ -309,10 +317,11 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         _isLoading = false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       // 静默刷新失败时保留旧列表：网络抖一下就把用户正在看的课程清空，
       // 比「显示一次错误」体验更差。
       if (silent && _courses.isNotEmpty) {
+        if (_isLoading) setState(() => _isLoading = false);
         AppLogger.w('课程页', '静默刷新失败，保留现有列表：$e');
         return;
       }
@@ -413,6 +422,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
             if (match != null) {
               final enc = match.group(1);
 
+              if (!mounted) return;
               Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -543,7 +553,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     }
     
   
-    if (!mounted) return;
+    if (!mounted || !context.mounted) return;
     setState(() {
       _isLoading = false;
     });

@@ -74,11 +74,13 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
       
       final api = TopicDiscussApi();
       final topicData = await api.getTopic(_topicId);
+      if (!mounted) return;
       if (topicData != null && topicData['result'] == 1) {
         _topicData = topicData['data'];
         _topicUuid = _topicData!['uuid'] ?? '';
         _canAnonymous = _topicData!['userAuth']['operationAuth']['canAnonymousAddReply'] == 1;
         final repliesData = await api.getReplies(_topicUuid);
+        if (!mounted) return;
         if (repliesData != null && repliesData['result'] == 1) {
           setState(() {
             _replies = repliesData['data']['list'];
@@ -97,6 +99,7 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = '加载数据出错: $e';
         _isLoading = false;
@@ -164,6 +167,7 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
     try {
       final api = TopicDiscussApi();
       final repliesData = await api.getReplies(_topicUuid);
+      if (!mounted) return;
       if (repliesData != null && repliesData['result'] == 1) {
         setState(() {
           _replies = repliesData['data']['list'];
@@ -433,7 +437,9 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
     
   @override
   Widget build(BuildContext context) {
-    return MiuixScaffold(
+    return Material(
+      type: MaterialType.transparency,
+      child: MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: '主题讨论',
         blurred: ThemeSetting.blurOf(context),
@@ -497,6 +503,6 @@ class _TopicDiscussPageState extends State<TopicDiscussPage> {
           ),
         ],
       ),
-    );
+    ));
   }
 }

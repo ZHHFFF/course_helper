@@ -97,7 +97,17 @@ class _CacheManagerPageState extends State<CacheManagerPage> {
       _isBusy = true;
     });
 
-    final bytes = await CourseCache.clearAll();
+    int bytes;
+    try {
+      bytes = await CourseCache.clearAll();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isBusy = false);
+        _snackbarHost.showSnackbar('清空缓存失败：$e');
+        await _refresh();
+      }
+      return;
+    }
     // 内存里那层也要一起丢掉，否则界面还在展示已经删掉的答案
     PptCache.clearMemory();
     AnswerCache.clearMemory();

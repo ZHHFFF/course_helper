@@ -11,7 +11,7 @@ import 'package:pdf/widgets.dart' as pw;
 /// 1. 图片统一转成 JPEG 再嵌入 —— `pdf` 的 `MemoryImage` 对 JPEG 支持最稳，
 ///    遇到 PNG/WebP 先解码再编码，避免个别页整页丢失
 /// 2. 整份合成放在后台 isolate（`compute`）里做，页面不卡
-/// 3. 单页失败只跳过这一页，不影响整体导出
+/// 3. 任一页失败时拒绝导出，避免分享缺页的课件
 class PptExporter {
   PptExporter._();
 
@@ -50,7 +50,7 @@ class PptPdfResult {
     this.error,
   });
 
-  bool get ok => bytes != null && written > 0;
+  bool get ok => bytes != null && written > 0 && written == total && skipped.isEmpty;
 }
 
 Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
@@ -90,13 +90,13 @@ Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
     }
   }
 
-  if (written == 0) {
+  if (skipped.isNotEmpty) {
     return PptPdfResult(
       bytes: null,
       total: imagePaths.length,
-      written: 0,
+      written: written,
       skipped: skipped,
-      error: '所有图片都无法解码，导出失败',
+      error: '${skipped.length}/${imagePaths.length} 页无法读取或解码，导出失败',
     );
   }
 

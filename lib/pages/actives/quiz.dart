@@ -314,6 +314,7 @@ class _QuizPageState extends State<QuizPage> {
   Future<void> _initialize() async {
     try {
       final response = await ApiService.sendRequest(widget.active.url, responseType: ResponseType.plain);
+      if (!mounted) return;
       if (response == null) {
         setState(() {
           _errorMessage = '获取数据失败';
@@ -341,6 +342,7 @@ class _QuizPageState extends State<QuizPage> {
         await _loadQuizDataFromHtml(htmlContent);
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = '检查活动状态失败: $e';
         _isLoading = false;
@@ -484,6 +486,7 @@ class _QuizPageState extends State<QuizPage> {
   Future<void> _loadQuizData() async {
     try {
       final response = await ApiService.sendRequest(widget.active.url, responseType: ResponseType.plain);
+      if (!mounted) return;
       if (response == null) {
         setState(() {
           _errorMessage = '获取数据失败';
@@ -566,6 +569,7 @@ class _QuizPageState extends State<QuizPage> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = '加载数据出错: $e';
         _isLoading = false;
@@ -1388,7 +1392,9 @@ class _QuizPageState extends State<QuizPage> {
 
   @override
   Widget build(BuildContext context) {
-    return MiuixScaffold(
+    return Material(
+      type: MaterialType.transparency,
+      child: MiuixScaffold(
       topBar: MiuixTopAppBar(
         title: widget.active.name,
         blurred: ThemeSetting.blurOf(context),
@@ -1493,6 +1499,6 @@ class _QuizPageState extends State<QuizPage> {
           ),
         ],
       ),
-    );
+    ));
   }
 }
