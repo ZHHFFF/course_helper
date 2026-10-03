@@ -87,8 +87,10 @@ class CoursewareViewerState extends State<CoursewareViewer> {
     if (_index != _openedIndex && _cachedPresentation != null) {
       final presentation = _cachedPresentation!;
       final ratio = presentation.width > 0 && presentation.height > 0
-          ? presentation.width / presentation.height : 4 / 3;
-      _listOffset = widget.topInset +
+          ? presentation.width / presentation.height
+          : 4 / 3;
+      _listOffset =
+          widget.topInset +
           _index * (MediaQuery.sizeOf(context).width / ratio + 10);
     }
     setState(() {
@@ -120,10 +122,6 @@ class CoursewareViewerState extends State<CoursewareViewer> {
       _exportPdf(pres);
     }
   }
-
-  /// 一页对应的图片地址（优先 `coverAlt`，与 `PresentationPage` 一致）
-  String _urlOf(PresentationSlide slide) =>
-      (slide.coverAlt.trim().isNotEmpty ? slide.coverAlt : slide.cover).trim();
 
   void _toast(String message) {
     if (!mounted) return;
@@ -219,44 +217,46 @@ class CoursewareViewerState extends State<CoursewareViewer> {
       );
     }
 
-    return LayoutBuilder(builder: (context, constraints) {
-      final width = constraints.maxWidth;
-      final ratio = presentation.width > 0 && presentation.height > 0
-          ? presentation.width / presentation.height
-          : 4 / 3;
-      final itemHeight = width / ratio + 10;
-      return ListView.builder(
-        controller: _listController,
-        padding: EdgeInsets.only(
-          top: widget.topInset,
-          bottom: miuixNavBarOccupied(context) + 12,
-        ),
-        itemExtent: itemHeight,
-        itemCount: total,
-        itemBuilder: (context, i) => Padding(
-          padding: const EdgeInsets.only(bottom: 10),
-          child: GestureDetector(
-            onTap: () {
-              _listOffset = _listController.offset;
-              _openedIndex = i;
-              setState(() {
-                _index = i;
-                _singlePage = true;
-              });
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted && _pageController.hasClients) {
-                  _pageController.jumpToPage(i);
-                }
-              });
-            },
-            child: AspectRatio(
-              aspectRatio: ratio,
-              child: _buildSlide(context, presentation.slides[i]),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final ratio = presentation.width > 0 && presentation.height > 0
+            ? presentation.width / presentation.height
+            : 4 / 3;
+        final itemHeight = width / ratio + 10;
+        return ListView.builder(
+          controller: _listController,
+          padding: EdgeInsets.only(
+            top: widget.topInset,
+            bottom: miuixNavBarOccupied(context) + 12,
+          ),
+          itemExtent: itemHeight,
+          itemCount: total,
+          itemBuilder: (context, i) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: GestureDetector(
+              onTap: () {
+                _listOffset = _listController.offset;
+                _openedIndex = i;
+                setState(() {
+                  _index = i;
+                  _singlePage = true;
+                });
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted && _pageController.hasClients) {
+                    _pageController.jumpToPage(i);
+                  }
+                });
+              },
+              child: AspectRatio(
+                aspectRatio: ratio,
+                child: _buildSlide(context, presentation.slides[i]),
+              ),
             ),
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
   }
 
   Future<void> _openFullscreen(Presentation presentation) async {
@@ -277,11 +277,13 @@ class CoursewareViewerState extends State<CoursewareViewer> {
       }
       if (!_singlePage && _listController.hasClients) {
         final ratio = presentation.width > 0 && presentation.height > 0
-            ? presentation.width / presentation.height : 4 / 3;
+            ? presentation.width / presentation.height
+            : 4 / 3;
         final itemHeight = MediaQuery.sizeOf(context).width / ratio + 10;
         _listController.jumpTo(
           (widget.topInset + result * itemHeight).clamp(
-            0.0, _listController.position.maxScrollExtent,
+            0.0,
+            _listController.position.maxScrollExtent,
           ),
         );
       }
@@ -289,7 +291,7 @@ class CoursewareViewerState extends State<CoursewareViewer> {
   }
 
   Widget _buildSlide(BuildContext context, PresentationSlide slide) {
-    final url = _urlOf(slide);
+    final url = SlideScanner.slideImageOf(slide);
     if (url.isEmpty) {
       return Center(
         child: MiuixText(
@@ -300,54 +302,54 @@ class CoursewareViewerState extends State<CoursewareViewer> {
     }
 
     return Image(
-        // `SlideImage` 是走磁盘缓存的 ImageProvider：命中磁盘直接解码，
-        // 没命中才下载。离线时没缓存会走 errorBuilder，不会白屏。
-        image: SlideImage(widget.lessonId, url),
-        fit: BoxFit.contain,
-        loadingBuilder: (context, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const CircularProgressIndicator(),
-                const SizedBox(height: 12),
-                MiuixText(
-                  '正在读取第 ${slide.index + 1} 页…',
-                  fontSize: 13,
-                  color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
-                ),
-              ],
-            ),
-          );
-        },
-        errorBuilder: (context, error, stack) => Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                MiuixIcon(
-                  icon: Icons.broken_image_outlined,
-                  size: 40,
-                  tint: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
-                ),
-                const SizedBox(height: 10),
-                MiuixText(
-                  '第 ${slide.index + 1} 页暂未缓存到本地',
-                  fontSize: 14,
-                  color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
-                ),
-                const SizedBox(height: 6),
-                MiuixText(
-                  '可继续滑动翻看其他页',
-                  fontSize: 12,
-                  color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
-                ),
-              ],
-            ),
+      // `SlideImage` 是走磁盘缓存的 ImageProvider：命中磁盘直接解码，
+      // 没命中才下载。离线时没缓存会走 errorBuilder，不会白屏。
+      image: SlideImage(widget.lessonId, url),
+      fit: BoxFit.contain,
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 12),
+              MiuixText(
+                '正在读取第 ${slide.index + 1} 页…',
+                fontSize: 13,
+                color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
+              ),
+            ],
+          ),
+        );
+      },
+      errorBuilder: (context, error, stack) => Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              MiuixIcon(
+                icon: Icons.broken_image_outlined,
+                size: 40,
+                tint: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
+              ),
+              const SizedBox(height: 10),
+              MiuixText(
+                '第 ${slide.index + 1} 页暂未缓存到本地',
+                fontSize: 14,
+                color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
+              ),
+              const SizedBox(height: 6),
+              MiuixText(
+                '可继续滑动翻看其他页',
+                fontSize: 12,
+                color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
+              ),
+            ],
           ),
         ),
+      ),
     );
   }
 
@@ -378,8 +380,10 @@ class CoursewareViewerState extends State<CoursewareViewer> {
 
       if (paths.length != pageUrls.length) {
         AppLogger.w(_tag, '拒绝导出：只有 ${paths.length}/${pageUrls.length} 页有缓存');
-        _toast('还有 ${pageUrls.length - paths.length} 页没缓存，导出会缺页。'
-            '请先进课堂把这节课的课件缓存完整');
+        _toast(
+          '还有 ${pageUrls.length - paths.length} 页没缓存，导出会缺页。'
+          '请先进课堂把这节课的课件缓存完整',
+        );
         return;
       }
 
@@ -397,8 +401,9 @@ class CoursewareViewerState extends State<CoursewareViewer> {
 
       if (!mounted) return;
       final box = context.findRenderObject() as RenderBox?;
-      final origin =
-          box != null ? box.localToGlobal(Offset.zero) & box.size : null;
+      final origin = box != null
+          ? box.localToGlobal(Offset.zero) & box.size
+          : null;
 
       await SharePlus.instance.share(
         ShareParams(
@@ -408,7 +413,10 @@ class CoursewareViewerState extends State<CoursewareViewer> {
           sharePositionOrigin: origin,
         ),
       );
-      AppLogger.i(_tag, '已导出 ${result.written}/${result.total} 页 → ${out.path}');
+      AppLogger.i(
+        _tag,
+        '已导出 ${result.written}/${result.total} 页 → ${out.path}',
+      );
     } catch (e) {
       AppLogger.e(_tag, '导出失败：$e');
       _toast('导出失败：$e');
@@ -419,7 +427,11 @@ class CoursewareViewerState extends State<CoursewareViewer> {
 }
 
 class _ZoomableSlide extends StatefulWidget {
-  const _ZoomableSlide({super.key, required this.child, required this.onZoomChanged});
+  const _ZoomableSlide({
+    super.key,
+    required this.child,
+    required this.onZoomChanged,
+  });
 
   final Widget child;
   final ValueChanged<bool> onZoomChanged;
@@ -452,7 +464,10 @@ class _ZoomableSlideState extends State<_ZoomableSlide> {
         if (_zoomed) {
           _transform.value = Matrix4.identity();
         } else {
-          final center = Offset(constraints.maxWidth / 2, constraints.maxHeight / 2);
+          final center = Offset(
+            constraints.maxWidth / 2,
+            constraints.maxHeight / 2,
+          );
           _transform.value = Matrix4.identity()
             ..setEntry(0, 0, 2)
             ..setEntry(1, 1, 2)
@@ -489,10 +504,12 @@ class CoursewareFullscreenViewer extends StatefulWidget {
   final int initialIndex;
 
   @override
-  State<CoursewareFullscreenViewer> createState() => _CoursewareFullscreenViewerState();
+  State<CoursewareFullscreenViewer> createState() =>
+      _CoursewareFullscreenViewerState();
 }
 
-class _CoursewareFullscreenViewerState extends State<CoursewareFullscreenViewer> {
+class _CoursewareFullscreenViewerState
+    extends State<CoursewareFullscreenViewer> {
   late final PageController _controller;
   late int _currentIndex;
   bool _showControls = true;
@@ -531,15 +548,10 @@ class _CoursewareFullscreenViewerState extends State<CoursewareFullscreenViewer>
   void dispose() {
     _hideTimer?.cancel();
     _controller.dispose();
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-    ]);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
-
-  String _urlOf(PresentationSlide slide) =>
-      (slide.coverAlt.trim().isNotEmpty ? slide.coverAlt : slide.cover).trim();
 
   @override
   Widget build(BuildContext context) {
@@ -567,10 +579,13 @@ class _CoursewareFullscreenViewerState extends State<CoursewareFullscreenViewer>
                 },
                 itemBuilder: (context, i) {
                   final slide = slides[i];
-                  final url = _urlOf(slide);
+                  final url = SlideScanner.slideImageOf(slide);
                   if (url.isEmpty) {
                     return const Center(
-                      child: Text('无图片', style: TextStyle(color: Colors.white70)),
+                      child: Text(
+                        '无图片',
+                        style: TextStyle(color: Colors.white70),
+                      ),
                     );
                   }
                   return InteractiveViewer(
@@ -583,9 +598,16 @@ class _CoursewareFullscreenViewerState extends State<CoursewareFullscreenViewer>
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48),
+                              const Icon(
+                                Icons.broken_image_outlined,
+                                color: Colors.white54,
+                                size: 48,
+                              ),
                               const SizedBox(height: 8),
-                              Text('第 ${i + 1} 页未缓存到本地', style: const TextStyle(color: Colors.white54)),
+                              Text(
+                                '第 ${i + 1} 页未缓存到本地',
+                                style: const TextStyle(color: Colors.white54),
+                              ),
                             ],
                           ),
                         ),
@@ -605,8 +627,14 @@ class _CoursewareFullscreenViewerState extends State<CoursewareFullscreenViewer>
                       opacity: _showControls ? 1.0 : 0.0,
                       duration: const Duration(milliseconds: 200),
                       child: IconButton(
-                        icon: const Icon(Icons.chevron_left, color: Colors.white, size: 36),
-                        style: IconButton.styleFrom(backgroundColor: Colors.black45),
+                        icon: const Icon(
+                          Icons.chevron_left,
+                          color: Colors.white,
+                          size: 36,
+                        ),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.black45,
+                        ),
                         onPressed: _showControls
                             ? () {
                                 _controller.previousPage(
@@ -631,8 +659,14 @@ class _CoursewareFullscreenViewerState extends State<CoursewareFullscreenViewer>
                       opacity: _showControls ? 1.0 : 0.0,
                       duration: const Duration(milliseconds: 200),
                       child: IconButton(
-                        icon: const Icon(Icons.chevron_right, color: Colors.white, size: 36),
-                        style: IconButton.styleFrom(backgroundColor: Colors.black45),
+                        icon: const Icon(
+                          Icons.chevron_right,
+                          color: Colors.white,
+                          size: 36,
+                        ),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.black45,
+                        ),
                         onPressed: _showControls
                             ? () {
                                 _controller.nextPage(
@@ -655,7 +689,10 @@ class _CoursewareFullscreenViewerState extends State<CoursewareFullscreenViewer>
                   opacity: _showControls ? 1.0 : 0.0,
                   duration: const Duration(milliseconds: 200),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
                     decoration: const BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
@@ -666,32 +703,50 @@ class _CoursewareFullscreenViewerState extends State<CoursewareFullscreenViewer>
                     child: Row(
                       children: [
                         IconButton(
-                          icon: const Icon(Icons.arrow_back, color: Colors.white),
-                          onPressed: () => Navigator.of(context).pop(_currentIndex),
+                          icon: const Icon(
+                            Icons.arrow_back,
+                            color: Colors.white,
+                          ),
+                          onPressed: () =>
+                              Navigator.of(context).pop(_currentIndex),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             widget.title,
-                            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
                           decoration: BoxDecoration(
                             color: Colors.white24,
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Text(
                             '${_currentIndex + 1} / $total',
-                            style: const TextStyle(color: Colors.white, fontSize: 13),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                            ),
                           ),
                         ),
                         const SizedBox(width: 8),
                         IconButton(
-                          icon: const Icon(Icons.fullscreen_exit, color: Colors.white),
-                          onPressed: () => Navigator.of(context).pop(_currentIndex),
+                          icon: const Icon(
+                            Icons.fullscreen_exit,
+                            color: Colors.white,
+                          ),
+                          onPressed: () =>
+                              Navigator.of(context).pop(_currentIndex),
                         ),
                       ],
                     ),
@@ -705,4 +760,3 @@ class _CoursewareFullscreenViewerState extends State<CoursewareFullscreenViewer>
     );
   }
 }
-

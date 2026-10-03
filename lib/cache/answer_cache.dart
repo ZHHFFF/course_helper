@@ -87,23 +87,22 @@ class CachedAnswer {
   }
 
   /// 是否有可展示的建议答案
-  bool get usable =>
-      status == CachedAnswerStatus.ok && results.isNotEmpty;
+  bool get usable => status == CachedAnswerStatus.ok && results.isNotEmpty;
 
   /// 置信度最高的那条
   AnswerSearchResult? get best => results.isEmpty ? null : results.first;
 
   Map<String, dynamic> toJson() => {
-        'version': 1,
-        'hash': hash,
-        'problemId': problemId,
-        'questionType': questionType,
-        'questionPreview': questionPreview,
-        'status': status.name,
-        'error': error,
-        'updatedAt': updatedAt.millisecondsSinceEpoch,
-        'results': results.map(_resultToJson).toList(),
-      };
+    'version': 1,
+    'hash': hash,
+    'problemId': problemId,
+    'questionType': questionType,
+    'questionPreview': questionPreview,
+    'status': status.name,
+    'error': error,
+    'updatedAt': updatedAt.millisecondsSinceEpoch,
+    'results': results.map(_resultToJson).toList(),
+  };
 
   static CachedAnswer? fromJson(Map<String, dynamic> json) {
     try {
@@ -139,13 +138,13 @@ class CachedAnswer {
   }
 
   static Map<String, dynamic> _resultToJson(AnswerSearchResult r) => {
-        'answer': r.answer,
-        'source': r.source,
-        'confidence': r.confidence,
-        'explanation': r.explanation,
-        'sourceType': r.sourceType.name,
-        'answerKeys': r.answerKeys,
-      };
+    'answer': r.answer,
+    'source': r.source,
+    'confidence': r.confidence,
+    'explanation': r.explanation,
+    'sourceType': r.sourceType.name,
+    'answerKeys': r.answerKeys,
+  };
 
   static AnswerSearchResult _resultFromJson(Map<String, dynamic> json) {
     return AnswerSearchResult(
@@ -154,9 +153,8 @@ class CachedAnswer {
       confidence: (json['confidence'] as num?)?.toDouble() ?? 0,
       explanation: json['explanation']?.toString(),
       sourceType: _sourceTypeFromName(json['sourceType']?.toString()),
-      answerKeys: (json['answerKeys'] as List?)
-              ?.map((e) => e.toString())
-              .toList() ??
+      answerKeys:
+          (json['answerKeys'] as List?)?.map((e) => e.toString()).toList() ??
           const [],
     );
   }
@@ -213,7 +211,7 @@ class AnswerCache {
 
     try {
       final dir = await CourseCache.questionsDir(lessonId, create: false);
-      final file = File(p.join(dir.path, '${_safeFile(hash)}.json'));
+      final file = File(p.join(dir.path, '${CourseCache.safeFile(hash)}.json'));
       final json = await CourseCache.readJson(file);
       if (json == null) return null;
 
@@ -263,7 +261,7 @@ class AnswerCache {
 
     try {
       final dir = await CourseCache.questionsDir(lessonId);
-      final file = File(p.join(dir.path, '${_safeFile(hash)}.json'));
+      final file = File(p.join(dir.path, '${CourseCache.safeFile(hash)}.json'));
       await CourseCache.writeJson(file, value.toJson());
     } catch (e) {
       AppLogger.w(_tag, '写缓存失败（$hash）：$e');
@@ -275,7 +273,7 @@ class AnswerCache {
     _memory.remove(_key(lessonId, hash));
     try {
       final dir = await CourseCache.questionsDir(lessonId, create: false);
-      final file = File(p.join(dir.path, '${_safeFile(hash)}.json'));
+      final file = File(p.join(dir.path, '${CourseCache.safeFile(hash)}.json'));
       if (await file.exists()) await file.delete();
     } catch (e) {
       AppLogger.w(_tag, '删缓存失败（$hash）：$e');
@@ -287,15 +285,23 @@ class AnswerCache {
 
   /// 删除部分失败时保留仍在磁盘上的条目，移除已经被删除的答案。
   static Future<void> invalidateMissingFiles({String? lessonId}) async {
-    final prefix = lessonId == null ? null : '${CourseCache.safeName(lessonId)}/';
+    final prefix = lessonId == null
+        ? null
+        : '${CourseCache.safeName(lessonId)}/';
     for (final entry in _memory.entries.toList()) {
       if (prefix != null && !entry.key.startsWith(prefix)) continue;
       try {
         final separator = entry.key.indexOf('/');
-        final dir = await CourseCache.questionsDir(entry.key.substring(0, separator), create: false);
+        final dir = await CourseCache.questionsDir(
+          entry.key.substring(0, separator),
+          create: false,
+        );
         final hash = entry.key.substring(separator + 1);
-        final file = File(p.join(dir.path, '${_safeFile(hash)}.json'));
-        if (!await file.exists() && identical(_memory[entry.key], entry.value)) {
+        final file = File(
+          p.join(dir.path, '${CourseCache.safeFile(hash)}.json'),
+        );
+        if (!await file.exists() &&
+            identical(_memory[entry.key], entry.value)) {
           _memory.remove(entry.key);
         }
       } catch (e) {
@@ -310,22 +316,5 @@ class AnswerCache {
     while (_memory.length > maxMemoryEntries) {
       _memory.remove(_memory.keys.first);
     }
-  }
-
-  /// 指纹里有 `pid-` / `img-` 前缀和连字符，白名单化后当文件名
-  static String _safeFile(String raw) {
-    final trimmed = raw.trim();
-    final buffer = StringBuffer();
-    for (final rune in trimmed.runes) {
-      final isDigit = rune >= 0x30 && rune <= 0x39;
-      final isLower = rune >= 0x61 && rune <= 0x7a;
-      final isUpper = rune >= 0x41 && rune <= 0x5a;
-      final isDash = rune == 0x5f || rune == 0x2d;
-      buffer.write(isDigit || isLower || isUpper || isDash
-          ? String.fromCharCode(rune)
-          : '_');
-    }
-    final name = buffer.toString();
-    return name.isEmpty ? 'unknown' : name;
   }
 }

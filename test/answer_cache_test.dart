@@ -34,14 +34,14 @@ AnswerSearchResult _result({
 }
 
 CachedAnswer _ok(String hash) => CachedAnswer(
-      hash: hash,
-      problemId: 'p1',
-      questionType: 'single',
-      questionPreview: '下面哪个是水果？',
-      status: CachedAnswerStatus.ok,
-      results: [_result()],
-      updatedAt: DateTime.now(),
-    );
+  hash: hash,
+  problemId: 'p1',
+  questionType: 'single',
+  questionPreview: '下面哪个是水果？',
+  status: CachedAnswerStatus.ok,
+  results: [_result()],
+  updatedAt: DateTime.now(),
+);
 
 void main() {
   group('CachedAnswer 判定', () {
@@ -154,6 +154,25 @@ void main() {
   });
 
   group('CourseCache.safeName', () {
+    test('白名单按 Unicode rune 替换，目录与文件长度策略不同', () {
+      final names = <String, String>{
+        '  A-z_09  ': 'A-z_09',
+        '': 'unknown',
+        ' \n\t ': 'unknown',
+        '../../etc': '______etc',
+        '中文😀/x': '____x',
+        'a\u0000b': 'a_b',
+        '.': '_',
+        '..': '__',
+      };
+      for (final entry in names.entries) {
+        expect(CourseCache.safeFile(entry.key), entry.value);
+        expect(CourseCache.safeName(entry.key), entry.value);
+      }
+      final long = 'a' * 81;
+      expect(CourseCache.safeFile(long), long);
+      expect(CourseCache.safeName(long), 'a' * 80);
+    });
     test('正常 lessonId 原样保留', () {
       expect(CourseCache.safeName('12345'), '12345');
       expect(CourseCache.safeName('abc-def_1'), 'abc-def_1');
@@ -188,6 +207,18 @@ void main() {
 
     tearDown(() async {
       await env.dispose();
+    });
+
+    test('答案缓存保留旧白名单文件名，长 hash 不按目录规则截断', () async {
+      final hash = ' ${'a' * 81}/😀 ';
+      final dir = await CourseCache.questionsDir('lesson');
+      await AnswerCache.write('lesson', hash, _ok(hash));
+      final file = File('${dir.path}/${'a' * 81}__.json');
+      expect(await file.exists(), isTrue);
+      AnswerCache.clearMemory();
+      expect((await AnswerCache.read('lesson', hash))?.hash, hash);
+      await AnswerCache.remove('lesson', hash);
+      expect(await file.exists(), isFalse);
     });
 
     test('写入 → 清内存 → 仍能从磁盘读回', () async {

@@ -8,6 +8,7 @@
 /// 4. 地址容错：只填 base_url（如 .../compatible-mode/v1）也会自动补上 /chat/completions
 /// 5. 可诊断：失败原因、实际请求地址、HTTP 状态码、耗时都会记录下来供界面展示
 library;
+
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -236,19 +237,21 @@ class AIAnswerProvider implements AnswerSearchProvider {
       AppLogger.i(
         '答案检索',
         '开始检索：题型=${question.typeLabel} 题干长度=${question.effectiveText.length} '
-        '选项数=${question.options.length} 图片数=${imageParts.length}',
+            '选项数=${question.options.length} 图片数=${imageParts.length}',
       );
       AppLogger.i(
         '答案检索',
         '请求地址=$url 模型=$model 关闭思考=$injectThinkingFlag 超时=${timeoutSeconds}s',
       );
 
-      final dio = Dio(BaseOptions(
-        connectTimeout: const Duration(seconds: 20),
-        receiveTimeout: Duration(seconds: timeoutSeconds),
-        // 4xx 也交给自己处理，方便读出服务端的具体报错
-        validateStatus: (code) => code != null && code < 500,
-      ));
+      final dio = Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 20),
+          receiveTimeout: Duration(seconds: timeoutSeconds),
+          // 4xx 也交给自己处理，方便读出服务端的具体报错
+          validateStatus: (code) => code != null && code < 500,
+        ),
+      );
       dio.interceptors.add(const LoggingInterceptor(tag: 'AI请求'));
 
       final response = await dio.post(
@@ -309,8 +312,10 @@ class AIAnswerProvider implements AnswerSearchProvider {
         return [];
       }
 
-      AppLogger.i('答案检索',
-          'HTTP 200，用时 ${stopwatch.elapsedMilliseconds}ms，返回 ${content.length} 字符');
+      AppLogger.i(
+        '答案检索',
+        'HTTP 200，用时 ${stopwatch.elapsedMilliseconds}ms，返回 ${content.length} 字符',
+      );
 
       return _parseAIResponse(content);
     } catch (e) {
@@ -325,7 +330,9 @@ class AIAnswerProvider implements AnswerSearchProvider {
         if (!server.isEmpty) serverText = server.text;
       }
 
-      lastError = serverText == null ? info.message : '${info.message}｜$serverText';
+      lastError = serverText == null
+          ? info.message
+          : '${info.message}｜$serverText';
       lastRequestInfo = AIRequestInfo(
         url: url,
         model: model,
@@ -379,12 +386,15 @@ class AIAnswerProvider implements AnswerSearchProvider {
         .toList();
     if (urls.isEmpty) return [];
 
-    final dio = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 20),
-      receiveTimeout: const Duration(seconds: 60),
-    ));
-    dio.interceptors
-        .add(const LoggingInterceptor(tag: 'AI图片', logResponseBody: false));
+    final dio = Dio(
+      BaseOptions(
+        connectTimeout: const Duration(seconds: 20),
+        receiveTimeout: const Duration(seconds: 60),
+      ),
+    );
+    dio.interceptors.add(
+      const LoggingInterceptor(tag: 'AI图片', logResponseBody: false),
+    );
 
     final result = <String>[];
     for (final url in urls) {
@@ -499,7 +509,9 @@ class AIAnswerProvider implements AnswerSearchProvider {
     try {
       final jsonStr = content.contains('{')
           ? content.substring(
-              content.indexOf('{'), content.lastIndexOf('}') + 1)
+              content.indexOf('{'),
+              content.lastIndexOf('}') + 1,
+            )
           : content;
 
       final parsed = jsonDecode(jsonStr) as Map<String, dynamic>;
@@ -612,7 +624,8 @@ class AnswerSearchApi {
   static const bool defaultDisableThinking = true;
 
   /// 默认接收超时
-  static const int defaultTimeoutSeconds = AIAnswerProvider.defaultTimeoutSeconds;
+  static const int defaultTimeoutSeconds =
+      AIAnswerProvider.defaultTimeoutSeconds;
 
   /// 内置的服务商预设
   static const List<AIProviderPreset> presets = [
@@ -621,7 +634,8 @@ class AnswerSearchApi {
       apiUrl:
           'https://ws-9vvakflm7lid50hq.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
       model: 'qwen3.8-flash',
-      hint: '新域名要带 WorkspaceId；API Key 分地域，北京的 Key 只能打北京的地址。'
+      hint:
+          '新域名要带 WorkspaceId；API Key 分地域，北京的 Key 只能打北京的地址。'
           '地址只填到 /compatible-mode/v1 即可，App 会自动补上 /chat/completions。',
     ),
     AIProviderPreset(
@@ -709,8 +723,7 @@ class AnswerSearchApi {
     final model = prefs.getString(_modelKey) ?? 'gpt-3.5-turbo';
     final disableThinking =
         prefs.getBool(_disableThinkingKey) ?? defaultDisableThinking;
-    final timeoutSeconds =
-        prefs.getInt(_timeoutKey) ?? defaultTimeoutSeconds;
+    final timeoutSeconds = prefs.getInt(_timeoutKey) ?? defaultTimeoutSeconds;
 
     if (apiUrl.isNotEmpty && apiKey.isNotEmpty) {
       _aiProvider = AIAnswerProvider(
@@ -718,16 +731,13 @@ class AnswerSearchApi {
         apiKey: apiKey,
         model: model,
         disableThinking: disableThinking,
-        timeoutSeconds: timeoutSeconds <= 0 ? defaultTimeoutSeconds : timeoutSeconds,
+        timeoutSeconds: timeoutSeconds <= 0
+            ? defaultTimeoutSeconds
+            : timeoutSeconds,
       );
     } else {
       _aiProvider = null;
     }
-  }
-
-  /// 重新加载配置（设置变更后调用）
-  static void reloadConfig() {
-    _loadAIConfig();
   }
 
   /// 检索答案 - 按优先级依次尝试各检索源
@@ -735,7 +745,8 @@ class AnswerSearchApi {
   /// 优先级：内置答案(1.0) > AI检索
   /// 结果按置信度降序排列
   static Future<List<AnswerSearchResult>> search(
-      StandardizedQuestion question) async {
+    StandardizedQuestion question,
+  ) async {
     await initialize();
 
     final results = <AnswerSearchResult>[];
@@ -837,12 +848,14 @@ class AnswerSearchApi {
       );
     }
 
-    final dio = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 20),
-      receiveTimeout: Duration(seconds: timeoutSeconds),
-      // 4xx 也交给自己处理，方便读出具体报错
-      validateStatus: (code) => code != null && code < 500,
-    ));
+    final dio = Dio(
+      BaseOptions(
+        connectTimeout: const Duration(seconds: 20),
+        receiveTimeout: Duration(seconds: timeoutSeconds),
+        // 4xx 也交给自己处理，方便读出具体报错
+        validateStatus: (code) => code != null && code < 500,
+      ),
+    );
 
     final body = <String, dynamic>{
       'model': modelName,
@@ -887,8 +900,9 @@ class AnswerSearchApi {
             if (rawContent is String && rawContent.trim().isNotEmpty) {
               reply = rawContent.trim();
             } else {
-              final rawReasoning =
-                  message is Map ? message['reasoning_content'] : null;
+              final rawReasoning = message is Map
+                  ? message['reasoning_content']
+                  : null;
               if (rawReasoning is String && rawReasoning.trim().isNotEmpty) {
                 reply = rawReasoning.trim();
               }
@@ -900,7 +914,8 @@ class AnswerSearchApi {
         return AIConnectionTestResult(
           success: true,
           message: '连接成功，模型可用',
-          detail: '$urlLine\n模型回复：'
+          detail:
+              '$urlLine\n模型回复：'
               '${(reply ?? '').trim().isEmpty ? '(空)' : reply!.trim()}',
           latencyMs: latency,
         );
@@ -910,7 +925,8 @@ class AnswerSearchApi {
       return AIConnectionTestResult(
         success: false,
         message: formatHttpError(code, server),
-        detail: '$urlLine\n服务端原始返回：\n'
+        detail:
+            '$urlLine\n服务端原始返回：\n'
             '${server.isEmpty ? (response.data?.toString() ?? '(空)') : server.text}',
         latencyMs: latency,
       );
@@ -927,7 +943,8 @@ class AnswerSearchApi {
       return AIConnectionTestResult(
         success: false,
         message: '连接失败：${info.message}',
-        detail: '请求地址：$url\n模型：$modelName\n'
+        detail:
+            '请求地址：$url\n模型：$modelName\n'
             '${serverText == null ? info.error.toString() : '服务端原始返回：\n$serverText'}',
         latencyMs: stopwatch.elapsedMilliseconds,
       );
@@ -993,7 +1010,8 @@ class AnswerSearchApi {
     final text = data.toString().trim();
     if (text.isEmpty) return const ServerErrorInfo();
     return ServerErrorInfo(
-        message: text.length > 500 ? text.substring(0, 500) : text);
+      message: text.length > 500 ? text.substring(0, 500) : text,
+    );
   }
 
   /// 安全转字符串：null 仍是 null，其余走 toString
@@ -1053,12 +1071,15 @@ class AnswerSearchApi {
         questionType = 'unknown';
     }
 
-    final options = problem.options
-            ?.map((opt) => StandardizedOption(
-                  key: opt.key,
-                  value: opt.value,
-                  isCorrect: null,
-                ))
+    final options =
+        problem.options
+            ?.map(
+              (opt) => StandardizedOption(
+                key: opt.key,
+                value: opt.value,
+                isCorrect: null,
+              ),
+            )
             .toList() ??
         [];
 

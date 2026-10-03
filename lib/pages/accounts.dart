@@ -453,7 +453,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   /// 二维码登录弹窗的面板。
   ///
   /// ⚠️ 这里**不能**用 `MiuixOverlayDialog`。它是页内级弹窗，渲染在本页
-  /// `MiuixScaffold` 的 `MiuixPopupHost` 里；而玻璃底栏是 `MyHomePage` 的
+  /// `MiuixScaffold` 的 `MiuixPopupHost` 里；而玻璃底栏是 `MainPage` 的
   /// `body: Stack` 里 `Positioned` 悬浮叠加的、画在页面之上 —— 于是页内级弹窗
   /// 会落在底栏**下面**：遮罩盖不住底栏，底栏还保持可点（弹窗开着却能切 Tab）。
   /// 账号页是 Tab 页（不是 push 出来的路由），这个问题躲不掉。

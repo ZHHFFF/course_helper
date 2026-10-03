@@ -38,6 +38,7 @@ import '../utils/ppt_exporter.dart';
 import 'widget/answer_search_dialog.dart';
 import 'widget/suggested_answer_card.dart';
 import '../setting/theme_setting.dart';
+
 // [/新增]
 
 enum _SubmitOutcome { success, transportFailure, rejected }
@@ -146,8 +147,6 @@ class _PresentationPageState extends State<PresentationPage>
 
   int _currentSlideIndex = 0;
   int _currentLessonSlideIndex = 0;
-  int _totalCount = 0;
-  List<Map<String, dynamic>> _slides = [];
   String? _currentPresentationId;
   final List<String> _unlockedProblemIds = [];
 
@@ -181,7 +180,7 @@ class _PresentationPageState extends State<PresentationPage>
   /// 整份 PPT 的识题结果（拿到 PPT 的那一刻就扫完了）
   SlideScanResult _scan = const SlideScanResult.empty();
 
-  /// 幻灯片模型（扫描、图片预取用；`_slides` 是给 UI 用的 Map 版）
+  /// 幻灯片的单一事实来源，供 UI、扫描和图片预取共用。
   List<PresentationSlide> _slideModels = const [];
 
   /// 指纹 → 建议答案（缓存命中 或 本次检索拿到的）
@@ -326,10 +325,7 @@ class _PresentationPageState extends State<PresentationPage>
     _wsReconnectTimer = null;
 
     if (_ws != null) {
-      final leaveData = {
-        "op": "leavelesson",
-        "lessonid": widget.lessonId
-      };
+      final leaveData = {"op": "leavelesson", "lessonid": widget.lessonId};
       _ws?.add(jsonEncode(leaveData));
     }
 
@@ -929,12 +925,12 @@ class _PresentationPageState extends State<PresentationPage>
   /// 具体判据在纯函数 [isCurrentProblemPublished] 里（有单测覆盖）。
   /// 这里只负责把页面状态喂进去。
   bool _isCurrentProblemPublished() => isCurrentProblemPublished(
-        currentSlideIndex: _currentSlideIndex,
-        publishedSlideOf: _publishedSlideOf,
-        currentProblemId: _currentProblem?.problemId,
-        publishedProbs: _unlockedProblemIds.toSet(),
-        timelineProblemId: _timelineProblemId,
-      );
+    currentSlideIndex: _currentSlideIndex,
+    publishedSlideOf: _publishedSlideOf,
+    currentProblemId: _currentProblem?.problemId,
+    publishedProbs: _unlockedProblemIds.toSet(),
+    timelineProblemId: _timelineProblemId,
+  );
 
   /// 当前页的答案是否已经填好
   bool _isAnswerFilled() {
@@ -987,12 +983,14 @@ class _PresentationPageState extends State<PresentationPage>
     String hash, {
     bool forceRefresh = false,
   }) async {
-    final result = await AnswerQueue.submit(AnswerJob(
-      lessonId: widget.lessonId,
-      hash: hash,
-      question: question,
-      forceRefresh: forceRefresh,
-    ));
+    final result = await AnswerQueue.submit(
+      AnswerJob(
+        lessonId: widget.lessonId,
+        hash: hash,
+        question: question,
+        forceRefresh: forceRefresh,
+      ),
+    );
 
     if (result == null) {
       // 没配 AI / 被取消 → 退回直接检索，至少还能拿到内置答案
@@ -1020,7 +1018,9 @@ class _PresentationPageState extends State<PresentationPage>
 
   /// 把选中的检索结果写回作答状态
   void _applyPickedAnswer(
-      AnswerSearchResult picked, StandardizedQuestion question) {
+    AnswerSearchResult picked,
+    StandardizedQuestion question,
+  ) {
     // 复用统一填充逻辑（按题型决定写 _answer 还是 _textAnswer）。
     // 原来这里也是「选择题 / 非选择题」二分，填空题会填到 UI 不读的字段上。
     final ok = _fillAnswerSilently(question, picked, logTag: '填入答案');
@@ -1068,37 +1068,37 @@ class _PresentationPageState extends State<PresentationPage>
   /// 正常情况下直接取扫描阶段算好的，避免每次切页重算一遍 SHA-256。
   /// 扫描阶段没收录这一页时（题目是个「空壳」被跳过了）才现算一个，
   /// 这样手动检索拿到的结果仍然有地方展示。
-    void _refreshCurrentHash() {
-      final scanned = _scan.forSlide(_currentSlideIndex);
-      if (scanned != null) {
-        _currentHash = scanned.hash;
-      } else if (_currentProblem == null) {
-        _currentHash = null;
-      } else {
-        _currentHash = QuestionHash.of(_questionOfCurrentSlide());
-      }
-
-      // 切到一道「答案早就搜好」的题时，`_onAnswerReady` 不会再触发
-      // （那个事件只在答案刚到手的那一刻发一次），
-      // 所以这里补一次自动预选 —— 否则预搜虽然跑完了，
-      // 老师发题后翻到那一页也不会自动填。
-      final h = _currentHash;
-      if (h != null) {
-        // 诊断用：把「当前页指纹」和「已经有答案的指纹」都打出来，
-        // 一眼就能看出是「没搜到」还是「搜到了但对不上」
-        AppLogger.i(
-          '自动答题',
-          '第 ${_currentSlideIndex + 1} 页指纹=${_short(h)}'
-              '｜已有答案的题=[${_suggested.keys.map(_short).join(",")}]',
-        );
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) unawaited(_autoSelectIfCurrent(h));
-        });
-      }
+  void _refreshCurrentHash() {
+    final scanned = _scan.forSlide(_currentSlideIndex);
+    if (scanned != null) {
+      _currentHash = scanned.hash;
+    } else if (_currentProblem == null) {
+      _currentHash = null;
+    } else {
+      _currentHash = QuestionHash.of(_questionOfCurrentSlide());
     }
 
-    String _short(String s) => s.length <= 8 ? s : s.substring(0, 8);
-    // [/新增]
+    // 切到一道「答案早就搜好」的题时，`_onAnswerReady` 不会再触发
+    // （那个事件只在答案刚到手的那一刻发一次），
+    // 所以这里补一次自动预选 —— 否则预搜虽然跑完了，
+    // 老师发题后翻到那一页也不会自动填。
+    final h = _currentHash;
+    if (h != null) {
+      // 诊断用：把「当前页指纹」和「已经有答案的指纹」都打出来，
+      // 一眼就能看出是「没搜到」还是「搜到了但对不上」
+      AppLogger.i(
+        '自动答题',
+        '第 ${_currentSlideIndex + 1} 页指纹=${_short(h)}'
+            '｜已有答案的题=[${_suggested.keys.map(_short).join(",")}]',
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_autoSelectIfCurrent(h));
+      });
+    }
+  }
+
+  String _short(String s) => s.length <= 8 ? s : s.substring(0, 8);
+  // [/新增]
 
   Future<void> _checkToken() async {
     final accountsToCheckIn = RCCourseApi.accountsNeedingCheckIn(
@@ -1106,22 +1106,20 @@ class _PresentationPageState extends State<PresentationPage>
       widget.lessonId,
     );
     if (accountsToCheckIn.isNotEmpty) {
-
       // [新增] 记录网络异常，避免和业务错误混在一起
       final Map<String, String> errorByUid = {};
 
-      final results = await ApiService.sendForEachUser(
-        accountsToCheckIn,
-        (user) async {
-          try {
-            final api = RCCourseApi(user);
-            return await api.checkIn(widget.lessonId);
-          } catch (e) {
-            errorByUid[user.uid.toString()] = describeErrorShort(e);
-            rethrow;
-          }
-        },
-      );
+      final results = await ApiService.sendForEachUser(accountsToCheckIn, (
+        user,
+      ) async {
+        try {
+          final api = RCCourseApi(user);
+          return await api.checkIn(widget.lessonId);
+        } catch (e) {
+          errorByUid[user.uid.toString()] = describeErrorShort(e);
+          rethrow;
+        }
+      });
 
       for (int i = 0; i < results.length; i++) {
         final result = results[i];
@@ -1131,14 +1129,14 @@ class _PresentationPageState extends State<PresentationPage>
         if (netError != null) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Uid${user.uid} 网络异常：$netError'))
+              SnackBar(content: Text('Uid${user.uid} 网络异常：$netError')),
             );
           }
           continue;
         }
 
         if (result != 0) {
-          if (result == 50070){
+          if (result == 50070) {
             if (mounted) {
               showDialog(
                 context: context,
@@ -1148,9 +1146,9 @@ class _PresentationPageState extends State<PresentationPage>
                     actions: [
                       TextButton(
                         onPressed: () => Navigator.pop(context),
-                        child: const Text('确定')
+                        child: const Text('确定'),
                       ),
-                    ]
+                    ],
                   );
                 },
               );
@@ -1159,7 +1157,7 @@ class _PresentationPageState extends State<PresentationPage>
           } else {
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Uid${user.uid}签到错误：$result'))
+                SnackBar(content: Text('Uid${user.uid}签到错误：$result')),
               );
             }
           }
@@ -1214,8 +1212,9 @@ class _PresentationPageState extends State<PresentationPage>
     try {
       late String lessonUrl;
       final currentServerName = PlatformManager().currentServer.name;
-      lessonUrl = currentServerName == 'yuketang'?
-      'wss://www.yuketang.cn/wsapp/' : 'wss://$currentServerName.yuketang.cn/wsapp/';
+      lessonUrl = currentServerName == 'yuketang'
+          ? 'wss://www.yuketang.cn/wsapp/'
+          : 'wss://$currentServerName.yuketang.cn/wsapp/';
 
       final ws = await WebSocket.connect(lessonUrl);
 
@@ -1244,7 +1243,7 @@ class _PresentationPageState extends State<PresentationPage>
         "userid": uid,
         "role": "student",
         "auth": lessonToken,
-        "lessonid": widget.lessonId
+        "lessonid": widget.lessonId,
       };
 
       ws.add(jsonEncode(helloData));
@@ -1340,11 +1339,11 @@ class _PresentationPageState extends State<PresentationPage>
       // _currentLessonSlideIndex = 老师当前所在页（「回到当前页」按钮靠它判断）
       _currentLessonSlideIndex = targetIndex;
       _currentSlideIndex = targetIndex;
-        if (targetIndex < _slides.length) {
-          _currentProblem = _slides[targetIndex]['problem'];
-        }
-        _syncAnswerOwner();
-        _refreshCurrentHash();
+      if (targetIndex < _slideModels.length) {
+        _currentProblem = _slideModels[targetIndex].problem;
+      }
+      _syncAnswerOwner();
+      _refreshCurrentHash();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1354,7 +1353,7 @@ class _PresentationPageState extends State<PresentationPage>
         _pageController.animateToPage(
           targetIndex,
           duration: const Duration(milliseconds: 300),
-          curve: Curves.easeInOut
+          curve: Curves.easeInOut,
         );
       } else {
         _pageController.jumpToPage(targetIndex);
@@ -1387,9 +1386,9 @@ class _PresentationPageState extends State<PresentationPage>
             unawaited(CourseCache.markFinished(widget.lessonId));
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('课堂已结束')),
-                );
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(const SnackBar(content: Text('课堂已结束')));
               }
             });
             return;
@@ -1419,7 +1418,9 @@ class _PresentationPageState extends State<PresentationPage>
 
           if (targetPresId != null) {
             if (!await _loadPresentation(targetPresId)) return;
-            if (slideRevision == _slideRevision && targetSlideIndex != null && targetSlideIndex > 0) {
+            if (slideRevision == _slideRevision &&
+                targetSlideIndex != null &&
+                targetSlideIndex > 0) {
               _toSlide(targetSlideIndex, animate: false);
             }
           }
@@ -1453,7 +1454,8 @@ class _PresentationPageState extends State<PresentationPage>
             if (limit != null && limit > 0) {
               setState(() {
                 _countdownSeconds = limit;
-                if (problemId != null && !_unlockedProblemIds.contains(problemId)) {
+                if (problemId != null &&
+                    !_unlockedProblemIds.contains(problemId)) {
                   _unlockedProblemIds.add(problemId);
                 }
                 if (_currentProblem != null && dt != null) {
@@ -1500,8 +1502,9 @@ class _PresentationPageState extends State<PresentationPage>
 
         case 'slide':
         case 'slidenav':
-          final slideIndex = op == 'slide' ?
-          data['slideindex'] : data['slide']?['si'];
+          final slideIndex = op == 'slide'
+              ? data['slideindex']
+              : data['slide']?['si'];
           if (slideIndex != null) {
             _toSlide(slideIndex);
           }
@@ -1528,12 +1531,14 @@ class _PresentationPageState extends State<PresentationPage>
             final dt = eventData['dt'];
             if (code == 'RANDOM_PICK') {
               setState(() {
-                _timeline.add(_TimelineEvent(
-                  type: 'randompick',
-                  code: 'RANDOM_PICK',
-                  title: eventData['title'],
-                  timestamp: DateTime.fromMillisecondsSinceEpoch(dt)
-                ));
+                _timeline.add(
+                  _TimelineEvent(
+                    type: 'randompick',
+                    code: 'RANDOM_PICK',
+                    title: eventData['title'],
+                    timestamp: DateTime.fromMillisecondsSinceEpoch(dt),
+                  ),
+                );
               });
             }
           }
@@ -1548,12 +1553,14 @@ class _PresentationPageState extends State<PresentationPage>
 
             if (code == 'SHOW_FINISH') {
               setState(() {
-                _timeline.add(_TimelineEvent(
-                  type: 'event',
-                  code: code,
-                  title: title,
-                  timestamp: DateTime.fromMillisecondsSinceEpoch(dt),
-                ));
+                _timeline.add(
+                  _TimelineEvent(
+                    type: 'event',
+                    code: code,
+                    title: title,
+                    timestamp: DateTime.fromMillisecondsSinceEpoch(dt),
+                  ),
+                );
               });
             }
           }
@@ -1569,23 +1576,22 @@ class _PresentationPageState extends State<PresentationPage>
             if (code == 'LESSON_FINISH') {
               unawaited(CourseCache.markFinished(widget.lessonId));
               setState(() {
-                _timeline.add(_TimelineEvent(
-                  type: 'event',
-                  code: code,
-                  title: title,
-                  timestamp: DateTime.fromMillisecondsSinceEpoch(dt)
-                ));
+                _timeline.add(
+                  _TimelineEvent(
+                    type: 'event',
+                    code: code,
+                    title: title,
+                    timestamp: DateTime.fromMillisecondsSinceEpoch(dt),
+                  ),
+                );
               });
             }
           }
           break;
       }
-      } catch (e, st) {
-        AppLogger.e(
-          'WebSocket',
-          '处理消息失败 op=${op ?? "?"}：$e\n$st',
-        );
-      }
+    } catch (e, st) {
+      AppLogger.e('WebSocket', '处理消息失败 op=${op ?? "?"}：$e\n$st');
+    }
   }
 
   void _addTimelineEvents(List timeline) {
@@ -1616,20 +1622,24 @@ class _PresentationPageState extends State<PresentationPage>
         }
 
         setState(() {
-          _timeline.add(_TimelineEvent(
-            type: eventType,
-            code: code,
-            title: eventTitle,
-            slideIndex: si,
-            total: total,
-            limit: limit,
-            timestamp: DateTime.fromMillisecondsSinceEpoch(dt),
-            problemId: prob,
-            presentationId: pres,
-            problemDt: dt
-          ));
+          _timeline.add(
+            _TimelineEvent(
+              type: eventType,
+              code: code,
+              title: eventTitle,
+              slideIndex: si,
+              total: total,
+              limit: limit,
+              timestamp: DateTime.fromMillisecondsSinceEpoch(dt),
+              problemId: prob,
+              presentationId: pres,
+              problemDt: dt,
+            ),
+          );
 
-          if (eventType == 'problem' && prob != null && !_unlockedProblemIds.contains(prob)) {
+          if (eventType == 'problem' &&
+              prob != null &&
+              !_unlockedProblemIds.contains(prob)) {
             _unlockedProblemIds.add(prob);
           }
         });
@@ -1660,7 +1670,9 @@ class _PresentationPageState extends State<PresentationPage>
     });
 
     final pending = _presentationLoads.putIfAbsent(
-      presentationId, () => _fetchPresentation(presentationId));
+      presentationId,
+      () => _fetchPresentation(presentationId),
+    );
     final presentation = await pending;
     if (identical(_presentationLoads[presentationId], pending)) {
       _presentationLoads.remove(presentationId);
@@ -1674,30 +1686,22 @@ class _PresentationPageState extends State<PresentationPage>
       setState(() {
         _isLoading = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('PPT 加载失败，可稍后重试')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('PPT 加载失败，可稍后重试')));
       return false;
     }
 
     final slides = presentation.slides;
     setState(() {
       _slideModels = slides;
-      _slides = slides
-          .map((slide) => {
-                'index': slide.index,
-                'cover': slide.cover,
-                'coverAlt': slide.coverAlt,
-                'thumbnail': slide.thumbnail,
-                'problem': slide.problem,
-                // [新增] 保留形状文本，用于题干缺失时兜底
-                'shapes': slide.shapes,
-              })
-          .toList();
-      _totalCount = slides.length;
       _currentPresentationId = presentationId;
-      _currentSlideIndex = slides.isEmpty ? 0 : _currentSlideIndex.clamp(0, slides.length - 1);
-      _currentProblem = slides.isEmpty ? null : slides[_currentSlideIndex].problem;
+      _currentSlideIndex = slides.isEmpty
+          ? 0
+          : _currentSlideIndex.clamp(0, slides.length - 1);
+      _currentProblem = slides.isEmpty
+          ? null
+          : slides[_currentSlideIndex].problem;
       _syncAnswerOwner();
       _isLoading = false;
       _isInitialized = true;
@@ -1709,8 +1713,10 @@ class _PresentationPageState extends State<PresentationPage>
     final targetIndex = _currentSlideIndex;
     final slideRevision = _slideRevision;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || generation != _presentationLoadGeneration ||
-          slideRevision != _slideRevision || !_pageController.hasClients) {
+      if (!mounted ||
+          generation != _presentationLoadGeneration ||
+          slideRevision != _slideRevision ||
+          !_pageController.hasClients) {
         return;
       }
       _pageController.jumpToPage(targetIndex);
@@ -1726,13 +1732,15 @@ class _PresentationPageState extends State<PresentationPage>
         // 整份 PPT 元数据落盘：老师来回切同一份时不用重复请求。
         // 顺手把「这节课属于哪门课」记进 meta.json —— 课件页靠它把
         // lessonId 目录归到课程名下（老缓存就是缺这个，只能显示一串数字）。
-        unawaited(PptCache.save(
-          widget.lessonId,
-          presentationId,
-          pptData,
-          courseId: widget.courseId,
-          courseName: widget.title,
-        ));
+        unawaited(
+          PptCache.save(
+            widget.lessonId,
+            presentationId,
+            pptData,
+            courseId: widget.courseId,
+            courseName: widget.title,
+          ),
+        );
         presentation = Presentation.fromJson(pptData);
       }
     } catch (e) {
@@ -1815,29 +1823,33 @@ class _PresentationPageState extends State<PresentationPage>
 
     for (final item in todo) {
       unawaited(
-        AnswerQueue.submit(AnswerJob(
-            lessonId: widget.lessonId,
-            hash: item.hash,
-            question: item.question,
-          )).then((result) {
-            if (!mounted) return;
-            setState(() {
-              if (result != null) _suggested[result.hash] = result.answer;
-              _searching.remove(item.hash);
-            });
+        AnswerQueue.submit(
+              AnswerJob(
+                lessonId: widget.lessonId,
+                hash: item.hash,
+                question: item.question,
+              ),
+            )
+            .then((result) {
+              if (!mounted) return;
+              setState(() {
+                if (result != null) _suggested[result.hash] = result.answer;
+                _searching.remove(item.hash);
+              });
 
-            // 自动预选不在这里触发 —— AnswerQueue 现在**不管走缓存还是
-            // 真去请求都会广播**（契约统一在 submit() 的出口），
-            // 所以 _onAnswerReady 一定会被调到，那边负责预选。
-            //
-            // 这里仍然写一次 _suggested：广播是流，万一界面刚好在
-            // dispose 边缘错过了，这里能兜住，而且写两次是幂等的。
-          }).catchError((Object e) {
-          AppLogger.w('Presentation', '自动检索失败（${item.hash}）：$e');
-          if (mounted) {
-            setState(() => _searching.remove(item.hash));
-          }
-        }),
+              // 自动预选不在这里触发 —— AnswerQueue 现在**不管走缓存还是
+              // 真去请求都会广播**（契约统一在 submit() 的出口），
+              // 所以 _onAnswerReady 一定会被调到，那边负责预选。
+              //
+              // 这里仍然写一次 _suggested：广播是流，万一界面刚好在
+              // dispose 边缘错过了，这里能兜住，而且写两次是幂等的。
+            })
+            .catchError((Object e) {
+              AppLogger.w('Presentation', '自动检索失败（${item.hash}）：$e');
+              if (mounted) {
+                setState(() => _searching.remove(item.hash));
+              }
+            }),
       );
     }
   }
@@ -1880,8 +1892,10 @@ class _PresentationPageState extends State<PresentationPage>
               borderRadius: BorderRadius.circular(12),
               onTap: () => _toSlide(_currentLessonSlideIndex + 1),
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -1921,14 +1935,15 @@ class _PresentationPageState extends State<PresentationPage>
                         style: TextStyle(color: scheme.primary),
                       ),
                       TextSpan(
-                        text: '${_currentSlideIndex + 1}/$_totalCount',
+                        text:
+                            '${_currentSlideIndex + 1}/${_slideModels.length}',
                         style: TextStyle(color: scheme.onSurfaceVariant),
                       ),
                     ],
                   ),
                 )
               : Text(
-                  '${_currentSlideIndex + 1}/$_totalCount',
+                  '${_currentSlideIndex + 1}/${_slideModels.length}',
                   style: TextStyle(
                     color: scheme.onSurfaceVariant,
                     fontSize: 12,
@@ -1947,7 +1962,8 @@ class _PresentationPageState extends State<PresentationPage>
 
     final problem = _currentProblem;
     final scanned = _scan.forSlide(_currentSlideIndex);
-    final question = scanned?.question ??
+    final question =
+        scanned?.question ??
         (problem == null
             ? StandardizedQuestion(questionText: '', questionType: 'unknown')
             : _questionOfCurrentSlide());
@@ -1978,7 +1994,8 @@ class _PresentationPageState extends State<PresentationPage>
     if (problem == null) return;
 
     final question =
-        _scan.forSlide(_currentSlideIndex)?.question ?? _questionOfCurrentSlide();
+        _scan.forSlide(_currentSlideIndex)?.question ??
+        _questionOfCurrentSlide();
 
     setState(() {
       _searching.add(hash);
@@ -1993,11 +2010,11 @@ class _PresentationPageState extends State<PresentationPage>
       children: [
         PageView.builder(
           controller: _pageController,
-          itemCount: _slides.length,
+          itemCount: _slideModels.length,
           onPageChanged: (index) {
             setState(() {
               _currentSlideIndex = index;
-              _currentProblem = _slides[index]['problem'];
+              _currentProblem = _slideModels[index].problem;
               _syncAnswerOwner();
               // 注意：这里**不**动 _currentLessonSlideIndex ——
               // 用户手动翻页就表示脱离了老师那页，按钮才会出现
@@ -2005,85 +2022,74 @@ class _PresentationPageState extends State<PresentationPage>
             });
           },
           itemBuilder: (context, index) {
-            final slide = _slides[index];
-            final cover = slide['coverAlt'] as String?;
+            final slide = _slideModels[index];
+            final cover = slide.coverAlt;
             return Center(
-              child: cover != null
-                  ? GestureDetector(
-                      onLongPressDown: (details) {
-                        setState(() {
-                          _menuPosition = details.globalPosition;
-                        });
-                      },
-                      onLongPress: () async {
-                        final RenderBox? overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
-                        if (overlay == null) return;
+              child: GestureDetector(
+                onLongPressDown: (details) {
+                  setState(() {
+                    _menuPosition = details.globalPosition;
+                  });
+                },
+                onLongPress: () async {
+                  final RenderBox? overlay =
+                      Overlay.of(context).context.findRenderObject()
+                          as RenderBox?;
+                  if (overlay == null) return;
 
-                        final result = await showMenu<String>(
-                          context: context,
-                          position: RelativeRect.fromLTRB(
-                            _menuPosition.dx,
-                            _menuPosition.dy,
-                            _menuPosition.dx + 1,
-                            _menuPosition.dy + 1,
-                          ),
-                          items: [
-                            const PopupMenuItem<String>(
-                              value: 'save',
-                              child: Text('保存图片'),
-                            ),
-                            const PopupMenuItem<String>(
-                              value: 'fullscreen',
-                              child: Text('退出全屏'),
-                            ),
-                          ],
-                        );
-
-                        if (result == 'save') {
-                          await _saveImageToGallery(cover);
-                        } else if (result == 'fullscreen') {
-                          setState(() {
-                            _isFullScreen = false;
-                          });
-                        }
-                      },
-                      // 走本课程的磁盘图片缓存（预取过就是秒开，断网也能看）
-                      child: Image(
-                        image: SlideImage(widget.lessonId, cover),
-                        fit: BoxFit.contain,
-                        width: double.infinity,
-                        height: double.infinity,
-                        loadingBuilder: (context, child, progress) {
-                          if (progress == null) return child;
-                          return const Center(
-                            child: CircularProgressIndicator(),
-                          );
-                        },
-                        errorBuilder: (context, error, stackTrace) {
-                          return const Center(
-                            child: Icon(
-                              Icons.error_outline,
-                              size: 48,
-                              color: Colors.grey,
-                            ),
-                          );
-                        },
-                      ),
-                    )
-                  : const Center(
-                      child: Text(
-                        '暂无 PPT',
-                        style: TextStyle(color: Colors.grey),
-                      ),
+                  final result = await showMenu<String>(
+                    context: context,
+                    position: RelativeRect.fromLTRB(
+                      _menuPosition.dx,
+                      _menuPosition.dy,
+                      _menuPosition.dx + 1,
+                      _menuPosition.dy + 1,
                     ),
+                    items: [
+                      const PopupMenuItem<String>(
+                        value: 'save',
+                        child: Text('保存图片'),
+                      ),
+                      const PopupMenuItem<String>(
+                        value: 'fullscreen',
+                        child: Text('退出全屏'),
+                      ),
+                    ],
+                  );
+
+                  if (result == 'save') {
+                    await _saveImageToGallery(cover);
+                  } else if (result == 'fullscreen') {
+                    setState(() {
+                      _isFullScreen = false;
+                    });
+                  }
+                },
+                // 走本课程的磁盘图片缓存（预取过就是秒开，断网也能看）
+                child: Image(
+                  image: SlideImage(widget.lessonId, cover),
+                  fit: BoxFit.contain,
+                  width: double.infinity,
+                  height: double.infinity,
+                  loadingBuilder: (context, child, progress) {
+                    if (progress == null) return child;
+                    return const Center(child: CircularProgressIndicator());
+                  },
+                  errorBuilder: (context, error, stackTrace) {
+                    return const Center(
+                      child: Icon(
+                        Icons.error_outline,
+                        size: 48,
+                        color: Colors.grey,
+                      ),
+                    );
+                  },
+                ),
+              ),
             );
           },
         ),
-        Positioned(
-          right: 16,
-          top: 16,
-          child: _buildSlideOverlay(),
-        ),
+        Positioned(right: 16, top: 16, child: _buildSlideOverlay()),
       ],
     );
   }
@@ -2093,89 +2099,82 @@ class _PresentationPageState extends State<PresentationPage>
     return Material(
       type: MaterialType.transparency,
       child: MiuixScaffold(
-      topBar: _isFullScreen ? null : MiuixTopAppBar(
-        title: widget.title,
-        blurred: ThemeSetting.blurOf(context),
-        navigationIcon: MiuixIconButton(
-          onPressed: () => Navigator.of(context).maybePop(),
-          child: const Icon(Icons.arrow_back_ios_new, size: 20),
-        ),
-        actions: [
-          // [新增] 课件缓存进度 + 导出 PDF
-          //
-          // 缓存没完成时 PDF 按钮是禁用的（防呆），
-          // 避免用户上来就点，导出一个只有几页的残缺 PDF。
-          ValueListenableBuilder<SlidePrefetchProgress>(
-            valueListenable: SlideImagePrefetcher.progress,
-            builder: (context, p, _) {
-              if (p.isRunning) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Center(
-                    child: MiuixText(
-                      '缓存中 ${p.label}',
-                      fontSize: 12,
-                    ),
-                  ),
-                );
-              }
-              if (p.isNotEmpty && !p.isComplete) {
-                return MiuixIconButton(
-                  onPressed: _retryPrefetch,
-                  child: const Icon(Icons.refresh),
-                );
-              }
-              return MiuixIconButton(
-                onPressed: (_isExporting || !p.isComplete)
-                    ? null
-                    : _exportPresentationPdf,
-                child: _isExporting
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                        ),
-                      )
-                    : const Icon(Icons.picture_as_pdf_outlined),
-              );
-            },
-          ),
-        ],
-      ),
-      content: (contentPadding) => Padding(
-        padding: EdgeInsets.only(top: _isFullScreen ? 0 : contentPadding.top),
-        child: _isLoading
-          ? const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text(
-                    '加载 PPT 中...',
-                    style: TextStyle(color: Colors.grey),
+        topBar: _isFullScreen
+            ? null
+            : MiuixTopAppBar(
+                title: widget.title,
+                blurred: ThemeSetting.blurOf(context),
+                navigationIcon: MiuixIconButton(
+                  onPressed: () => Navigator.of(context).maybePop(),
+                  child: const Icon(Icons.arrow_back_ios_new, size: 20),
+                ),
+                actions: [
+                  // [新增] 课件缓存进度 + 导出 PDF
+                  //
+                  // 缓存没完成时 PDF 按钮是禁用的（防呆），
+                  // 避免用户上来就点，导出一个只有几页的残缺 PDF。
+                  ValueListenableBuilder<SlidePrefetchProgress>(
+                    valueListenable: SlideImagePrefetcher.progress,
+                    builder: (context, p, _) {
+                      if (p.isRunning) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Center(
+                            child: MiuixText('缓存中 ${p.label}', fontSize: 12),
+                          ),
+                        );
+                      }
+                      if (p.isNotEmpty && !p.isComplete) {
+                        return MiuixIconButton(
+                          onPressed: _retryPrefetch,
+                          child: const Icon(Icons.refresh),
+                        );
+                      }
+                      return MiuixIconButton(
+                        onPressed: (_isExporting || !p.isComplete)
+                            ? null
+                            : _exportPresentationPdf,
+                        child: _isExporting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.picture_as_pdf_outlined),
+                      );
+                    },
                   ),
                 ],
               ),
-            )
-          : !_isInitialized
+        content: (contentPadding) => Padding(
+          padding: EdgeInsets.only(top: _isFullScreen ? 0 : contentPadding.top),
+          child: _isLoading
               ? const Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       CircularProgressIndicator(),
                       SizedBox(height: 16),
-                      Text(
-                        '等待课堂数据...',
-                        style: TextStyle(color: Colors.grey),
-                      ),
+                      Text('加载 PPT 中...', style: TextStyle(color: Colors.grey)),
+                    ],
+                  ),
+                )
+              : !_isInitialized
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text('等待课堂数据...', style: TextStyle(color: Colors.grey)),
                     ],
                   ),
                 )
               : _isFullScreen
-                  ? _buildFullScreenPPT()
-                  : Column(
+              ? _buildFullScreenPPT()
+              : Column(
                   children: [
                     AspectRatio(
                       aspectRatio: 16 / 9,
@@ -2183,88 +2182,85 @@ class _PresentationPageState extends State<PresentationPage>
                         children: [
                           PageView.builder(
                             controller: _pageController,
-                            itemCount: _slides.length,
+                            itemCount: _slideModels.length,
                             onPageChanged: (index) {
                               setState(() {
                                 _currentSlideIndex = index;
-                                _currentProblem = _slides[index]['problem'];
+                                _currentProblem = _slideModels[index].problem;
                                 _syncAnswerOwner();
                                 // 同全屏视图：手动翻页不改变老师所在页
                                 _refreshCurrentHash();
                               });
                             },
                             itemBuilder: (context, index) {
-                              final slide = _slides[index];
-                              final cover = slide['coverAlt'] as String?;
+                              final slide = _slideModels[index];
+                              final cover = slide.coverAlt;
                               return Center(
-                                child: cover != null
-                                    ? GestureDetector(
-                                        onLongPressDown: (details) {
-                                          setState(() {
-                                            _menuPosition = details.globalPosition;
-                                          });
-                                        },
-                                        onLongPress: () async {
-                                          final RenderBox? overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
-                                          if (overlay == null) return;
+                                child: GestureDetector(
+                                  onLongPressDown: (details) {
+                                    setState(() {
+                                      _menuPosition = details.globalPosition;
+                                    });
+                                  },
+                                  onLongPress: () async {
+                                    final RenderBox? overlay =
+                                        Overlay.of(
+                                              context,
+                                            ).context.findRenderObject()
+                                            as RenderBox?;
+                                    if (overlay == null) return;
 
-                                          final result = await showMenu<String>(
-                                            context: context,
-                                            position: RelativeRect.fromLTRB(
-                                              _menuPosition.dx,
-                                              _menuPosition.dy,
-                                              _menuPosition.dx + 1,
-                                              _menuPosition.dy + 1,
-                                            ),
-                                            items: [
-                                              const PopupMenuItem<String>(
-                                                value: 'save',
-                                                child: Text('保存图片')
-                                              ),
-                                              PopupMenuItem<String>(
-                                                value: 'fullscreen',
-                                                child: Text('全屏')
-                                              ),
-                                            ],
-                                          );
-
-                                          if (result == 'save') {
-                                            await _saveImageToGallery(cover);
-                                          } else if (result == 'fullscreen') {
-                                            setState(() {
-                                              _isFullScreen = !_isFullScreen;
-                                            });
-                                          }
-                                        },
-                                        // 走本课程的磁盘图片缓存
-                                        child: Image(
-                                          image: SlideImage(widget.lessonId, cover),
-                                          fit: BoxFit.contain,
-                                          width: double.infinity,
-                                          height: double.infinity,
-                                          loadingBuilder: (context, child, progress) {
-                                            if (progress == null) return child;
-                                            return const Center(
-                                              child: CircularProgressIndicator(),
-                                            );
-                                          },
-                                          errorBuilder: (context, error, stackTrace) {
-                                            return const Center(
-                                              child: Icon(
-                                                Icons.error_outline,
-                                                size: 48,
-                                                color: Colors.grey,
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                      )
-                                    : const Center(
-                                        child: Text(
-                                          '暂无 PPT',
-                                          style: TextStyle(color: Colors.grey),
-                                        ),
+                                    final result = await showMenu<String>(
+                                      context: context,
+                                      position: RelativeRect.fromLTRB(
+                                        _menuPosition.dx,
+                                        _menuPosition.dy,
+                                        _menuPosition.dx + 1,
+                                        _menuPosition.dy + 1,
                                       ),
+                                      items: [
+                                        const PopupMenuItem<String>(
+                                          value: 'save',
+                                          child: Text('保存图片'),
+                                        ),
+                                        PopupMenuItem<String>(
+                                          value: 'fullscreen',
+                                          child: Text('全屏'),
+                                        ),
+                                      ],
+                                    );
+
+                                    if (result == 'save') {
+                                      await _saveImageToGallery(cover);
+                                    } else if (result == 'fullscreen') {
+                                      setState(() {
+                                        _isFullScreen = !_isFullScreen;
+                                      });
+                                    }
+                                  },
+                                  // 走本课程的磁盘图片缓存
+                                  child: Image(
+                                    image: SlideImage(widget.lessonId, cover),
+                                    fit: BoxFit.contain,
+                                    width: double.infinity,
+                                    height: double.infinity,
+                                    loadingBuilder: (context, child, progress) {
+                                      if (progress == null) return child;
+                                      return const Center(
+                                        child: CircularProgressIndicator(),
+                                      );
+                                    },
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return const Center(
+                                        child: Icon(
+                                          Icons.error_outline,
+                                          size: 48,
+                                          color: Colors.grey,
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
                               );
                             },
                           ),
@@ -2286,8 +2282,18 @@ class _PresentationPageState extends State<PresentationPage>
                                 decoration: BoxDecoration(
                                   color: Theme.of(context).colorScheme.surface,
                                   border: Border(
-                                    top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant, width: 1),
-                                    bottom: BorderSide(color: Theme.of(context).colorScheme.outlineVariant, width: 1),
+                                    top: BorderSide(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.outlineVariant,
+                                      width: 1,
+                                    ),
+                                    bottom: BorderSide(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.outlineVariant,
+                                      width: 1,
+                                    ),
                                   ),
                                 ),
                                 child: Column(
@@ -2297,7 +2303,8 @@ class _PresentationPageState extends State<PresentationPage>
                                     GestureDetector(
                                       onTap: () {
                                         setState(() {
-                                          _isProblemExpanded = !_isProblemExpanded;
+                                          _isProblemExpanded =
+                                              !_isProblemExpanded;
                                         });
                                       },
                                       child: Row(
@@ -2308,24 +2315,38 @@ class _PresentationPageState extends State<PresentationPage>
                                               vertical: 4,
                                             ),
                                             decoration: BoxDecoration(
-                                              color: Theme.of(context).colorScheme.primary,
-                                              borderRadius: BorderRadius.circular(4),
+                                              color: Theme.of(
+                                                context,
+                                              ).colorScheme.primary,
+                                              borderRadius:
+                                                  BorderRadius.circular(4),
                                             ),
                                             child: Text(
-                                              _getProblemTypeLabel(_currentProblem!.problemType),
+                                              _getProblemTypeLabel(
+                                                _currentProblem!.problemType,
+                                              ),
                                               style: TextStyle(
-                                                color: Theme.of(context).colorScheme.onPrimary,
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.onPrimary,
                                                 fontSize: 12,
                                                 fontWeight: FontWeight.bold,
                                               ),
                                             ),
                                           ),
                                           const SizedBox(width: 8),
-                                          if (_currentProblem!.problemType == 3 && _currentProblem!.pollingCount != null && _currentProblem!.pollingCount! > 1)
+                                          if (_currentProblem!.problemType ==
+                                                  3 &&
+                                              _currentProblem!.pollingCount !=
+                                                  null &&
+                                              _currentProblem!.pollingCount! >
+                                                  1)
                                             Text(
                                               '（最多${_currentProblem!.pollingCount}项）',
                                               style: TextStyle(
-                                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.onSurfaceVariant,
                                                 fontSize: 12,
                                               ),
                                             ),
@@ -2334,18 +2355,28 @@ class _PresentationPageState extends State<PresentationPage>
                                             Text(
                                               '(${(_currentProblem!.score / 100).toStringAsFixed(0)}分)',
                                               style: TextStyle(
-                                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.onSurfaceVariant,
                                                 fontSize: 12,
                                               ),
                                             ),
                                           const Spacer(),
                                           // 倒计时红标：题目已发布 + 有倒计时才显示
-                                          if (_isCurrentProblemPublished() && _countdownSeconds != null)
+                                          if (_isCurrentProblemPublished() &&
+                                              _countdownSeconds != null)
                                             Container(
-                                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 12,
+                                                    vertical: 6,
+                                                  ),
                                               decoration: BoxDecoration(
-                                                color: Theme.of(context).colorScheme.errorContainer,
-                                                borderRadius: BorderRadius.circular(8),
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.errorContainer,
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
                                               ),
                                               child: Row(
                                                 mainAxisSize: MainAxisSize.min,
@@ -2353,15 +2384,20 @@ class _PresentationPageState extends State<PresentationPage>
                                                   Icon(
                                                     Icons.timer_outlined,
                                                     size: 18,
-                                                    color: Theme.of(context).colorScheme.onErrorContainer,
+                                                    color: Theme.of(context)
+                                                        .colorScheme
+                                                        .onErrorContainer,
                                                   ),
                                                   const SizedBox(width: 6),
                                                   Text(
                                                     '${_countdownSeconds! ~/ 60}:${(_countdownSeconds! % 60).toString().padLeft(2, '0')}',
                                                     style: TextStyle(
                                                       fontSize: 14,
-                                                      fontWeight: FontWeight.bold,
-                                                      color: Theme.of(context).colorScheme.onErrorContainer,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: Theme.of(context)
+                                                          .colorScheme
+                                                          .onErrorContainer,
                                                     ),
                                                   ),
                                                 ],
@@ -2373,7 +2409,9 @@ class _PresentationPageState extends State<PresentationPage>
                                                 ? Icons.keyboard_arrow_up
                                                 : Icons.keyboard_arrow_down,
                                             size: 20,
-                                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.onSurfaceVariant,
                                           ),
                                         ],
                                       ),
@@ -2397,10 +2435,15 @@ class _PresentationPageState extends State<PresentationPage>
                                         alignment: Alignment.centerRight,
                                         child: TextButton.icon(
                                           onPressed: _searchAnswer,
-                                          icon: const Icon(Icons.search, size: 18),
+                                          icon: const Icon(
+                                            Icons.search,
+                                            size: 18,
+                                          ),
                                           label: const Text('搜索答案'),
                                           style: TextButton.styleFrom(
-                                            foregroundColor: Theme.of(context).colorScheme.primary,
+                                            foregroundColor: Theme.of(
+                                              context,
+                                            ).colorScheme.primary,
                                           ),
                                         ),
                                       ),
@@ -2410,21 +2453,35 @@ class _PresentationPageState extends State<PresentationPage>
                                       if (_isCurrentProblemPublished()) ...[
                                         const SizedBox(height: 16),
                                         Row(
-                                          mainAxisAlignment: MainAxisAlignment.end,
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.end,
                                           children: [
                                             ElevatedButton(
-                                              onPressed: () async {await _submitAnswer();},
+                                              onPressed: () async {
+                                                await _submitAnswer();
+                                              },
                                               style: ElevatedButton.styleFrom(
-                                                backgroundColor: Theme.of(context).colorScheme.primary,
-                                                foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                                backgroundColor: Theme.of(
+                                                  context,
+                                                ).colorScheme.primary,
+                                                foregroundColor: Theme.of(
+                                                  context,
+                                                ).colorScheme.onPrimary,
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 24,
+                                                      vertical: 12,
+                                                    ),
                                               ),
                                               child: const Text(
                                                 '提交',
-                                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
                                               ),
-                                            )
-                                          ]
+                                            ),
+                                          ],
                                         ),
                                       ],
                                     ],
@@ -2448,8 +2505,9 @@ class _PresentationPageState extends State<PresentationPage>
                     ),
                   ],
                 ),
+        ),
       ),
-    ));
+    );
   }
 
   Widget _buildTimelineItem(_TimelineEvent event) {
@@ -2494,7 +2552,9 @@ class _PresentationPageState extends State<PresentationPage>
     }
 
     return GestureDetector(
-      onTap: event.type == 'problem' ? () => _handleTimelineProblemClick(event) : null,
+      onTap: event.type == 'problem'
+          ? () => _handleTimelineProblemClick(event)
+          : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
         child: Row(
@@ -2506,16 +2566,15 @@ class _PresentationPageState extends State<PresentationPage>
                 color: bgColor.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(20),
               ),
-              child: Icon(
-                icon,
-                color: bgColor,
-                size: 20,
-              ),
+              child: Icon(icon, color: bgColor, size: 20),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surface,
                   borderRadius: BorderRadius.circular(12),
@@ -2621,20 +2680,21 @@ class _PresentationPageState extends State<PresentationPage>
         _pageController.animateToPage(
           targetIndex,
           duration: const Duration(milliseconds: 300),
-          curve: Curves.easeInOut
+          curve: Curves.easeInOut,
         );
       }
 
       setState(() {
         _currentSlideIndex = targetIndex;
-        if (targetIndex >= 0 && targetIndex < _slides.length) {
-          _currentProblem = _slides[targetIndex]['problem'];
+        if (targetIndex >= 0 && targetIndex < _slideModels.length) {
+          _currentProblem = _slideModels[targetIndex].problem;
           if (_currentProblem != null && event.problemDt != null) {
             _currentProblem = _currentProblem!.copyWith(dt: event.problemDt);
           }
         }
         _timelineProblemId = event.problemId;
-        if (event.problemId != null && !_unlockedProblemIds.contains(event.problemId!)) {
+        if (event.problemId != null &&
+            !_unlockedProblemIds.contains(event.problemId!)) {
           _unlockedProblemIds.add(event.problemId!);
         }
         _countdownSeconds = 0;
@@ -2855,8 +2915,8 @@ class _PresentationPageState extends State<PresentationPage>
       final remainingCount = _maxImageCount - _selectedImages.length;
 
       final List<XFile> images = await picker.pickMultiImage(
-          limit: remainingCount,
-          imageQuality: 80
+        limit: remainingCount,
+        imageQuality: 80,
       );
 
       if (images.isNotEmpty) {
@@ -2867,9 +2927,9 @@ class _PresentationPageState extends State<PresentationPage>
             return {'image': image, 'url': imageUrl};
           } catch (e) {
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('图片上传失败：${image.path}')),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text('图片上传失败：${image.path}')));
             }
             return null;
           }
@@ -2890,9 +2950,9 @@ class _PresentationPageState extends State<PresentationPage>
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('选择图片失败：$e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('选择图片失败：$e')));
       }
     }
   }
@@ -2927,7 +2987,7 @@ class _PresentationPageState extends State<PresentationPage>
             IconButton(
               icon: const Icon(Icons.add_photo_alternate_outlined, size: 32),
               onPressed: _pickImages,
-              tooltip: '添加图片（最多 9 张）'
+              tooltip: '添加图片（最多 9 张）',
             ),
           ],
         ),
@@ -3102,19 +3162,19 @@ class _PresentationPageState extends State<PresentationPage>
 
       await PhotoManager.editor.saveImage(
         bytes,
-        filename: 'RainClassroom_${DateTime.now().millisecondsSinceEpoch}.jpg'
+        filename: 'RainClassroom_${DateTime.now().millisecondsSinceEpoch}.jpg',
       );
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('图片已保存到相册')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
       }
     }
   }
@@ -3179,15 +3239,13 @@ class _PresentationPageState extends State<PresentationPage>
     // 实测 bug：第二次进课堂时缓存还没开始下，导出只拿到 1/42 页。
     final pageUrls = SlideScanner.exportPageUrlsOf(_slideModels);
     final urls = _allSlideImageUrls();
-    final missing = await _missingSlideCount(urls) +
+    final missing =
+        await _missingSlideCount(urls) +
         pageUrls.where((url) => url.isEmpty).length;
     if (!mounted || _isExporting) return;
     if (missing > 0) {
       final p = SlideImagePrefetcher.progress.value;
-      AppLogger.w(
-        '导出PDF',
-        '拒绝导出：缓存未完成 ${p.label}（缺 $missing 张）',
-      );
+      AppLogger.w('导出PDF', '拒绝导出：缓存未完成 ${p.label}（缺 $missing 张）');
       _toast('课件还在缓存中（${p.label}），等缓存完成再转 PDF');
       return;
     }
@@ -3234,8 +3292,9 @@ class _PresentationPageState extends State<PresentationPage>
 
       if (!mounted) return;
       final box = context.findRenderObject() as RenderBox?;
-      final origin =
-          box != null ? box.localToGlobal(Offset.zero) & box.size : null;
+      final origin = box != null
+          ? box.localToGlobal(Offset.zero) & box.size
+          : null;
 
       await SharePlus.instance.share(
         ShareParams(
@@ -3247,7 +3306,9 @@ class _PresentationPageState extends State<PresentationPage>
       );
 
       AppLogger.i(
-          '导出PDF', '已导出 ${result.written}/${result.total} 页 → ${out.path}');
+        '导出PDF',
+        '已导出 ${result.written}/${result.total} 页 → ${out.path}',
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('已导出 ${result.written}/${result.total} 页')),
@@ -3256,9 +3317,9 @@ class _PresentationPageState extends State<PresentationPage>
     } catch (e) {
       AppLogger.e('导出PDF', '$e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出失败：$e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导出失败：$e')));
       }
     } finally {
       if (mounted) setState(() => _isExporting = false);
