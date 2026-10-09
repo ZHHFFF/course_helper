@@ -13,6 +13,7 @@ import '../api/course.dart';
 import '../api/image.dart';
 import '../api/api_service.dart';
 import '../models/presentation.dart';
+import '../models/courseware_question_discovery.dart';
 import '../models/user.dart';
 import '../session/account.dart';
 import '../platform.dart';
@@ -37,6 +38,7 @@ import '../utils/problem_publish.dart';
 import '../utils/ppt_exporter.dart';
 import 'widget/answer_search_dialog.dart';
 import 'widget/suggested_answer_card.dart';
+import 'widget/courseware_question_discovery_card.dart';
 import '../setting/theme_setting.dart';
 
 // [/新增]
@@ -147,6 +149,7 @@ class _PresentationPageState extends State<PresentationPage>
 
   int _currentSlideIndex = 0;
   int _currentLessonSlideIndex = 0;
+  String? _currentLessonPresentationId;
   String? _currentPresentationId;
   final List<String> _unlockedProblemIds = [];
 
@@ -1417,6 +1420,10 @@ class _PresentationPageState extends State<PresentationPage>
           if (timeline != null) _addTimelineEvents(timeline);
 
           if (targetPresId != null) {
+            _currentLessonPresentationId = targetPresId;
+            if (targetSlideIndex != null && targetSlideIndex > 0) {
+              _currentLessonSlideIndex = targetSlideIndex - 1;
+            }
             if (!await _loadPresentation(targetPresId)) return;
             if (slideRevision == _slideRevision &&
                 targetSlideIndex != null &&
@@ -1490,6 +1497,10 @@ class _PresentationPageState extends State<PresentationPage>
           if (timeline != null) _addTimelineEvents(timeline);
 
           if (presentationId != null) {
+            _currentLessonPresentationId = presentationId;
+            if (slideIndex != null && slideIndex > 0) {
+              _currentLessonSlideIndex = slideIndex - 1;
+            }
             if (!await _loadPresentation(presentationId)) return;
           }
 
@@ -1506,6 +1517,23 @@ class _PresentationPageState extends State<PresentationPage>
               ? data['slideindex']
               : data['slide']?['si'];
           if (slideIndex != null) {
+            // 教师位置属于控制消息，不能因本地导航取消加载而丢失。
+            if (slideIndex > 0) _currentLessonSlideIndex = slideIndex - 1;
+            // 用户正在历史课件时，教师翻页仍要回到教师所在课件。
+            final teacherPresentation = _currentLessonPresentationId;
+            if (_currentPresentationId != null &&
+                teacherPresentation != null &&
+                teacherPresentation != _currentPresentationId) {
+              final revision = ++_slideRevision;
+              if (!await _loadPresentation(
+                    teacherPresentation,
+                    expectedSlideRevision: revision,
+                  ) ||
+                  !mounted ||
+                  revision != _slideRevision) {
+                return;
+              }
+            }
             _toSlide(slideIndex);
           }
           break;
@@ -1657,7 +1685,10 @@ class _PresentationPageState extends State<PresentationPage>
     });
   }
 
-  Future<bool> _loadPresentation(String presentationId) async {
+  Future<bool> _loadPresentation(
+    String presentationId, {
+    int? expectedSlideRevision,
+  }) async {
     if (!mounted) return false;
     final generation = ++_presentationLoadGeneration;
     if (presentationId == _currentPresentationId) {
@@ -1679,6 +1710,13 @@ class _PresentationPageState extends State<PresentationPage>
     }
 
     if (!mounted || generation != _presentationLoadGeneration) return false;
+
+    // 本地历史跳页等待期间老师可能已经翻页，不能覆盖新的课堂位置。
+    if (expectedSlideRevision != null &&
+        expectedSlideRevision != _slideRevision) {
+      setState(() => _isLoading = false);
+      return false;
+    }
 
     if (presentation == null) {
       // 修 bug：原实现在 pptData 为 null 时不会复位 _isLoading，
@@ -1709,7 +1747,7 @@ class _PresentationPageState extends State<PresentationPage>
 
     // 整份 PPT 到手 = 所有题都到手了。识题是纯内存计算，几十毫秒的事，
     // 所以是「拿到就全判完」，不需要等用户翻页、更不需要等图片下载
-    _indexQuestions(slides);
+    _indexQuestions(slides, title: presentation.title);
     final targetIndex = _currentSlideIndex;
     final slideRevision = _slideRevision;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1754,7 +1792,10 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   /// 拿到整份 PPT 后立刻做的事：识题 → 排队检索 → 预取图片
-  void _indexQuestions(List<PresentationSlide> slides) {
+  void _indexQuestions(
+    List<PresentationSlide> slides, {
+    required String title,
+  }) {
     final scan = SlideScanner.scanSlides(slides);
 
     // 先把已在缓存里的答案同步塞进来，切页时展示是同步的、不会闪
@@ -1766,6 +1807,7 @@ class _PresentationPageState extends State<PresentationPage>
 
     setState(() {
       _scan = scan;
+      _recordDiscoveredQuestions(scan, slides, title);
       _suggested
         ..clear()
         ..addAll(suggested);
@@ -1790,6 +1832,83 @@ class _PresentationPageState extends State<PresentationPage>
     );
 
     unawaited(_enqueueScan(scan));
+  }
+
+  /// 按 lesson / presentation 更新一个本地条目，教师历史事件不参与去重。
+  void _recordDiscoveredQuestions(
+    SlideScanResult scan,
+    List<PresentationSlide> slides,
+    String title,
+  ) {
+    final presentationId = _currentPresentationId;
+    if (presentationId == null) return;
+    final batch = CoursewareQuestionBatch.fromScan(
+      lessonId: widget.lessonId,
+      presentationId: presentationId,
+      title: title,
+      scan: scan,
+      slides: slides,
+    );
+    final index = _timeline.indexWhere(
+      (event) => event.discoveredQuestions?.identity == batch.identity,
+    );
+    if (index < 0 && batch.questions.isEmpty) return;
+    final event = _TimelineEvent(
+      type: 'coursewareQuestions',
+      code: null,
+      title: null,
+      timestamp: index < 0 ? DateTime.now() : _timeline[index].timestamp,
+      discoveredQuestions: batch,
+    );
+    if (index < 0) {
+      _timeline.add(event);
+    } else {
+      _timeline[index] = event;
+    }
+  }
+
+  /// 用户主动查看原页：不走教师发题/翻页路径，不解锁、不改倒计时。
+  Future<void> _jumpToDiscoveredQuestion(
+    CoursewareQuestionDiscovery discovery,
+  ) async {
+    if (!mounted || discovery.lessonId != widget.lessonId) return;
+    final revision = _slideRevision;
+    if (discovery.presentationId != _currentPresentationId &&
+        !await _loadPresentation(
+          discovery.presentationId,
+          expectedSlideRevision: revision,
+        )) {
+      return;
+    }
+    if (!mounted ||
+        discovery.presentationId != _currentPresentationId ||
+        revision != _slideRevision) {
+      return;
+    }
+    final index = discovery.item.slideIndex;
+    if (index < 0 ||
+        index >= _slideModels.length ||
+        _scan.forSlide(index)?.hash != discovery.item.hash) {
+      _toast('课件题目已变化，请查看最新提示');
+      return;
+    }
+    final jumpRevision = ++_slideRevision;
+    final generation = _presentationLoadGeneration;
+    setState(() {
+      _currentSlideIndex = index;
+      _currentProblem = _slideModels[index].problem;
+      _syncAnswerOwner();
+      _refreshCurrentHash();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          generation != _presentationLoadGeneration ||
+          jumpRevision != _slideRevision ||
+          !_pageController.hasClients) {
+        return;
+      }
+      _pageController.jumpToPage(index);
+    });
   }
 
   /// 把扫出来的题逐条丢进 AI 队列
@@ -1872,6 +1991,27 @@ class _PresentationPageState extends State<PresentationPage>
     });
   }
 
+  Future<void> _returnToTeacherPage() async {
+    final presentationId = _currentLessonPresentationId;
+    final index = _currentLessonSlideIndex;
+    final revision = _slideRevision;
+    if (presentationId != null &&
+        presentationId != _currentPresentationId &&
+        !await _loadPresentation(
+          presentationId,
+          expectedSlideRevision: revision,
+        )) {
+      return;
+    }
+    if (!mounted ||
+        revision != _slideRevision ||
+        presentationId != _currentLessonPresentationId ||
+        index != _currentLessonSlideIndex) {
+      return;
+    }
+    _toSlide(index + 1);
+  }
+
   /// PPT 右上角浮层：页码 + 脱离老师那页时出现的「回到当前页」按钮
   ///
   /// 默认跟随老师（老师翻页时 [_toSlide] 会把两边的下标一起改掉）。
@@ -1879,7 +2019,10 @@ class _PresentationPageState extends State<PresentationPage>
   /// 按钮名字保持中立，不出现「同步/跟随」这类词。
   Widget _buildSlideOverlay() {
     final scheme = Theme.of(context).colorScheme;
-    final following = _currentSlideIndex == _currentLessonSlideIndex;
+    final following =
+        _currentSlideIndex == _currentLessonSlideIndex &&
+        (_currentLessonPresentationId == null ||
+            _currentPresentationId == _currentLessonPresentationId);
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -1890,7 +2033,7 @@ class _PresentationPageState extends State<PresentationPage>
             borderRadius: BorderRadius.circular(12),
             child: InkWell(
               borderRadius: BorderRadius.circular(12),
-              onTap: () => _toSlide(_currentLessonSlideIndex + 1),
+              onTap: _returnToTeacherPage,
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
@@ -2426,7 +2569,10 @@ class _PresentationPageState extends State<PresentationPage>
                                         ),
                                       ),
                                       const SizedBox(height: 16),
-                                      _buildAnswerOptions(),
+                                      Material(
+                                        type: MaterialType.transparency,
+                                        child: _buildAnswerOptions(),
+                                      ),
                                       // [新增] 建议答案（后台自动检索的结果，只展示不提交）
                                       _buildSuggestedCard(),
                                       // [新增] 搜索答案按钮 - 在答案选项下方
@@ -2511,6 +2657,18 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   Widget _buildTimelineItem(_TimelineEvent event) {
+    final discoveries = event.discoveredQuestions;
+    if (discoveries != null) {
+      if (discoveries.lessonId != widget.lessonId) {
+        return const SizedBox.shrink();
+      }
+      return CoursewareQuestionDiscoveryCard(
+        key: ValueKey(discoveries.identity),
+        batch: discoveries,
+        isCurrent: discoveries.presentationId == _currentPresentationId,
+        onJump: _jumpToDiscoveredQuestion,
+      );
+    }
     Color bgColor;
     IconData icon;
 
@@ -2658,6 +2816,7 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   String _getProblemTypeLabel(int type) {
+    if (type < 1 || type > ProblemType.values.length) return '未知题型';
     return ProblemType.fromId(type).label;
   }
 
@@ -3338,6 +3497,7 @@ class _TimelineEvent {
   final String? problemId;
   final String? presentationId;
   final int? problemDt;
+  final CoursewareQuestionBatch? discoveredQuestions;
 
   _TimelineEvent({
     required this.type,
@@ -3350,5 +3510,6 @@ class _TimelineEvent {
     this.problemId,
     this.presentationId,
     this.problemDt,
+    this.discoveredQuestions,
   });
 }
