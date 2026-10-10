@@ -1,0 +1,57 @@
+name: Publish verified PPT discovery APK
+
+on:
+  push:
+    branches: [codex/publish-ppt-apk-test91]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: d4d8a6fc6aceadc2dfee197c29b5d368419dbfff
+      SOURCE_RUN: '38029446545'
+      APK_NAME: course-helper-1.2.3-test91-d4d8a6f-arm64.apk
+      RELEASE_TAG: test-apk-ppt-discovery-test91
+    steps:
+      - name: Download and verify the existing APK
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > source-run.json
+          jq -e --arg sha "$SOURCE_SHA" \
+            '.conclusion == "success" and .head_sha == $sha' source-run.json
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "$APK_NAME" --dir apk
+          printf '%s  %s\n' \
+            '5b0e7ef50263480e52185141025ecc291575c74e96816e27d49c17e47e664b4d' \
+            "apk/$APK_NAME" | sha256sum --check
+
+      - name: Publish the verified APK
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          本测试包包含实时课堂「PPT 题目发现提示」，对应提交 d4d8a6fc6aceadc2dfee197c29b5d368419dbfff。
+
+          - 课堂时间线展示本地题目提示，题目较多时折叠汇总。
+          - 点击查看题型、题干、选项、相关图片和原页预览。
+          - 独立按钮跳转原 PPT 页，保留老师当前课件和页码。
+          - 查看不会解锁、提交题目或重置倒计时；提示不代表老师已发布题目。
+          - 纯图片题提示图片内容尚未识别，没有新增 OCR。
+
+          Android ARM64，Android 7.0 及以上，版本 1.2.3-test91。
+          包名 com.anerycoft.coursehelper，实际 versionCode 4091。
+          与 test88 使用相同签名，支持覆盖安装；APK v2 签名已经验证。
+
+          APK SHA-256：5b0e7ef50263480e52185141025ecc291575c74e96816e27d49c17e47e664b4d。
+
+          代码与测试：https://github.com/ZHHFFF/course_helper/pull/3
+          构建来源：https://github.com/ZHHFFF/course_helper/actions/runs/38029446545
+          NOTES
+          gh release create "$RELEASE_TAG" "apk/$APK_NAME" \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
+            --prerelease --title 'PPT 题目发现提示测试包 1.2.3-test91' \
+            --notes-file release-notes.md
