@@ -10,8 +10,6 @@ env:
   JAVA_VERSION: "17"
   # 构建显示序号；已发布 test88 的实际 versionCode 是 2088。
   BUILD_NUMBER: ${{ github.run_number }}
-  # 保留已发布 APK 的 2000 偏移，新包才能覆盖安装旧包。
-  VERSION_CODE: ${{ 2000 + github.run_number }}
 
 jobs:
   build:
@@ -20,6 +18,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # GitHub 表达式不支持加法，用 shell 保留已发布 APK 的 2000 偏移。
+      - name: Set APK version code
+        run: echo "VERSION_CODE=$((2000 + BUILD_NUMBER))" >> "$GITHUB_ENV"
 
       # ⚠️ `cache: gradle` 必须开（2026-09-24 加）。
       #
