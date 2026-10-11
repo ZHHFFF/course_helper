@@ -25,6 +25,7 @@ import './pages/widget/navigation_bar_host.dart';
 import './pages/widget/liquid_glass_shader_filter.dart';
 // [新增] 深浅色外观设置（见 setting/theme_setting.dart）
 import './setting/theme_setting.dart';
+import './navigation/page_transitions.dart';
 import './api/api_service.dart';
 import './session/cookie.dart';
 import './session/account.dart';
@@ -127,36 +128,43 @@ class MyApp extends StatelessWidget {
       valueListenable: ThemeSetting.mode,
       builder: (context, themeMode, _) => ValueListenableBuilder<bool>(
         valueListenable: ThemeSetting.predictiveBack,
-        builder: (context, predictiveBack, _) => MaterialApp(
-          navigatorKey: navigatorKey,
-          title: '课程助手',
-          locale: const Locale('zh', 'CN'),
-          supportedLocales: const [Locale('zh', 'CN'), Locale('en', 'US')],
-          localizationsDelegates: const [
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
-          ],
-          // [改动] 取消 Material You 动态取色（不再跟随壁纸），改为固定主题色 + 纯白/纯黑背景
-          // 原来的 DynamicColorBuilder 已移除，因此 dynamic_color 依赖不再需要
-          theme: _buildLightTheme(predictiveBack: predictiveBack),
-          darkTheme: _buildDarkTheme(predictiveBack: predictiveBack),
-          themeMode: themeMode,
-          builder: (context, child) {
-            return ThemeSetting.blurScope(_MiuixScope(child: child));
-          },
-          home: const _GlassNavInsets(child: MainPage()),
-          routes: {
-            '/accounts': (context) => const AccountsPage(),
-            '/login': (context) => const LoginPage(),
-          },
-        ),
+        builder: (context, predictiveBack, _) {
+          final pageTransitions = appPageTransitionsTheme(
+            predictiveBack: predictiveBack,
+          );
+          return MaterialApp(
+            navigatorKey: navigatorKey,
+            title: '课程助手',
+            locale: const Locale('zh', 'CN'),
+            supportedLocales: const [Locale('zh', 'CN'), Locale('en', 'US')],
+            localizationsDelegates: const [
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            // [改动] 取消 Material You 动态取色（不再跟随壁纸），改为固定主题色 + 纯白/纯黑背景
+            // 原来的 DynamicColorBuilder 已移除，因此 dynamic_color 依赖不再需要
+            theme: _buildLightTheme(pageTransitions: pageTransitions),
+            darkTheme: _buildDarkTheme(pageTransitions: pageTransitions),
+            themeMode: themeMode,
+            builder: (context, child) {
+              return ThemeSetting.blurScope(_MiuixScope(child: child));
+            },
+            home: const _GlassNavInsets(child: MainPage()),
+            routes: {
+              '/accounts': (context) => const AccountsPage(),
+              '/login': (context) => const LoginPage(),
+            },
+          );
+        },
       ),
     );
   }
 
   /// 浅色主题：纯白背景 + Miuix 蓝色主色（seed 0xFF3482FF）
-  static ThemeData _buildLightTheme({bool predictiveBack = true}) {
+  static ThemeData _buildLightTheme({
+    required PageTransitionsTheme pageTransitions,
+  }) {
     final base = ColorScheme.fromSeed(
       seedColor: const Color(0xFF3482FF),
       brightness: Brightness.light,
@@ -175,18 +183,14 @@ class MyApp extends StatelessWidget {
         outlineVariant: const Color(0xFFE4E4EA),
       ),
       scaffoldBackgroundColor: Colors.white,
-      pageTransitionsTheme: PageTransitionsTheme(
-        builders: {
-          TargetPlatform.android: predictiveBack
-              ? const PredictiveBackPageTransitionsBuilder()
-              : const ZoomPageTransitionsBuilder(),
-        },
-      ),
+      pageTransitionsTheme: pageTransitions,
     );
   }
 
   /// 深色主题：纯黑背景（真黑，非灰黑）
-  static ThemeData _buildDarkTheme({bool predictiveBack = true}) {
+  static ThemeData _buildDarkTheme({
+    required PageTransitionsTheme pageTransitions,
+  }) {
     final base = ColorScheme.fromSeed(
       seedColor: const Color(0xFF3482FF),
       brightness: Brightness.dark,
@@ -213,13 +217,7 @@ class MyApp extends StatelessWidget {
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
-      pageTransitionsTheme: PageTransitionsTheme(
-        builders: {
-          TargetPlatform.android: predictiveBack
-              ? const PredictiveBackPageTransitionsBuilder()
-              : const ZoomPageTransitionsBuilder(),
-        },
-      ),
+      pageTransitionsTheme: pageTransitions,
     );
   }
 }

@@ -10,7 +10,7 @@ import '../../setting/theme_setting.dart';
 /// 2. 模糊：啟用頂欄和底欄的模糊效果
 /// 3. 懸浮底欄：使用類 Apple 風格的懸浮底欄
 /// 4. 液態玻璃：啟用懸浮底欄的液態玻璃效果
-/// 5. 預測性返回手勢：啟用對預測性返回手勢的支援
+/// 5. 預測性返回動畫：Android 14+ 系統返回手勢的跟隨動畫
 /// 6. 介面縮放：調整全域顯示比例 (80% ~ 120%)
 class AppearanceSettingsPage extends StatefulWidget {
   const AppearanceSettingsPage({super.key});
@@ -125,13 +125,13 @@ class _AppearanceSettingsPageState extends State<AppearanceSettingsPage> {
                             },
                           ),
 
-                          // 5. 預測性返回手勢
+                          // 5. 預測性返回動畫
                           ValueListenableBuilder<bool>(
                             valueListenable: ThemeSetting.predictiveBack,
                             builder: (context, predictive, _) =>
                                 MiuixSwitchPreference(
-                              title: '預測性返回手勢',
-                              summary: '啟用對預測性返回手勢的支援',
+                              title: '預測性返回動畫',
+                              summary: 'Android 14 以上返回手勢跟隨動畫；關閉仍可正常返回',
                               value: predictive,
                               onChanged: (v) =>
                                   ThemeSetting.setPredictiveBack(v),
