@@ -69,6 +69,17 @@
 - SHA-256：`191495828384b9e4f463a581c21c6ccb5201501853d03dc5f95e3c1f0954e2b3`。
 - 本地缺少 release keystore，按仓库已有构建逻辑使用 **Android Debug 签名**；证书 SHA-256 为 `1699f1e2696ac1c72b474af2807e91c03af3bdbc692e47180dafd6a7b42f805e`，与之前 GitHub test91 固定测试证书不同，**此本地构建包不能覆盖安装 test91**。没有把它当作可覆盖安装的公开发行包发布。
 
+## 公开测试安装包（test92）
+
+为解决云工作区本地文件链接无法下载的问题，另通过仓库现有 GitHub Actions 固定测试密钥构建并公开发布了 test92。这是独立于上述 debug 签名本地构建包的安装包。
+
+- [直接下载 APK](https://github.com/ZHHFFF/course_helper/releases/download/test-apk-ios-navigation-test92/course-helper-1.2.3-test92-e5d0bec-arm64.apk)，[公开发布页面](https://github.com/ZHHFFF/course_helper/releases/tag/test-apk-ios-navigation-test92)。无需 GitHub 登录，无需解压。
+- [构建来源](https://github.com/ZHHFFF/course_helper/actions/runs/38118967238)：提交 `e5d0bec071c67b035b07b9d087a7dade798d1b2d`，构建流程全部通过；[发布流程](https://github.com/ZHHFFF/course_helper/actions/runs/38119737079)也已通过。
+- versionName `1.2.3-test92`，实际 versionCode **4092**；包名 `com.anerycoft.coursehelper`，Android ARM64，Android 7.0 及以上。
+- APK v2 签名验证通过，证书 SHA-256 为 `504a40cb3262b8c4a1f94cd76b2cdb3310d01195fab6aeb6df05e898e7d27c46`，与 test91 相同；版本号高于 test91 的 4091，支持覆盖安装。
+- SHA-256：`15323f633f6c44b590fe12c1aea1690ba2e8b39b8d84762a0e0c9522344e28f8`；大小 **72,247,817 字节**。核对合并 Manifest 的预测性返回声明为 true，并确认 Dart AOT 包含新的预测性动画文案及已有 PPT 题目发现/详情文案。
+- 已用无登录凭据的请求下载完整公开 APK，HTTP **200**，文件 SHA-256 与已验证包及 Release 元数据一致；公开发布页面也返回 HTTP 200。
+
 ## 验证边界
 
 - `adb devices` 没有设备。预测性返回使用 `flutter/backgesture` 通道模拟平台事件，未做 Android 14/15/16 真机或模拟器的原生手势验收；OEM 系统合成、导航栏、GPU/Impeller 实际呈现仍需设备验证。
