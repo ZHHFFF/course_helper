@@ -1,0 +1,70 @@
+name: Publish verified navigation APK
+
+on:
+  push:
+    branches: [codex/publish-navigation-apk-test92]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: e5d0bec071c67b035b07b9d087a7dade798d1b2d
+      SOURCE_RUN: '38118967238'
+      APK_NAME: course-helper-1.2.3-test92-e5d0bec-arm64.apk
+      RELEASE_TAG: test-apk-ios-navigation-test92
+    steps:
+      - name: Download and verify the existing APK
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > source-run.json
+          jq -e --arg sha "$SOURCE_SHA" '.head_sha == $sha' source-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs" > source-jobs.json
+          jq -e '
+            .jobs[] | select(.name == "build") | .steps |
+            map(select(.name == "Prepare signing key" or
+                       .name == "Analyze (errors only)" or
+                       .name == "Run unit tests" or
+                       .name == "Build release APK (arm64-v8a only)" or
+                       .name == "Upload APK")) |
+            length == 5 and all(.[]; .conclusion == "success")
+          ' source-jobs.json
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "$APK_NAME" --dir apk
+          printf '%s  %s\n' \
+            '15323f633f6c44b590fe12c1aea1690ba2e8b39b8d84762a0e0c9522344e28f8' \
+            "apk/$APK_NAME" | sha256sum --check
+
+      - name: Publish the verified APK
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          本测试包包含普通页面的 iOS 风格水平转场及 Android 14+ 系统预测性返回，保留之前的 PPT 题目发现功能。
+
+          - 新页面从右向左进入，当前页面向右退出，普通转场无透明度淡入淡出。
+          - 深浅色主题共用转场配置，保留预测性返回设置及持久化值。
+          - 系统预测性返回支持进度跟随、取消和完成；关闭动画后仍可正常返回。
+          - 修复手势中关闭动画开关导致导航手势状态卡住的问题。
+          - 课件 Tab 的 _stage 仍使用原有即时内层切换，返回和 Tab 保活经过回归验证。
+          - 保留课堂 PPT 的本地题目发现提示和只读详情，不把发现提示当成老师正式发题。
+
+          Android ARM64，Android 7.0 及以上，版本 1.2.3-test92。
+          包名 com.anerycoft.coursehelper，实际 versionCode 4092。
+          与 test91 使用相同的仓库固定测试签名，支持覆盖安装；APK v2 签名已验证。
+
+          本地 flutter analyze 无问题；相关测试 49 项通过，完整测试 483 项通过、7 项既有跳过；GitHub 构建也执行了静态分析及完整测试。
+          预测性返回已通过平台事件模拟完成/取消验证，尚未进行 Android 14+ 真机或模拟器的 OEM 手势呈现验收。
+
+          APK SHA-256：15323f633f6c44b590fe12c1aea1690ba2e8b39b8d84762a0e0c9522344e28f8。
+
+          代码与测试：https://github.com/ZHHFFF/course_helper/pull/4
+          构建来源：https://github.com/ZHHFFF/course_helper/actions/runs/38118967238
+          NOTES
+          gh release create "$RELEASE_TAG" "apk/$APK_NAME" \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
+            --prerelease --title '水平转场与预测性返回测试包 1.2.3-test92' \
+            --notes-file release-notes.md
