@@ -18,7 +18,15 @@ class CardPageTransition extends StatelessWidget {
     final away = 1 - revealed;
     // Restore scale and corners before reaching fullscreen, continuously.
     final cardAmount = (away / 0.18).clamp(0.0, 1.0);
-    final radius = BorderRadius.circular(28 * cardAmount);
+    // MediaQuery already converts the system's four physical corner radii to
+    // logical pixels. Zero is a valid system value; only null uses the fallback.
+    final deviceCorners =
+        MediaQuery.displayCornerRadiiOf(context) ?? BorderRadius.circular(28);
+    final radius = BorderRadius.lerp(
+      BorderRadius.zero,
+      deviceCorners,
+      cardAmount,
+    )!;
     final direction = Directionality.of(context) == TextDirection.ltr ? 1 : -1;
     return Stack(
       fit: StackFit.expand,

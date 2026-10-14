@@ -160,4 +160,133 @@ void main() {
       },
     );
   }
+  const asymmetric = BorderRadius.only(
+    topLeft: Radius.zero,
+    topRight: Radius.circular(16),
+    bottomLeft: Radius.circular(32),
+    bottomRight: Radius.circular(48),
+  );
+  for (final entry in <String, BorderRadius?>{
+    'unavailable': null,
+    'square display': BorderRadius.zero,
+    'asymmetric display': asymmetric,
+  }.entries) {
+    for (final rtl in [false, true]) {
+      for (final dpr in [1.0, 3.0]) {
+        testWidgets('system corners ${entry.key}, rtl=$rtl dpr=$dpr', (
+          tester,
+        ) async {
+          final target = entry.value ?? BorderRadius.circular(28);
+          Future<void> show(double progress) => tester.pumpWidget(
+            MaterialApp(
+              home: Builder(
+                builder: (context) => MediaQuery(
+                  data: MediaQuery.of(context)
+                      .copyWith(devicePixelRatio: dpr)
+                      .applyDisplayCornerRadii(entry.value),
+                  child: Directionality(
+                    textDirection: rtl ? TextDirection.rtl : TextDirection.ltr,
+                    child: CardPageTransition(
+                      progress: progress,
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+          // Check both travel directions and cancellation back to fullscreen.
+          // Values are in logical pixels: a high-DPI view must not divide them
+          // a second time, and RTL must not swap physical display corners.
+          for (final frame in [
+            (0.4, target),
+            (0.91, target * 0.5),
+            (1.0, BorderRadius.zero),
+            (0.91, target * 0.5),
+            (0.4, target),
+            (0.91, target * 0.5),
+            (1.0, BorderRadius.zero),
+          ]) {
+            await show(frame.$1);
+            final clip = tester.widget<ClipRRect>(find.byType(ClipRRect));
+            final painted =
+                tester
+                        .widget<DecoratedBox>(
+                          find.descendant(
+                            of: find.byType(CardPageTransition),
+                            matching: find.byType(DecoratedBox),
+                          ),
+                        )
+                        .decoration
+                    as BoxDecoration;
+            void expectCorners(BorderRadiusGeometry? actual) {
+              final corners = actual!.resolve(TextDirection.ltr);
+              final expected = frame.$2;
+              for (final pair in [
+                (corners.topLeft, expected.topLeft),
+                (corners.topRight, expected.topRight),
+                (corners.bottomLeft, expected.bottomLeft),
+                (corners.bottomRight, expected.bottomRight),
+              ]) {
+                expect(pair.$1.x, closeTo(pair.$2.x, 1e-8));
+                expect(pair.$1.y, closeTo(pair.$2.y, 1e-8));
+              }
+            }
+
+            expectCorners(clip.borderRadius);
+            expectCorners(painted.borderRadius);
+          }
+        });
+      }
+    }
+  }
+
+  testWidgets(
+    'updated display metrics refresh corners without losing page input',
+    (tester) async {
+      final radii = ValueNotifier<BorderRadius?>(asymmetric);
+      addTearDown(radii.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => ValueListenableBuilder<BorderRadius?>(
+              valueListenable: radii,
+              builder: (_, value, child) => MediaQuery(
+                data: MediaQuery.of(context).applyDisplayCornerRadii(value),
+                child: child!,
+              ),
+              child: const CardPageTransition(
+                progress: 0.5,
+                child: Material(
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: TextField(),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.enterText(find.byType(TextField), 'keep draft');
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      final inputState = tester.state(find.byType(TextField));
+      for (final value in [
+        BorderRadius.circular(60),
+        BorderRadius.zero,
+        null,
+        asymmetric,
+      ]) {
+        radii.value = value;
+        await tester.pump();
+        expect(
+          tester.widget<ClipRRect>(find.byType(ClipRRect)).borderRadius,
+          value ?? BorderRadius.circular(28),
+        );
+        expect(tester.state(find.byType(TextField)), same(inputState));
+        expect(find.text('keep draft'), findsOneWidget);
+      }
+    },
+  );
 }
