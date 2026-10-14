@@ -1,149 +1,45 @@
-name: Build Release APK
-
+name: Navigation Profile comparison
 on:
-  push:
-    # 加上开发分支，这样往分支推代码会自动出包，不用每次手动点 workflow_dispatch
-    branches: [ master, main, makisekurisu ]
   workflow_dispatch:
-
-env:
-  JAVA_VERSION: "17"
-  # 构建显示序号；已发布 test88 的实际 versionCode 是 2088。
-  BUILD_NUMBER: ${{ github.run_number }}
-
+  push:
+    branches: [codex/miuix-navigation]
+permissions:
+  contents: read
 jobs:
-  build:
+  profile:
     runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: [before, native500, 280-240, 300-260, 320-280]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # GitHub 表达式不支持加法，用 shell 保留已发布 APK 的 2000 偏移。
-      - name: Set APK version code
-        run: echo "VERSION_CODE=$((2000 + BUILD_NUMBER))" >> "$GITHUB_ENV"
-
-      # ⚠️ `cache: gradle` 必须开（2026-09-24 加）。
-      #
-      # 不开的话每次 run 都要从零下载全部 Gradle 依赖 + 重跑全量编译：
-      # 实测 `Build release APK` 步骤 9.48 分钟，其中 Gradle 自己就占 567 秒。
-      # 开了之后 `~/.gradle/caches` 和 wrapper 会跨 run 复用
-      # （Gradle 的 build-cache-1 也在 `~/.gradle/caches` 里，一并覆盖）。
-      #
-      # 配合 `android/gradle.properties` 里的 `org.gradle.caching=true`
-      # 才能连 task 输出一起复用（只缓存依赖的话编译还是要重跑）。
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
         with:
-          distribution: temurin
-          java-version: '17'
-          cache: 'gradle'
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+          fetch-depth: 0
+      - uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.47.6'
           channel: stable
-          cache: "true"
-
-      # 签名：优先用仓库 Secret 里的**固定**测试密钥。
-      #
-      # 原来这里是 `keytool -genkeypair`，**每次构建都生成一把新密钥**，
-      # 导致每个包的签名都不一样 → 装到上一个包上必然报「签名冲突」。
-      # 现在用固定密钥，一次配好，以后所有测试包签名一致、可直接覆盖安装。
-      #
-      # 没配 Secret 时退回现场生成：包能出，但签名会变，装新包前要先卸载旧版。
-      - name: Prepare signing key
+          cache: true
+      - name: Prepare desktop profile tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev xvfb mesa-utils
+          python3 -m venv /tmp/navigation-profile-tools
+          /tmp/navigation-profile-tools/bin/pip install websocket-client
+          echo '/tmp/navigation-profile-tools/bin' >> "$GITHUB_PATH"
+      - name: Capture Profile frames and VM timeline
         env:
-          KS_B64: ${{ secrets.TEST_KEYSTORE_BASE64 }}
+          CANDIDATE: ${{ matrix.candidate }}
         run: |
-          if [ -n "$KS_B64" ]; then
-            printf '%s' "$KS_B64" | base64 -d > android/anerycoft.jks
-            echo "✅ 使用固定的测试签名密钥（签名一致，可直接覆盖安装）"
-          else
-            echo "::warning::未配置 TEST_KEYSTORE_BASE64 —— 本次生成临时密钥，签名会变，装新包前必须先卸载旧版"
-            keytool -genkeypair -v \
-              -keystore android/anerycoft.jks \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -alias anerycoft \
-              -storepass android -keypass android \
-              -dname "CN=Course Helper Test, OU=Test, O=Test, L=Test, ST=Test, C=CN"
+          SOURCE="$PWD"
+          if [ "$CANDIDATE" = before ]; then
+            git worktree add --detach /tmp/navigation-baseline 6514c8f6d62758e71033def63f53d28121c3255c
+            SOURCE=/tmp/navigation-baseline
           fi
-          printf 'storePassword=android\nkeyPassword=android\nkeyAlias=anerycoft\nstoreFile=../anerycoft.jks\n' > android/key.properties
-          echo "本次签名证书指纹："
-          keytool -list -v -keystore android/anerycoft.jks -storepass android 2>/dev/null | grep "SHA256:" | head -1
-
-      - name: Get dependencies
-        run: flutter pub get
-
-      # 先做静态检查：只有真正的编译错误才会让这一步失败
-      - name: Analyze (errors only)
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
-
-      - name: Run unit tests
-        run: flutter test
-
-      # versionCode 用 2000 + run_number；versionName 带上第几次构建，
-      # 这样在手机「应用信息」里也能看出装的是哪一版。
-      - name: Build release APK (arm64-v8a only)
-        run: |
-          flutter build apk --release --split-per-abi \
-            --target-platform android-arm64 \
-            --build-number="${{ env.VERSION_CODE }}" \
-            --build-name="1.2.3-test${{ env.BUILD_NUMBER }}"
-
-      # 文件名带上版本和 commit，一眼能看出是哪个包
-      - name: Rename APK
-        id: apk
-        run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          NAME="course-helper-1.2.3-test${{ env.BUILD_NUMBER }}-${SHORT_SHA}-arm64.apk"
-          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
-             "build/app/outputs/flutter-apk/${NAME}"
-          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
-          {
-            echo "### 构建产物"
-            echo ""
-            echo "| 项 | 值 |"
-            echo "| --- | --- |"
-            echo "| 文件 | \`${NAME}\` |"
-            echo "| versionCode | ${{ env.VERSION_CODE }} |"
-            echo "| versionName | 1.2.3-test${{ env.BUILD_NUMBER }} |"
-            echo "| commit | \`${{ github.sha }}\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          ls -lh "build/app/outputs/flutter-apk/${NAME}"
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+          tool/run_navigation_profile.sh "$SOURCE" "$PWD" "$PWD/profile-results/$CANDIDATE" "$CANDIDATE"
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: ${{ steps.apk.outputs.name }}
-          path: build/app/outputs/flutter-apk/${{ steps.apk.outputs.name }}
-          if-no-files-found: error
-
-      # ── 实验构建：layerBlock 等价行为对比 ─────────────────────────────
-      # 独立入口 `lib/experiment/layer_block_experiment.dart`，
-      # 不参与正式 App 的构建路径；产出单独 artifact，主 APK 不受影响。
-      # 实验结束后可整段删除。
-      - name: Build experiment APK (layerBlock A/B)
-        run: |
-          flutter build apk --release --split-per-abi \
-            --target-platform android-arm64 \
-            --target lib/experiment/layer_block_experiment.dart \
-            --build-number="${{ env.VERSION_CODE }}" \
-            --build-name="1.2.3-exp${{ env.BUILD_NUMBER }}"
-
-      - name: Rename experiment APK
-        id: expapk
-        run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          NAME="exp-layerblock-${{ env.BUILD_NUMBER }}-${SHORT_SHA}-arm64.apk"
-          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
-             "build/app/outputs/flutter-apk/${NAME}"
-          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
-          ls -lh "build/app/outputs/flutter-apk/${NAME}"
-
-      - name: Upload experiment APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.expapk.outputs.name }}
-          path: build/app/outputs/flutter-apk/${{ steps.expapk.outputs.name }}
-          if-no-files-found: error
+          name: navigation-profile-${{ matrix.candidate }}
+          path: profile-results/
