@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'dart:ui' show PlatformDispatcher;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -117,8 +118,22 @@ void _installGlobalErrorHandlers() {
 }
 // [/新增]
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  late final MiuixBackGestureDispatcher _backDispatcher =
+      MiuixBackGestureDispatcher();
+
+  @override
+  void dispose() {
+    _backDispatcher.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -134,6 +149,7 @@ class MyApp extends StatelessWidget {
           );
           return MaterialApp(
             navigatorKey: navigatorKey,
+            navigatorObservers: [_backDispatcher],
             title: '课程助手',
             locale: const Locale('zh', 'CN'),
             supportedLocales: const [Locale('zh', 'CN'), Locale('en', 'US')],
@@ -150,10 +166,20 @@ class MyApp extends StatelessWidget {
             builder: (context, child) {
               return ThemeSetting.blurScope(_MiuixScope(child: child));
             },
-            home: const _GlassNavInsets(child: MainPage()),
-            routes: {
-              '/accounts': (context) => const AccountsPage(),
-              '/login': (context) => const LoginPage(),
+            onGenerateRoute: (settings) => switch (settings.name) {
+              '/' => MiuixPageRoute<void>(
+                settings: settings,
+                builder: (_) => const _GlassNavInsets(child: MainPage()),
+              ),
+              '/accounts' => MiuixPageRoute<void>(
+                settings: settings,
+                builder: (_) => const AccountsPage(),
+              ),
+              '/login' => MiuixPageRoute<void>(
+                settings: settings,
+                builder: (_) => const LoginPage(),
+              ),
+              _ => null,
             },
           );
         },

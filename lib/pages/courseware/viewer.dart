@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 // ============================================================================
 // 课件离线浏览
 // ============================================================================
@@ -261,7 +262,7 @@ class CoursewareViewerState extends State<CoursewareViewer> {
 
   Future<void> _openFullscreen(Presentation presentation) async {
     final result = await Navigator.of(context).push<int>(
-      MaterialPageRoute(
+      MiuixPageRoute(
         builder: (context) => CoursewareFullscreenViewer(
           presentation: presentation,
           lessonId: widget.lessonId,

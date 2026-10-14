@@ -2,32 +2,36 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'card_page_transition.dart';
+import 'miuix_navigation_motion.dart';
+import 'miuix_page_route.dart';
+import 'miuix_page_transition.dart';
 
-/// Shared by the light and dark themes. The preference controls Android's
-/// gesture preview, not system back or ordinary push/pop navigation.
 PageTransitionsTheme appPageTransitionsTheme({required bool predictiveBack}) =>
     PageTransitionsTheme(
       builders: {
-        for (final platform in TargetPlatform.values)
-          platform: _CardPageTransitionsBuilder(
-            platform: platform,
-            predictiveBack: predictiveBack,
-          ),
+        TargetPlatform.android: _MiuixPageTransitionsBuilder(
+          predictiveBack: predictiveBack,
+        ),
+        TargetPlatform.iOS: _MiuixPageTransitionsBuilder(appleGesture: true),
+        TargetPlatform.macOS: _MiuixPageTransitionsBuilder(appleGesture: true),
+        TargetPlatform.windows: _MiuixPageTransitionsBuilder(),
+        TargetPlatform.linux: _MiuixPageTransitionsBuilder(),
+        TargetPlatform.fuchsia: _MiuixPageTransitionsBuilder(),
       },
     );
 
-class _CardPageTransitionsBuilder extends PageTransitionsBuilder {
-  const _CardPageTransitionsBuilder({
-    required this.platform,
-    required this.predictiveBack,
+class _MiuixPageTransitionsBuilder extends PageTransitionsBuilder {
+  const _MiuixPageTransitionsBuilder({
+    this.appleGesture = false,
+    this.predictiveBack = true,
   });
-
-  final TargetPlatform platform;
   final bool predictiveBack;
+  final bool appleGesture;
 
   @override
-  Duration get transitionDuration => const Duration(milliseconds: 600);
+  Duration get transitionDuration => MiuixNavigationMotion.pushDuration;
+  @override
+  Duration get reverseTransitionDuration => MiuixNavigationMotion.popDuration;
 
   @override
   Widget buildTransitions<T>(
@@ -37,195 +41,115 @@ class _CardPageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    final transition = _CardRouteTransition(
-      route: route,
+    final layer = MiuixPageTransition(
       animation: animation,
-      systemGestureEnabled:
-          platform == TargetPlatform.android && predictiveBack,
+      secondaryAnimation: secondaryAnimation,
       child: child,
     );
-    if (platform == TargetPlatform.iOS || platform == TargetPlatform.macOS) {
-      // Keep the SDK's edge gesture controller, with its visual transforms
-      // held still. Both the gesture and ordinary routes use our page layer.
+    if (appleGesture) {
+      // Retain the native SDK edge detector, keeping its visual animation inert.
       return const CupertinoPageTransitionsBuilder().buildTransitions(
         route,
         context,
         kAlwaysCompleteAnimation,
         kAlwaysDismissedAnimation,
-        transition,
+        layer,
       );
     }
-    return transition;
+    return layer;
   }
 }
 
-enum _BackPhase { idle, dragging, cancel, commit }
-
-/// The SDK owns the route controller and Navigator gesture lifecycle. This
-/// observer adapts the visual progress without introducing a second ticker,
-/// modifying the navigation stack, or rebuilding the page subtree.
-class _CardRouteTransition extends StatefulWidget {
-  const _CardRouteTransition({
-    required this.route,
-    required this.animation,
-    required this.systemGestureEnabled,
-    required this.child,
-  });
-
-  final PageRoute<dynamic> route;
-  final Animation<double> animation;
-  final bool systemGestureEnabled;
-  final Widget child;
-
-  @override
-  State<_CardRouteTransition> createState() => _CardRouteTransitionState();
-}
-
-class _CardRouteTransitionState extends State<_CardRouteTransition>
+/// One stable system observer per Navigator. It survives route removal, so a
+/// pending native commit is consumed by the original session, never another page.
+class MiuixBackGestureDispatcher extends NavigatorObserver
     with WidgetsBindingObserver {
-  _BackPhase _phase = _BackPhase.idle;
-  double _settleStart = 1;
-  double _commitOrigin = 1;
-  bool _tracking = false;
-  late CurvedAnimation _ordinaryAnimation;
-
-  void _bindAnimation() {
-    _ordinaryAnimation = CurvedAnimation(
-      parent: widget.animation,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
-    );
-    widget.animation.addStatusListener(_onAnimationStatus);
-  }
-
-  @override
-  void initState() {
-    super.initState();
+  MiuixBackGestureDispatcher() {
     WidgetsBinding.instance.addObserver(this);
-    _bindAnimation();
+  }
+
+  final List<Route<dynamic>> _routes = [];
+  MiuixPageRoute<dynamic>? _session;
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    _session?.abandonGesture();
+    _routes.add(route);
   }
 
   @override
-  void didUpdateWidget(_CardRouteTransition oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.animation != widget.animation) {
-      oldWidget.animation.removeStatusListener(_onAnimationStatus);
-      _ordinaryAnimation.dispose();
-      _bindAnimation();
-    }
-  }
-
-  void _onAnimationStatus(AnimationStatus status) {
-    if (mounted &&
-        _phase == _BackPhase.cancel &&
-        status == AnimationStatus.completed) {
-      setState(() => _phase = _BackPhase.idle);
-    }
-  }
-
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) =>
+      _routes.remove(route);
   @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    widget.animation.removeStatusListener(_onAnimationStatus);
-    _ordinaryAnimation.dispose();
-    super.dispose();
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) =>
+      _routes.remove(route);
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    final index = oldRoute == null ? -1 : _routes.indexOf(oldRoute);
+    if (index >= 0) {
+      if (newRoute == null) {
+        _routes.removeAt(index);
+      } else {
+        _routes[index] = newRoute;
+      }
+    }
   }
 
   @override
   bool handleStartBackGesture(PredictiveBackEvent backEvent) {
-    final route = widget.route;
-    if (!mounted ||
-        !widget.systemGestureEnabled ||
+    // The binding replaces its observer list on every start. Retain ownership
+    // of a duplicate start so its terminal event cannot pop a different route.
+    if (_session != null) return true;
+    if (backEvent.isButtonEvent || _routes.isEmpty) {
+      return false;
+    }
+    final route = _routes.last;
+    final context = navigator?.context;
+    final builder = context == null
+        ? null
+        : Theme.of(
+            context,
+          ).pageTransitionsTheme.builders[TargetPlatform.android];
+    if (context == null ||
+        builder is! _MiuixPageTransitionsBuilder ||
+        !builder.predictiveBack ||
+        Theme.of(context).platform != TargetPlatform.android ||
         MediaQuery.disableAnimationsOf(context) ||
-        backEvent.isButtonEvent ||
+        route is! MiuixPageRoute ||
         !route.isCurrent ||
         route.popGestureInProgress ||
         !route.popGestureEnabled) {
       return false;
     }
-    _tracking = true;
-    setState(() => _phase = _BackPhase.dragging);
+    _session = route;
     route.handleStartBackGesture(progress: 1 - backEvent.progress);
     return true;
   }
 
   @override
-  void handleUpdateBackGestureProgress(PredictiveBackEvent backEvent) {
-    if (!mounted || !_tracking) return;
-    widget.route.handleUpdateBackGestureProgress(
-      progress: 1 - backEvent.progress,
-    );
-  }
+  void handleUpdateBackGestureProgress(PredictiveBackEvent backEvent) =>
+      _session?.handleUpdateBackGestureProgress(
+        progress: 1 - backEvent.progress,
+      );
 
   @override
   void handleCancelBackGesture() {
-    if (!mounted || !_tracking) return;
-    _tracking = false;
-    setState(() {
-      _settleStart = widget.animation.value;
-      _phase = _settleStart == 1 ? _BackPhase.idle : _BackPhase.cancel;
-    });
-    widget.route.handleCancelBackGesture();
+    final route = _session;
+    _session = null;
+    route?.handleCancelBackGesture();
   }
 
   @override
   void handleCommitBackGesture() {
-    if (!mounted || !_tracking) return;
-    // A PopScope may change its decision while the finger is down. Do not
-    // bypass it with the SDK's unconditional Navigator.pop at commit.
-    if (widget.route.popDisposition == RoutePopDisposition.doNotPop) {
-      handleCancelBackGesture();
-      widget.route.onPopInvokedWithResult(false, null);
-      return;
-    }
-    _tracking = false;
-    setState(() {
-      _settleStart = widget.animation.value;
-      _phase = _BackPhase.commit;
-    });
-    widget.route.handleCommitBackGesture();
-    // Also support SDKs that reverse from the current value instead of 1.
-    _commitOrigin = widget.animation.value;
+    final route = _session;
+    _session = null;
+    route?.handleCommitBackGesture();
   }
 
-  double _visualProgress() {
-    final raw = widget.animation.value.clamp(0.0, 1.0);
-    switch (_phase) {
-      case _BackPhase.dragging:
-        return raw;
-      case _BackPhase.cancel:
-        if (_settleStart == 1) return 1;
-        final remaining = ((raw - _settleStart) / (1 - _settleStart)).clamp(
-          0.0,
-          1.0,
-        );
-        return _settleStart +
-            (1 - _settleStart) * Curves.easeOutCubic.transform(remaining);
-      case _BackPhase.commit:
-        // TransitionRoute resets its controller to 1 at commit. Map that
-        // restart onto the remaining distance, including the very first frame.
-        if (_commitOrigin == 0) return 0;
-        final remaining = (1 - raw / _commitOrigin).clamp(0.0, 1.0);
-        return _settleStart * (1 - Curves.easeOutCubic.transform(remaining));
-      case _BackPhase.idle:
-        return widget.route.popGestureInProgress
-            ? raw
-            : _ordinaryAnimation.value;
-    }
+  void dispose() {
+    _session?.abandonGesture();
+    _session = null;
+    WidgetsBinding.instance.removeObserver(this);
+    _routes.clear();
   }
-
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: widget.animation,
-    child: widget.child,
-    builder: (context, child) {
-      final reduceMotion =
-          MediaQuery.disableAnimationsOf(context) &&
-          !widget.route.popGestureInProgress;
-      return CardPageTransition(
-        progress: reduceMotion ? 1 : _visualProgress(),
-        child: child!,
-      );
-    },
-  );
 }

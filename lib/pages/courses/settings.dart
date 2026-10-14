@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_miuix/miuix.dart';
 import 'dart:io';
@@ -188,7 +189,7 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
 
     Navigator.push(
       context,
-      MaterialPageRoute(
+      MiuixPageRoute(
         builder: (context) => MiuixScaffold(
           topBar: MiuixTopAppBar(
             title: '选择位置',

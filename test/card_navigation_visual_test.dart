@@ -1,8 +1,10 @@
+import 'package:course_helper/pages/widget/log_viewer.dart';
+import 'package:course_helper/pages/widget/cache_manager.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:course_helper/main.dart';
-import 'package:course_helper/navigation/card_page_transition.dart';
+import 'package:course_helper/navigation/miuix_page_transition.dart';
 import 'package:course_helper/pages/settings/appearance.dart';
 import 'package:course_helper/pages/settings/settings.dart';
 import 'package:course_helper/setting/theme_setting.dart';
@@ -120,11 +122,11 @@ void main() {
         await _snapshot(tester, '$color-push-1');
         await tester.tap(find.text('主題設定'));
         await tester.pump();
-        for (final step in [(2, 100), (3, 100), (4, 150)]) {
+        for (final step in [(2, 45), (3, 55), (4, 95)]) {
           await tester.pump(Duration(milliseconds: step.$2));
           final page = find.byType(AppearanceSettingsPage);
-          final layer = tester.widget<CardPageTransition>(
-            find.ancestor(of: page, matching: find.byType(CardPageTransition)),
+          final layer = tester.widget<MiuixPageTransition>(
+            find.ancestor(of: page, matching: find.byType(MiuixPageTransition)),
           );
           expect(layer.progress, inExclusiveRange(0, 1));
           expect(tester.getRect(page).left, greaterThan(0));
@@ -198,6 +200,67 @@ void main() {
           const Rect.fromLTWH(0, 0, 390, 844),
         );
         expect(tester.takeException(), isNull);
+      },
+    );
+    testWidgets(
+      'real settings routes preserve Miuix layout and State, dark=$dark',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(390, 844);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        ThemeSetting.mode.value = dark ? ThemeMode.dark : ThemeMode.light;
+        await tester.pumpWidget(const MyApp());
+        await flushClassroomTasks(tester);
+        tester
+            .widget<PageView>(find.byType(PageView).first)
+            .controller!
+            .jumpToPage(3);
+        await tester.pump(const Duration(milliseconds: 500));
+        await flushClassroomTasks(tester);
+        await tester.pumpAndSettle();
+        final settings = tester.state(find.byType(SettingsPage));
+        for (final entry in <String, Type>{
+          '主題設定': AppearanceSettingsPage,
+          '运行日志': LogViewerPage,
+          '课件缓存': CacheManagerPage,
+        }.entries) {
+          await Scrollable.ensureVisible(tester.element(find.text(entry.key)));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text(entry.key));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 60));
+          final page = find.byType(entry.value);
+          expect(page, findsOneWidget);
+          final rect = tester.getRect(page);
+          expect(rect.left, inExclusiveRange(0, 390));
+          expect(rect.top, 0);
+          expect(rect.size, const Size(390, 844));
+          final render = tester.renderObject<RenderMiuixPageTransition>(
+            find.ancestor(of: page, matching: find.byType(MiuixPageTransition)),
+          );
+          expect(render.effectiveCorners.topLeft.x, greaterThan(0));
+          expect(render.effectiveCorners.topRight, Radius.zero);
+          await flushClassroomTasks(tester);
+          await tester.pumpAndSettle();
+          final state = tester.state(page);
+          expect(await _back(tester, 'startBackGesture'), isTrue);
+          await _back(tester, 'updateBackGestureProgress', 0.5);
+          await tester.pump();
+          expect(tester.getRect(page).left, 195);
+          await _back(tester, 'cancelBackGesture');
+          await tester.pumpAndSettle();
+          expect(tester.state(page), same(state));
+          expect(tester.getRect(page), const Rect.fromLTWH(0, 0, 390, 844));
+          final back = find.descendant(
+            of: page,
+            matching: find.byIcon(Icons.arrow_back_ios_new),
+          );
+          await tester.tap(back.first);
+          await tester.pumpAndSettle();
+          expect(page, findsNothing);
+          expect(tester.state(find.byType(SettingsPage)), same(settings));
+        }
       },
     );
   }

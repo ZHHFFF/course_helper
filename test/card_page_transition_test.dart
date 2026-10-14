@@ -1,6 +1,6 @@
 import 'dart:ui' as ui;
 
-import 'package:course_helper/navigation/card_page_transition.dart';
+import 'package:course_helper/navigation/miuix_page_transition.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -34,8 +34,8 @@ void main() {
                       fit: StackFit.expand,
                       children: [
                         const ColoredBox(color: _underColor),
-                        CardPageTransition(
-                          progress: progress,
+                        MiuixPageTransition(
+                          animation: AlwaysStoppedAnimation(progress),
                           child: const ColoredBox(
                             key: _foreground,
                             color: _frontColor,
@@ -48,15 +48,20 @@ void main() {
               ),
             );
             final rect = tester.getRect(find.byKey(_foreground));
-            final clip = tester.widget<ClipRRect>(find.byType(ClipRRect));
+            final clip = tester.renderObject<RenderMiuixPageTransition>(
+              find.byType(MiuixPageTransition),
+            );
             if (progress == 1) {
               expect(rect, const Rect.fromLTWH(0, 0, 400, 800));
-              expect(clip.borderRadius, BorderRadius.zero);
+              expect(clip.effectiveCorners, BorderRadius.zero);
             } else {
-              expect(rect.width, lessThan(400));
-              expect(rect.top, greaterThan(0));
+              expect(rect.width, 400);
+              expect(rect.top, 0);
               expect(
-                clip.borderRadius.resolve(TextDirection.ltr).topLeft.x,
+                (rtl
+                        ? clip.effectiveCorners.topRight
+                        : clip.effectiveCorners.topLeft)
+                    .x,
                 greaterThan(0),
               );
             }
@@ -131,11 +136,14 @@ void main() {
             theme: ThemeData(scaffoldBackgroundColor: surface),
             home: RepaintBoundary(
               key: _capture,
-              child: const Stack(
+              child: Stack(
                 fit: StackFit.expand,
                 children: [
                   ColoredBox(color: _underColor),
-                  CardPageTransition(progress: 0.5, child: SizedBox.expand()),
+                  MiuixPageTransition(
+                    animation: AlwaysStoppedAnimation(0.5),
+                    child: SizedBox.expand(),
+                  ),
                 ],
               ),
             ),
@@ -176,7 +184,20 @@ void main() {
         testWidgets('system corners ${entry.key}, rtl=$rtl dpr=$dpr', (
           tester,
         ) async {
-          final target = entry.value ?? BorderRadius.circular(28);
+          final physical = entry.value ?? BorderRadius.circular(28);
+          final target = rtl
+              ? BorderRadius.only(
+                  topRight: physical.topRight,
+                  bottomRight: physical.bottomRight,
+                )
+              : BorderRadius.only(
+                  topLeft: physical.topLeft,
+                  bottomLeft: physical.bottomLeft,
+                );
+          final maxRadius = rtl
+              ? physical.bottomRight.x
+              : physical.bottomLeft.x;
+          final halfway = 1 - maxRadius / (2 * 800);
           Future<void> show(double progress) => tester.pumpWidget(
             MaterialApp(
               home: Builder(
@@ -186,8 +207,8 @@ void main() {
                       .applyDisplayCornerRadii(entry.value),
                   child: Directionality(
                     textDirection: rtl ? TextDirection.rtl : TextDirection.ltr,
-                    child: CardPageTransition(
-                      progress: progress,
+                    child: MiuixPageTransition(
+                      animation: AlwaysStoppedAnimation(progress),
                       child: const SizedBox.expand(),
                     ),
                   ),
@@ -200,25 +221,17 @@ void main() {
           // a second time, and RTL must not swap physical display corners.
           for (final frame in [
             (0.4, target),
-            (0.91, target * 0.5),
+            (halfway, target * 0.5),
             (1.0, BorderRadius.zero),
-            (0.91, target * 0.5),
+            (halfway, target * 0.5),
             (0.4, target),
-            (0.91, target * 0.5),
+            (halfway, target * 0.5),
             (1.0, BorderRadius.zero),
           ]) {
             await show(frame.$1);
-            final clip = tester.widget<ClipRRect>(find.byType(ClipRRect));
-            final painted =
-                tester
-                        .widget<DecoratedBox>(
-                          find.descendant(
-                            of: find.byType(CardPageTransition),
-                            matching: find.byType(DecoratedBox),
-                          ),
-                        )
-                        .decoration
-                    as BoxDecoration;
+            final clip = tester.renderObject<RenderMiuixPageTransition>(
+              find.byType(MiuixPageTransition),
+            );
             void expectCorners(BorderRadiusGeometry? actual) {
               final corners = actual!.resolve(TextDirection.ltr);
               final expected = frame.$2;
@@ -233,8 +246,7 @@ void main() {
               }
             }
 
-            expectCorners(clip.borderRadius);
-            expectCorners(painted.borderRadius);
+            expectCorners(clip.effectiveCorners);
           }
         });
       }
@@ -255,8 +267,8 @@ void main() {
                 data: MediaQuery.of(context).applyDisplayCornerRadii(value),
                 child: child!,
               ),
-              child: const CardPageTransition(
-                progress: 0.5,
+              child: MiuixPageTransition(
+                animation: AlwaysStoppedAnimation(0.5),
                 child: Material(
                   child: Align(
                     alignment: Alignment.topLeft,
@@ -281,8 +293,15 @@ void main() {
         radii.value = value;
         await tester.pump();
         expect(
-          tester.widget<ClipRRect>(find.byType(ClipRRect)).borderRadius,
-          value ?? BorderRadius.circular(28),
+          tester
+              .renderObject<RenderMiuixPageTransition>(
+                find.byType(MiuixPageTransition),
+              )
+              .effectiveCorners,
+          BorderRadius.only(
+            topLeft: (value ?? BorderRadius.circular(28)).topLeft,
+            bottomLeft: (value ?? BorderRadius.circular(28)).bottomLeft,
+          ),
         );
         expect(tester.state(find.byType(TextField)), same(inputState));
         expect(find.text('keep draft'), findsOneWidget);

@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:course_helper/navigation/page_transitions.dart';
-import 'package:course_helper/navigation/card_page_transition.dart';
+import 'package:course_helper/navigation/miuix_page_route.dart';
+import 'package:course_helper/navigation/miuix_page_transition.dart';
 import 'package:course_helper/setting/theme_setting.dart';
 import 'package:course_helper/utils/storage.dart';
 import 'package:flutter/material.dart';
@@ -38,6 +39,7 @@ class _ProbePage extends StatefulWidget {
 
 class _ProbePageState extends State<_ProbePage> {
   int count = 0;
+  int builds = 0;
   final scroll = ScrollController();
 
   @override
@@ -48,6 +50,7 @@ class _ProbePageState extends State<_ProbePage> {
 
   @override
   Widget build(BuildContext context) {
+    builds++;
     final page = Scaffold(
       key: ValueKey('page-${widget.name}'),
       backgroundColor: widget.name == 'home' ? _homeColor : _nextColor,
@@ -103,6 +106,7 @@ class _Harness {
 
   final nav = GlobalKey<NavigatorState>();
   final observer = _PopObserver();
+  final dispatcher = MiuixBackGestureDispatcher();
   final ValueNotifier<bool> predictive;
   final ValueNotifier<ThemeMode> mode;
   final TargetPlatform platform;
@@ -124,7 +128,7 @@ class _Harness {
         );
         return MaterialApp(
           navigatorKey: nav,
-          navigatorObservers: [observer],
+          navigatorObservers: [observer, dispatcher],
           theme: theme(Brightness.light),
           darkTheme: theme(Brightness.dark),
           themeMode: mode,
@@ -140,18 +144,25 @@ class _Harness {
               ),
             ),
           ),
-          home: const _ProbePage('home'),
-          routes: {
-            '/next': (_) =>
-                _ProbePage('next', canPop: canPop, onPop: popCallbacks.add),
-            '/third': (_) => const _ProbePage('third'),
-          },
+          onGenerateRoute: (settings) => MiuixPageRoute<void>(
+            settings: settings,
+            builder: (_) => switch (settings.name) {
+              '/next' => _ProbePage(
+                'next',
+                canPop: canPop,
+                onPop: popCallbacks.add,
+              ),
+              '/third' => const _ProbePage('third'),
+              _ => const _ProbePage('home'),
+            },
+          ),
         );
       },
     ),
   );
 
   void dispose() {
+    dispatcher.dispose();
     predictive.dispose();
     mode.dispose();
   }
@@ -159,16 +170,22 @@ class _Harness {
 
 Finder _page(String name) => find.byKey(ValueKey('page-$name'));
 
-CardPageTransition _layer(WidgetTester tester, String name) =>
-    tester.widget<CardPageTransition>(
-      find.ancestor(of: _page(name), matching: find.byType(CardPageTransition)),
+MiuixPageTransition _layer(WidgetTester tester, String name) =>
+    tester.widget<MiuixPageTransition>(
+      find.ancestor(
+        of: _page(name),
+        matching: find.byType(MiuixPageTransition),
+      ),
     );
 
 double _corner(WidgetTester tester, String name) => tester
-    .widget<ClipRRect>(
-      find.ancestor(of: _page(name), matching: find.byType(ClipRRect)),
+    .renderObject<RenderMiuixPageTransition>(
+      find.ancestor(
+        of: _page(name),
+        matching: find.byType(MiuixPageTransition),
+      ),
     )
-    .borderRadius
+    .effectiveCorners
     .resolve(TextDirection.ltr)
     .topLeft
     .x;
@@ -293,9 +310,12 @@ void main() {
             final next = tester.getRect(_page('next'));
             final home = tester.getRect(_page('home'));
             expect(next.left, inExclusiveRange(0, 800));
-            expect(home, const Rect.fromLTWH(0, 0, 800, 600));
-            expect(next.top, greaterThan(0));
-            expect(next.width, lessThan(800));
+            expect(
+              home.left,
+              closeTo(-0.25 * 800 * _layer(tester, "next").progress, 1e-6),
+            );
+            expect(next.top, 0);
+            expect(next.width, 800);
             _expectOpaque(tester, 'next');
             _expectOpaque(tester, 'home');
             if (back == 'button') await _expectCoveredEdges(tester);
@@ -380,7 +400,7 @@ void main() {
                 edge: edge,
               );
               await tester.pump();
-              expect(tester.getRect(_page('next')).width, lessThan(800));
+              expect(tester.getRect(_page('next')).width, 800);
               expect(_page('home'), findsOneWidget);
               expect(harness.observer.popped, isEmpty);
             }
@@ -687,14 +707,16 @@ void main() {
       final rect = tester.getRect(_page('next'));
       expect(rect.left, lessThanOrEqualTo(previous));
       previous = rect.left;
-      expect(
-        tester.getRect(_page('home')),
-        const Rect.fromLTWH(0, 0, 800, 600),
-      );
+      if (rect.left > 0) {
+        expect(
+          tester.getRect(_page('home')).left,
+          closeTo(-0.25 * 800 * _layer(tester, 'next').progress, 1e-6),
+        );
+      }
       _expectOpaque(tester, 'next');
       if (rect.left > 0) {
         expect(_corner(tester, 'next'), greaterThan(0));
-        expect(rect.width, lessThan(800));
+        expect(rect.width, 800);
       }
     }
     await tester.pumpAndSettle();
@@ -704,7 +726,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
     expect(_corner(tester, 'next'), greaterThan(0));
-    expect(tester.getRect(_page('next')).width, lessThan(800));
+    expect(tester.getRect(_page('next')).width, 800);
     _expectOpaque(tester, 'next');
     await tester.pumpAndSettle();
     expect(harness.observer.popped, ['/next']);
@@ -880,6 +902,46 @@ void main() {
     },
   );
 
+  testWidgets('rapid repeated back taps only remove the top route', (
+    tester,
+  ) async {
+    final harness = _Harness();
+    await _mount(tester, harness);
+    _push(harness, '/next');
+    await tester.pumpAndSettle();
+    _push(harness, '/third');
+    await tester.pumpAndSettle();
+    final button = find.byKey(const ValueKey('back-third'));
+    await tester.tap(button);
+    await tester.tap(button);
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(harness.observer.popped, ['/third']);
+    expect(_page('next'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('duplicate native start retains the original gesture owner', (
+    tester,
+  ) async {
+    final harness = _Harness();
+    await _mount(tester, harness);
+    _push(harness, '/next');
+    await tester.pumpAndSettle();
+    expect(await _backEvent(tester, 'startBackGesture'), isTrue);
+    await _backEvent(tester, 'updateBackGestureProgress', progress: 0.5);
+    await tester.pump();
+    final before = tester.getRect(_page('next'));
+    expect(await _backEvent(tester, 'startBackGesture'), isTrue);
+    await tester.pump();
+    expect(tester.getRect(_page('next')), before);
+    await _backEvent(tester, 'cancelBackGesture');
+    await tester.pumpAndSettle();
+    expect(harness.observer.popped, isEmpty);
+    expect(harness.nav.currentState!.userGestureInProgress, isFalse);
+    expect(tester.getRect(_page('next')), const Rect.fromLTWH(0, 0, 800, 600));
+  });
+
   testWidgets('duplicate terminal events during settlement do not pop twice', (
     tester,
   ) async {
@@ -901,4 +963,182 @@ void main() {
     expect(harness.nav.currentState!.userGestureInProgress, isFalse);
     expect(tester.takeException(), isNull);
   });
+  testWidgets(
+    'paint ticks retain page and transition widgets, one Leading clip and no opacity/scale layers',
+    (tester) async {
+      final harness = _Harness();
+      await _mount(tester, harness);
+      _push(harness, '/next');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 30));
+      final transition = _layer(tester, 'next');
+      final nextState = tester.state<_ProbePageState>(
+        find.byType(_ProbePage).last,
+      );
+      final homeState = tester.state<_ProbePageState>(
+        find.byType(_ProbePage).first,
+      );
+      final nextBuilds = nextState.builds;
+      final homeBuilds = homeState.builds;
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(_layer(tester, 'next'), same(transition));
+        expect(nextState.builds, nextBuilds);
+        expect(homeState.builds, homeBuilds);
+        final render = tester.renderObject<RenderMiuixPageTransition>(
+          find.ancestor(
+            of: _page('next'),
+            matching: find.byType(MiuixPageTransition),
+          ),
+        );
+        expect(render.effectiveCorners.topLeft.x, greaterThan(0));
+        expect(render.effectiveCorners.topRight, Radius.zero);
+        expect(render.effectiveCorners.bottomRight, Radius.zero);
+        expect(tester.getRect(_page('next')).size, const Size(800, 600));
+        final clips = tester.layers
+            .whereType<ClipRSuperellipseLayer>()
+            .toList();
+        expect(clips, hasLength(1));
+        expect(clips.single.clipBehavior, Clip.antiAlias);
+        _expectOpaque(tester, 'next');
+      }
+      await tester.pumpAndSettle();
+      expect(tester.layers.whereType<ClipRSuperellipseLayer>(), isEmpty);
+    },
+  );
+
+  for (final edge in [0, 1]) {
+    testWidgets(
+      'foreground/background share gesture and spring progress, edge=$edge',
+      (tester) async {
+        final harness = _Harness();
+        await _mount(tester, harness);
+        _push(harness, '/next');
+        await tester.pumpAndSettle();
+        expect(
+          await _backEvent(tester, 'startBackGesture', edge: edge),
+          isTrue,
+        );
+        void check() {
+          final value = _layer(tester, 'next').progress;
+          expect(
+            tester.getRect(_page('next')).left,
+            closeTo((1 - value) * 800, 0.51),
+          );
+          expect(
+            tester.getRect(_page('home')).left,
+            closeTo(-value * 200, 1e-6),
+          );
+          expect(
+            _corner(tester, 'next'),
+            lessThanOrEqualTo(tester.getRect(_page('next')).left),
+          );
+        }
+
+        for (final progress in [0.005, 0.02, 0.1, 0.55, 0.85]) {
+          await tester.pump(const Duration(milliseconds: 16));
+          await _backEvent(
+            tester,
+            'updateBackGestureProgress',
+            progress: progress,
+            edge: edge,
+          );
+          await tester.pump();
+          check();
+        }
+        final before = tester.getRect(_page('next'));
+        final background = tester.getRect(_page('home'));
+        await _backEvent(tester, 'cancelBackGesture', edge: edge);
+        await tester.pump();
+        expect(tester.getRect(_page('next')), before);
+        expect(tester.getRect(_page('home')), background);
+        for (var i = 0; i < 6; i++) {
+          await tester.pump(const Duration(milliseconds: 16));
+          check();
+        }
+        await tester.pumpAndSettle();
+        expect(harness.nav.currentState!.userGestureInProgress, isFalse);
+      },
+    );
+  }
+
+  testWidgets(
+    'route removed during native session consumes late commit without popping previous route',
+    (tester) async {
+      final harness = _Harness();
+      await _mount(tester, harness);
+      _push(harness, '/next');
+      await tester.pumpAndSettle();
+      _push(harness, '/third');
+      await tester.pumpAndSettle();
+      expect(await _backEvent(tester, 'startBackGesture'), isTrue);
+      await _backEvent(tester, 'updateBackGestureProgress', progress: 0.5);
+      await tester.pump();
+      final removed = ModalRoute.of(tester.element(_page('third')))!;
+      harness.nav.currentState!.removeRoute(removed);
+      await tester.pumpAndSettle();
+      expect(harness.nav.currentState!.userGestureInProgress, isFalse);
+      await _backEvent(tester, 'commitBackGesture');
+      await tester.pumpAndSettle();
+      expect(_page('next'), findsOneWidget);
+      expect(harness.observer.popped, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'push during native session restores held page smoothly and consumes stale end',
+    (tester) async {
+      final harness = _Harness();
+      await _mount(tester, harness);
+      _push(harness, '/next');
+      await tester.pumpAndSettle();
+      final state = tester.state<_ProbePageState>(find.byType(_ProbePage).last);
+      state.count = 5;
+      expect(await _backEvent(tester, 'startBackGesture'), isTrue);
+      await _backEvent(tester, 'updateBackGestureProgress', progress: 0.5);
+      await tester.pump();
+      _push(harness, '/third');
+      await tester.pumpAndSettle();
+      await _backEvent(tester, 'commitBackGesture');
+      await tester.pumpAndSettle();
+      expect(_page('third'), findsOneWidget);
+      expect(harness.observer.popped, isEmpty);
+      expect(harness.nav.currentState!.userGestureInProgress, isFalse);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(
+        tester.state<_ProbePageState>(find.byType(_ProbePage).last),
+        same(state),
+      );
+      expect(
+        tester.getRect(_page('next')),
+        const Rect.fromLTWH(0, 0, 800, 600),
+      );
+      expect(state.count, 5);
+    },
+  );
+
+  testWidgets(
+    'rapid repeated back while a route exits cannot pop a second page',
+    (tester) async {
+      final harness = _Harness();
+      await _mount(tester, harness);
+      _push(harness, '/next');
+      await tester.pumpAndSettle();
+      _push(harness, '/third');
+      await tester.pumpAndSettle();
+      expect(await _backEvent(tester, 'startBackGesture'), isTrue);
+      await _backEvent(tester, 'updateBackGestureProgress', progress: 0.6);
+      await tester.pump();
+      await _backEvent(tester, 'commitBackGesture');
+      await tester.pump();
+      await _backEvent(tester, 'commitBackGesture');
+      await tester.pumpAndSettle();
+      await _backEvent(tester, 'commitBackGesture');
+      await tester.pumpAndSettle();
+      expect(harness.observer.popped, ['/third']);
+      expect(_page('next'), findsOneWidget);
+    },
+  );
 }
