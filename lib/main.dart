@@ -1,5 +1,5 @@
-import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'dart:ui' show PlatformDispatcher;
+import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
