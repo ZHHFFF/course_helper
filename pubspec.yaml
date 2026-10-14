@@ -27,9 +27,6 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # Audited 1.0.0: Cupertino ordinary motion + Flutter system predictive back.
-  cupertino_predictive_back: 1.0.0
-
   # [2026-09-24 清理] 删掉 7 个「零 import」依赖（马尾辫审查结论）：
   #   cupertino_icons / flutter_speed_dial / camera / time / http_parser /
   #   dynamic_color / sqflite
