@@ -192,10 +192,13 @@ class CourseCache {
   }
 
   /// 某节课的目录
-  static Future<Directory> lessonDir(String lessonId,
-      {bool create = true}) async {
-    final dir =
-        Directory(p.join((await root()).path, _lessonsDirName, safeName(lessonId)));
+  static Future<Directory> lessonDir(
+    String lessonId, {
+    bool create = true,
+  }) async {
+    final dir = Directory(
+      p.join((await root()).path, _lessonsDirName, safeName(lessonId)),
+    );
     if (create && !await dir.exists()) {
       await dir.create(recursive: true);
     }
@@ -204,7 +207,9 @@ class CourseCache {
 
   /// 某节课的 PPT 元数据目录
   static Future<Directory> pptDir(String lessonId, {bool create = true}) async {
-    final dir = Directory(p.join((await lessonDir(lessonId, create: create)).path, 'ppt'));
+    final dir = Directory(
+      p.join((await lessonDir(lessonId, create: create)).path, 'ppt'),
+    );
     if (create && !await dir.exists()) {
       await dir.create(recursive: true);
     }
@@ -212,10 +217,13 @@ class CourseCache {
   }
 
   /// 某节课的题目答案目录
-  static Future<Directory> questionsDir(String lessonId,
-      {bool create = true}) async {
-    final dir =
-        Directory(p.join((await lessonDir(lessonId, create: create)).path, 'questions'));
+  static Future<Directory> questionsDir(
+    String lessonId, {
+    bool create = true,
+  }) async {
+    final dir = Directory(
+      p.join((await lessonDir(lessonId, create: create)).path, 'questions'),
+    );
     if (create && !await dir.exists()) {
       await dir.create(recursive: true);
     }
@@ -274,8 +282,9 @@ class CourseCache {
   /// 清掉所有课程缓存（设置页的「清空缓存」用）
   static Future<int> clearAll() async {
     try {
-      final lessonsRoot =
-          Directory(p.join((await root()).path, _lessonsDirName));
+      final lessonsRoot = Directory(
+        p.join((await root()).path, _lessonsDirName),
+      );
       if (!await lessonsRoot.exists()) {
         PptCache.clearMemory();
         return 0;
@@ -299,8 +308,9 @@ class CourseCache {
   static Future<CacheCleanupReport> cleanup() async {
     final report = CacheCleanupReport();
     try {
-      final lessonsRoot =
-          Directory(p.join((await root()).path, _lessonsDirName));
+      final lessonsRoot = Directory(
+        p.join((await root()).path, _lessonsDirName),
+      );
       if (!await lessonsRoot.exists()) return report;
 
       final now = DateTime.now();
@@ -333,8 +343,9 @@ class CourseCache {
     var bytes = 0;
     var lessons = 0;
     try {
-      final lessonsRoot =
-          Directory(p.join((await root()).path, _lessonsDirName));
+      final lessonsRoot = Directory(
+        p.join((await root()).path, _lessonsDirName),
+      );
       if (!await lessonsRoot.exists()) return (bytes: 0, lessons: 0);
 
       await for (final entity in lessonsRoot.list(followLinks: false)) {
@@ -411,8 +422,9 @@ class CourseCache {
   static Future<List<CachedLesson>> listLessons() async {
     final result = <CachedLesson>[];
     try {
-      final lessonsRoot =
-          Directory(p.join((await root()).path, _lessonsDirName));
+      final lessonsRoot = Directory(
+        p.join((await root()).path, _lessonsDirName),
+      );
       if (!await lessonsRoot.exists()) return result;
 
       await for (final entity in lessonsRoot.list(followLinks: false)) {
@@ -422,18 +434,21 @@ class CourseCache {
         final ppts = await listPresentations(dirName);
         final meta = await readMeta(dirName);
 
-        result.add(CachedLesson(
-          lessonId: dirName,
-          courseId: meta?.courseId ?? '',
-          name: meta?.displayName ??
-              (ppts.isNotEmpty ? ppts.first.displayTitle : dirName),
-          presentationCount: ppts.length,
-          updatedAt: meta?.updatedAt != null && meta!.updatedAt > 0
-              ? meta.updatedAt
-              : (ppts.isNotEmpty
-                  ? ppts.first.savedAt
-                  : await _dirModifiedMs(entity)),
-        ));
+        result.add(
+          CachedLesson(
+            lessonId: dirName,
+            courseId: meta?.courseId ?? '',
+            name:
+                meta?.displayName ??
+                (ppts.isNotEmpty ? ppts.first.displayTitle : dirName),
+            presentationCount: ppts.length,
+            updatedAt: meta?.updatedAt != null && meta!.updatedAt > 0
+                ? meta.updatedAt
+                : (ppts.isNotEmpty
+                      ? ppts.first.savedAt
+                      : await _dirModifiedMs(entity)),
+          ),
+        );
       }
     } catch (e) {
       AppLogger.w(_tag, '列课程缓存失败：$e');
@@ -445,7 +460,8 @@ class CourseCache {
 
   /// 列出某节课缓存的所有 PPT（按落盘时间倒序）。
   static Future<List<CachedPresentation>> listPresentations(
-      String lessonId) async {
+    String lessonId,
+  ) async {
     final result = <CachedPresentation>[];
     try {
       final dir = await pptDir(lessonId, create: false);
@@ -459,18 +475,31 @@ class CourseCache {
           final json = await readJson(entity);
           if (json == null) continue;
           final data = json['data'];
-          final slides = data is Map ? Presentation.rawSlidesOf(Map<String, dynamic>.from(data)) : null;
+          final slides = data is Map
+              ? Presentation.rawSlidesOf(Map<String, dynamic>.from(data))
+              : null;
 
-          result.add(CachedPresentation(
-            lessonId: lessonId,
-            presentationId: (json['presentationId'] ??
-                    p.basenameWithoutExtension(entity.path))
-                .toString(),
-            title: (data is Map ? (data['title'] ?? data['name'] ?? data['presentation']?['title'] ?? data['presentation']?['name'] ?? '') : '').toString(),
-            slideCount: slides is List ? slides.length : 0,
-            savedAt: (json['savedAt'] as num?)?.toInt() ?? 0,
-            bytes: await entity.length(),
-          ));
+          result.add(
+            CachedPresentation(
+              lessonId: lessonId,
+              presentationId:
+                  (json['presentationId'] ??
+                          p.basenameWithoutExtension(entity.path))
+                      .toString(),
+              title:
+                  (data is Map
+                          ? (data['title'] ??
+                                data['name'] ??
+                                data['presentation']?['title'] ??
+                                data['presentation']?['name'] ??
+                                '')
+                          : '')
+                      .toString(),
+              slideCount: slides is List ? slides.length : 0,
+              savedAt: (json['savedAt'] as num?)?.toInt() ?? 0,
+              bytes: await entity.length(),
+            ),
+          );
         } catch (e) {
           AppLogger.d(_tag, '读课件失败 ${p.basename(entity.path)}：$e');
         }
@@ -496,8 +525,7 @@ class CourseCache {
     var freed = 0;
     try {
       final dir = await pptDir(lessonId, create: false);
-      final target =
-          File(p.join(dir.path, '${safeFile(presentationId)}.json'));
+      final target = File(p.join(dir.path, '${safeFile(presentationId)}.json'));
       if (await target.exists()) {
         freed += await target.length();
         await target.delete();
@@ -621,7 +649,10 @@ class CourseCache {
   static Future<DateTime?> _lastModified(Directory dir) async {
     DateTime? latest;
     try {
-      await for (final entity in dir.list(recursive: true, followLinks: false)) {
+      await for (final entity in dir.list(
+        recursive: true,
+        followLinks: false,
+      )) {
         if (entity is! File) continue;
         try {
           final stat = await entity.stat();
@@ -653,7 +684,10 @@ class CourseCache {
   static Future<int> _dirSize(Directory dir) async {
     var bytes = 0;
     try {
-      await for (final entity in dir.list(recursive: true, followLinks: false)) {
+      await for (final entity in dir.list(
+        recursive: true,
+        followLinks: false,
+      )) {
         if (entity is! File) continue;
         try {
           bytes += await entity.length();
@@ -679,22 +713,7 @@ class CourseCache {
   /// 只保留字母、数字、下划线、连字符，其余一律换成下划线，
   /// 保证结果既不是空串也不是 `.` / `..`。
   static String safeName(String raw) {
-    final trimmed = raw.trim();
-    if (trimmed.isEmpty) return 'unknown';
-
-    final buffer = StringBuffer();
-    for (final rune in trimmed.runes) {
-      final isDigit = rune >= 0x30 && rune <= 0x39;
-      final isUpper = rune >= 0x41 && rune <= 0x5a;
-      final isLower = rune >= 0x61 && rune <= 0x7a;
-      final isDash = rune == 0x5f /* _ */ || rune == 0x2d /* - */;
-      buffer.write(isDigit || isUpper || isLower || isDash
-          ? String.fromCharCode(rune)
-          : '_');
-    }
-
-    final name = buffer.toString();
-    if (name.isEmpty || name == '.' || name == '..') return 'unknown';
+    final name = safeFile(raw);
     // 兜住 Windows/Android 都不喜欢的超长文件名
     return name.length <= 80 ? name : name.substring(0, 80);
   }
@@ -712,7 +731,8 @@ class CourseCache {
           (rune >= 0x41 && rune <= 0x5a) || (rune >= 0x61 && rune <= 0x7a);
       final isDash = rune == 0x5f || rune == 0x2d;
       buffer.write(
-          isDigit || isAlpha || isDash ? String.fromCharCode(rune) : '_');
+        isDigit || isAlpha || isDash ? String.fromCharCode(rune) : '_',
+      );
     }
     final name = buffer.toString();
     return name.isEmpty ? 'unknown' : name;

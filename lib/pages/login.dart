@@ -17,7 +17,7 @@ import '../setting/theme_setting.dart';
 /// `ScaffoldMessenger`。本仓库的页面都换成了 `MiuixScaffold`，而
 /// `MiuixScaffold` **不是** Material 的 `Scaffold` ——
 /// `ScaffoldMessenger.of(context)` 会一路找到 `MaterialApp` 的根 messenger，
-/// 再挂到 `MyHomePage` 那一层 Material `Scaffold` 上。在账号页（Tab 页）
+/// 再挂到 `MainPage` 那一层 Material `Scaffold` 上。在账号页（Tab 页）
 /// 的后果是提示显示在玻璃底栏**下面**、被底栏盖住。
 Future<bool> handleLoginSuccess(
   BuildContext context, {

@@ -41,6 +41,7 @@ import '../../cache/cached_image.dart';
 import '../../cache/course_cache.dart';
 import '../../cache/ppt_cache.dart';
 import '../../models/course.dart';
+import '../../models/presentation.dart';
 import '../../models/rc_activity.dart';
 import '../../platform.dart';
 import '../../session/account.dart';
@@ -100,7 +101,9 @@ class _CourseEntry {
   /// 用于置顶与去重的唯一身份标识
   String get key => courseId.isNotEmpty
       ? courseId
-      : (classId.isNotEmpty ? classId : (lessonIds.isNotEmpty ? lessonIds.first : name));
+      : (classId.isNotEmpty
+            ? classId
+            : (lessonIds.isNotEmpty ? lessonIds.first : name));
 }
 
 class CoursewarePage extends StatefulWidget {
@@ -181,7 +184,10 @@ class _CoursewarePageState extends State<CoursewarePage> {
       _sortEntries();
     });
     try {
-      await StorageManager.prefs.setStringList(_pinStorageKey, _pinnedKeys.toList());
+      await StorageManager.prefs.setStringList(
+        _pinStorageKey,
+        _pinnedKeys.toList(),
+      );
       _toast(isPinned ? '已取消置顶' : '已置顶');
     } catch (e) {
       AppLogger.w(_tag, '保存课程置顶配置失败：$e');
@@ -337,7 +343,9 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
       // 远程课程（主）
       for (final course in remote) {
-        final courseKey = course.classId.isNotEmpty ? course.classId : course.courseId;
+        final courseKey = course.classId.isNotEmpty
+            ? course.classId
+            : course.courseId;
         if (courseKey.isEmpty || !seen.add(courseKey)) continue;
         if (course.courseId.isNotEmpty) seen.add(course.courseId);
         if (course.classId.isNotEmpty) seen.add(course.classId);
@@ -350,18 +358,22 @@ class _CoursewarePageState extends State<CoursewarePage> {
         );
         absorbed.addAll(ids);
 
-        entries.add(_CourseEntry(
-          courseId: course.courseId,
-          name: course.name,
-          teacher: course.teacher,
-          classId: course.classId,
-          cpi: course.cpi ?? '',
-          lessonIds: ids.toList(),
-          presentationCount: ids.fold(
-              0, (sum, id) => sum + (cachedByDirName[id]?.presentationCount ?? 0)),
-          fromCache: false,
-          isArchived: !course.state,
-        ));
+        entries.add(
+          _CourseEntry(
+            courseId: course.courseId,
+            name: course.name,
+            teacher: course.teacher,
+            classId: course.classId,
+            cpi: course.cpi ?? '',
+            lessonIds: ids.toList(),
+            presentationCount: ids.fold(
+              0,
+              (sum, id) => sum + (cachedByDirName[id]?.presentationCount ?? 0),
+            ),
+            fromCache: false,
+            isArchived: !course.state,
+          ),
+        );
       }
 
       // 有缓存、但远程列表里没有的（离线 / 退课 / 换了平台）也要列出来
@@ -370,15 +382,19 @@ class _CoursewarePageState extends State<CoursewarePage> {
         seen.add(lesson.courseId);
         final lessons = byCourse[lesson.courseId]!;
         absorbed.addAll(lessons.map((l) => l.lessonId));
-        entries.add(_CourseEntry(
-          courseId: lesson.courseId,
-          name: lesson.name,
-          teacher: '',
-          lessonIds: [for (final l in lessons) l.lessonId],
-          presentationCount:
-              lessons.fold(0, (sum, l) => sum + l.presentationCount),
-          fromCache: true,
-        ));
+        entries.add(
+          _CourseEntry(
+            courseId: lesson.courseId,
+            name: lesson.name,
+            teacher: '',
+            lessonIds: [for (final l in lessons) l.lessonId],
+            presentationCount: lessons.fold(
+              0,
+              (sum, l) => sum + l.presentationCount,
+            ),
+            fromCache: true,
+          ),
+        );
       }
 
       // 没有 courseId 的旧版缓存（meta.json 是 v4.8.8 才有的）：单独列出来，
@@ -387,14 +403,16 @@ class _CoursewarePageState extends State<CoursewarePage> {
       for (final lesson in cached) {
         if (lesson.courseId.isNotEmpty) continue;
         if (absorbed.contains(lesson.lessonId)) continue;
-        entries.add(_CourseEntry(
-          courseId: '',
-          name: lesson.name,
-          teacher: '未关联课程 · 进一次这门课即可自动关联',
-          lessonIds: [lesson.lessonId],
-          presentationCount: lesson.presentationCount,
-          fromCache: true,
-        ));
+        entries.add(
+          _CourseEntry(
+            courseId: '',
+            name: lesson.name,
+            teacher: '未关联课程 · 进一次这门课即可自动关联',
+            lessonIds: [lesson.lessonId],
+            presentationCount: lesson.presentationCount,
+            fromCache: true,
+          ),
+        );
       }
 
       // 有课件的排前面 —— 用户进这一页十有八九是冲着已缓存的课件来的。
@@ -477,7 +495,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
     setState(() => _activitiesLoading = true);
     try {
-      final list = await RCCourseApi.getCourseActivities(targetId);
+      final list = await RCCrawler.getCourseActivities(targetId);
       if (!mounted || _entry != entry) return;
       setState(() {
         _activities = list ?? [];
@@ -488,20 +506,26 @@ class _CoursewarePageState extends State<CoursewarePage> {
       }
     } catch (e) {
       AppLogger.w(_tag, '拉取雨课堂教学活动失败：$e');
-      if (mounted && _entry == entry) setState(() => _activitiesLoading = false);
+      if (mounted && _entry == entry) {
+        setState(() => _activitiesLoading = false);
+      }
     }
   }
 
   /// 查找活动对应的本地已缓存课件
   CachedPresentation? _findCachedPresentation(RCActivity act) {
-    return _presentations.firstWhereOrNull((p) =>
-        p.lessonId == act.coursewareId ||
-        p.lessonId == act.id ||
-        (act.presentationId != null && (p.presentationId == act.presentationId || p.lessonId == act.presentationId)) ||
-        act.presentationIds.contains(p.presentationId) ||
-        act.presentationIds.contains(p.lessonId) ||
-        p.presentationId == act.coursewareId ||
-        p.presentationId == act.id);
+    return _presentations.firstWhereOrNull(
+      (p) =>
+          p.lessonId == act.coursewareId ||
+          p.lessonId == act.id ||
+          (act.presentationId != null &&
+              (p.presentationId == act.presentationId ||
+                  p.lessonId == act.presentationId)) ||
+          act.presentationIds.contains(p.presentationId) ||
+          act.presentationIds.contains(p.lessonId) ||
+          p.presentationId == act.coursewareId ||
+          p.presentationId == act.id,
+    );
   }
 
   String _presentationKey(CachedPresentation ppt) =>
@@ -535,14 +559,38 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
   void _rememberActivityLessonIds(_CourseEntry entry, RCActivity act) {
     for (final id in [act.coursewareId, act.id, act.presentationId ?? '']) {
-      if (id.isNotEmpty && !entry.lessonIds.contains(id)) entry.lessonIds.add(id);
+      if (id.isNotEmpty && !entry.lessonIds.contains(id)) {
+        entry.lessonIds.add(id);
+      }
     }
   }
 
   /// 判定活动是否已有本地缓存
   bool _isActivityCached(RCActivity act) {
     final ppt = _findCachedPresentation(act);
-    return ppt != null && _completePresentationKeys.contains(_presentationKey(ppt));
+    return ppt != null &&
+        _completePresentationKeys.contains(_presentationKey(ppt));
+  }
+
+  /// 单个与批量抓取共用候选参数，不共享它们的状态/异常生命周期。
+  Future<Presentation?> _fetchActivityPresentation(
+    _CourseEntry entry,
+    RCActivity act,
+  ) async {
+    final cached = _findCachedPresentation(act);
+    return RCCrawler.crawlLessonPresentation(
+      lessonId: act.coursewareId.isNotEmpty
+          ? act.coursewareId
+          : (cached?.lessonId ?? act.id),
+      courseId: entry.courseId,
+      courseName: entry.name,
+      classroomId: entry.classId.isNotEmpty ? entry.classId : act.classroomId,
+      presentationId: act.presentationId?.isNotEmpty == true
+          ? act.presentationId
+          : cached?.presentationId,
+      presentationIds: act.presentationIds,
+      activity: act,
+    );
   }
 
   /// 抓取单个活动对应的课件 PPT
@@ -556,24 +604,13 @@ class _CoursewarePageState extends State<CoursewarePage> {
     _toast('正在抓取「${act.title}」课件 PPT...');
 
     try {
-      final cached = _findCachedPresentation(act);
-      final pres = await RCCourseApi.crawlLessonPresentation(
-        lessonId: act.coursewareId.isNotEmpty
-            ? act.coursewareId
-            : (cached?.lessonId ?? act.id),
-        courseId: entry.courseId,
-        courseName: entry.name,
-        classroomId: entry.classId.isNotEmpty ? entry.classId : act.classroomId,
-        presentationId: act.presentationId?.isNotEmpty == true
-            ? act.presentationId
-            : cached?.presentationId,
-        presentationIds: act.presentationIds,
-        activity: act,
-      );
+      final pres = await _fetchActivityPresentation(entry, act);
 
       if (!mounted || _entry != entry) return;
       if (pres != null) {
-        _toast('抓取成功：${pres.title.isNotEmpty ? pres.title : act.title}（${pres.slides.length} 页）');
+        _toast(
+          '抓取成功：${pres.title.isNotEmpty ? pres.title : act.title}（${pres.slides.length} 页）',
+        );
         _rememberActivityLessonIds(entry, act);
         await _refreshPresentations(entry);
       } else {
@@ -599,7 +636,9 @@ class _CoursewarePageState extends State<CoursewarePage> {
     final entry = _entry;
     if (entry == null) return;
 
-    final targets = _activities.where((a) => (a.isLesson || a.isCourseware) && !_isActivityCached(a)).toList();
+    final targets = _activities
+        .where((a) => (a.isLesson || a.isCourseware) && !_isActivityCached(a))
+        .toList();
 
     if (targets.isEmpty) {
       _toast('没有需要抓取的课件（全部已完整缓存或暂无课件活动）');
@@ -617,20 +656,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
       final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
       setState(() => _crawlingIds.add(crawlKey));
       try {
-        final cached = _findCachedPresentation(act);
-        final pres = await RCCourseApi.crawlLessonPresentation(
-          lessonId: act.coursewareId.isNotEmpty
-              ? act.coursewareId
-              : (cached?.lessonId ?? act.id),
-          courseId: entry.courseId,
-          courseName: entry.name,
-          classroomId: entry.classId.isNotEmpty ? entry.classId : act.classroomId,
-          presentationId: act.presentationId?.isNotEmpty == true
-              ? act.presentationId
-              : cached?.presentationId,
-          presentationIds: act.presentationIds,
-          activity: act,
-        );
+        final pres = await _fetchActivityPresentation(entry, act);
         if (pres != null) {
           successCount++;
           _rememberActivityLessonIds(entry, act);
@@ -658,8 +684,10 @@ class _CoursewarePageState extends State<CoursewarePage> {
         setState(() {
           _batchCrawling = false;
         });
-        _toast('批量抓取完成：完整 $successCount，未完整 $incompleteCount，'
-            '未抓到课件 $metadataFailedCount。未完整课件可再次批量抓取补齐');
+        _toast(
+          '批量抓取完成：完整 $successCount，未完整 $incompleteCount，'
+          '未抓到课件 $metadataFailedCount。未完整课件可再次批量抓取补齐',
+        );
       }
     }
   }
@@ -676,7 +704,10 @@ class _CoursewarePageState extends State<CoursewarePage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('活动：${act.title}', style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text(
+              '活动：${act.title}',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 8),
             const Text('回放/直播流地址：', style: TextStyle(fontSize: 13)),
             const SizedBox(height: 4),
@@ -709,7 +740,10 @@ class _CoursewarePageState extends State<CoursewarePage> {
   Future<void> _deletePresentation(CachedPresentation ppt) async {
     int freed;
     try {
-      freed = await CourseCache.deletePresentation(ppt.lessonId, ppt.presentationId);
+      freed = await CourseCache.deletePresentation(
+        ppt.lessonId,
+        ppt.presentationId,
+      );
     } catch (e) {
       _toast('删除课件失败：$e');
       return;
@@ -717,9 +751,11 @@ class _CoursewarePageState extends State<CoursewarePage> {
     if (!mounted) return;
 
     setState(() {
-      _presentations.removeWhere((p) =>
-          p.lessonId == ppt.lessonId &&
-          p.presentationId == ppt.presentationId);
+      _presentations.removeWhere(
+        (p) =>
+            p.lessonId == ppt.lessonId &&
+            p.presentationId == ppt.presentationId,
+      );
       _completePresentationKeys.remove(_presentationKey(ppt));
     });
 
@@ -756,7 +792,8 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
   /// 逐层退回（viewer → pptList → courseList）
   void _goBack() {
-    if (_stage == _Stage.viewer && _viewerKey.currentState?.exitSinglePage() == true) {
+    if (_stage == _Stage.viewer &&
+        _viewerKey.currentState?.exitSinglePage() == true) {
       return;
     }
     setState(() {
@@ -843,17 +880,19 @@ class _CoursewarePageState extends State<CoursewarePage> {
                   ),
                 ]
               : (_stage == _Stage.viewer
-                  ? [
-                      MiuixIconButton(
-                        onPressed: () => _viewerKey.currentState?.openFullscreen(),
-                        child: const Icon(Icons.fullscreen),
-                      ),
-                      MiuixIconButton(
-                        onPressed: () => _viewerKey.currentState?.exportPdfAction(),
-                        child: const Icon(Icons.picture_as_pdf_outlined),
-                      ),
-                    ]
-                  : null),
+                    ? [
+                        MiuixIconButton(
+                          onPressed: () =>
+                              _viewerKey.currentState?.openFullscreen(),
+                          child: const Icon(Icons.fullscreen),
+                        ),
+                        MiuixIconButton(
+                          onPressed: () =>
+                              _viewerKey.currentState?.exportPdfAction(),
+                          child: const Icon(Icons.picture_as_pdf_outlined),
+                        ),
+                      ]
+                    : null),
         ),
         snackbarHost: MiuixSnackbarHost(
           state: _snackbarHost,
@@ -961,7 +1000,11 @@ class _CoursewarePageState extends State<CoursewarePage> {
         insideMargin: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         leadingIcon: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Icon(Icons.search, size: 20, color: colors.onSurfaceVariantSummary),
+          child: Icon(
+            Icons.search,
+            size: 20,
+            color: colors.onSurfaceVariantSummary,
+          ),
         ),
         trailingIcon: _searchQuery.isEmpty
             ? null
@@ -970,7 +1013,11 @@ class _CoursewarePageState extends State<CoursewarePage> {
                   _searchController.clear();
                   setState(() => _searchQuery = '');
                 },
-                child: Icon(Icons.close, size: 18, color: colors.onSurfaceVariantActions),
+                child: Icon(
+                  Icons.close,
+                  size: 18,
+                  color: colors.onSurfaceVariantActions,
+                ),
               ),
         onChanged: (value) => setState(() => _searchQuery = value),
       ),
@@ -1002,9 +1049,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                 ),
                 child: Center(
                   child: Icon(
-                    hasCache
-                        ? Icons.folder_copy
-                        : Icons.folder_copy_outlined,
+                    hasCache ? Icons.folder_copy : Icons.folder_copy_outlined,
                     size: 24,
                     color: hasCache
                         ? colors.onPrimaryContainer
@@ -1033,7 +1078,11 @@ class _CoursewarePageState extends State<CoursewarePage> {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.push_pin, size: 10, color: colors.onPrimaryContainer),
+                                Icon(
+                                  Icons.push_pin,
+                                  size: 10,
+                                  color: colors.onPrimaryContainer,
+                                ),
                                 const SizedBox(width: 2),
                                 MiuixText(
                                   '置顶',
@@ -1086,9 +1135,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                     ],
                     const SizedBox(height: 6),
                     MiuixText(
-                      hasCache
-                          ? '${entry.presentationCount} 份课件'
-                          : '暂无课件',
+                      hasCache ? '${entry.presentationCount} 份课件' : '暂无课件',
                       fontSize: 12,
                       color: hasCache
                           ? colors.primary
@@ -1102,13 +1149,12 @@ class _CoursewarePageState extends State<CoursewarePage> {
                 child: Icon(
                   isPinned ? Icons.push_pin : Icons.push_pin_outlined,
                   size: 20,
-                  color: isPinned ? colors.primary : colors.onSurfaceVariantActions,
+                  color: isPinned
+                      ? colors.primary
+                      : colors.onSurfaceVariantActions,
                 ),
               ),
-              Icon(
-                Icons.chevron_right,
-                color: colors.onSurfaceVariantActions,
-              ),
+              Icon(Icons.chevron_right, color: colors.onSurfaceVariantActions),
             ],
           ),
         ),
@@ -1121,14 +1167,20 @@ class _CoursewarePageState extends State<CoursewarePage> {
 
     final entry = _entry;
     final extraCached = _presentations
-        .where((p) => !_activities.any((a) =>
-            p.lessonId == a.coursewareId ||
-            p.lessonId == a.id ||
-            (a.presentationId != null && (p.presentationId == a.presentationId || p.lessonId == a.presentationId)) ||
-            a.presentationIds.contains(p.presentationId) ||
-            a.presentationIds.contains(p.lessonId) ||
-            p.presentationId == a.coursewareId ||
-            p.presentationId == a.id))
+        .where(
+          (p) => !_activities.any(
+            (a) =>
+                p.lessonId == a.coursewareId ||
+                p.lessonId == a.id ||
+                (a.presentationId != null &&
+                    (p.presentationId == a.presentationId ||
+                        p.lessonId == a.presentationId)) ||
+                a.presentationIds.contains(p.presentationId) ||
+                a.presentationIds.contains(p.lessonId) ||
+                p.presentationId == a.coursewareId ||
+                p.presentationId == a.id,
+          ),
+        )
         .toList();
 
     final hasContent = _activities.isNotEmpty || _presentations.isNotEmpty;
@@ -1147,7 +1199,9 @@ class _CoursewarePageState extends State<CoursewarePage> {
         ),
       );
     } else if (_activities.isNotEmpty) {
-      items.add(_buildSectionHeader(context, '教学活动与课件 (${_activities.length})'));
+      items.add(
+        _buildSectionHeader(context, '教学活动与课件 (${_activities.length})'),
+      );
       for (final act in _activities) {
         final cachedPpt = _findCachedPresentation(act);
         items.add(_buildActivityTile(context, act, cachedPpt));
@@ -1155,10 +1209,14 @@ class _CoursewarePageState extends State<CoursewarePage> {
     }
 
     if (extraCached.isNotEmpty) {
-      items.add(_buildSectionHeader(
-        context,
-        _activities.isNotEmpty ? '其他本地已缓存课件 (${extraCached.length})' : '已缓存课件 (${extraCached.length})',
-      ));
+      items.add(
+        _buildSectionHeader(
+          context,
+          _activities.isNotEmpty
+              ? '其他本地已缓存课件 (${extraCached.length})'
+              : '已缓存课件 (${extraCached.length})',
+        ),
+      );
       for (final ppt in extraCached) {
         items.add(_buildPptTile(context, ppt));
       }
@@ -1229,7 +1287,10 @@ class _CoursewarePageState extends State<CoursewarePage> {
                   ),
                   if (entry.isArchived)
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
                       decoration: BoxDecoration(
                         color: colors.secondaryContainer,
                         borderRadius: BorderRadius.circular(4),
@@ -1252,9 +1313,14 @@ class _CoursewarePageState extends State<CoursewarePage> {
                     label: '${entry.presentationCount} 份已缓存',
                     isHighlight: entry.presentationCount > 0,
                   ),
-                  if (!PlatformManager().isChaoxing && entry.classId.isNotEmpty) ...[
+                  if (!PlatformManager().isChaoxing &&
+                      entry.classId.isNotEmpty) ...[
                     if (_activitiesLoading)
-                      _buildStatChip(context, label: '正在拉取云端活动...', isHighlight: false)
+                      _buildStatChip(
+                        context,
+                        label: '正在拉取云端活动...',
+                        isHighlight: false,
+                      )
                     else
                       _buildStatChip(
                         context,
@@ -1281,15 +1347,23 @@ class _CoursewarePageState extends State<CoursewarePage> {
                             const SizedBox(
                               width: 14,
                               height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
                             ),
                             const SizedBox(width: 6),
                           ] else ...[
-                            const Icon(Icons.download_for_offline_outlined, size: 16),
+                            const Icon(
+                              Icons.download_for_offline_outlined,
+                              size: 16,
+                            ),
                             const SizedBox(width: 4),
                           ],
                           MiuixText(
-                            _batchCrawling ? '正在批量抓取...' : '抓取或补齐课件 ($uncachedLessons 份)',
+                            _batchCrawling
+                                ? '正在批量抓取...'
+                                : '抓取或补齐课件 ($uncachedLessons 份)',
                           ),
                         ],
                       ),
@@ -1313,13 +1387,17 @@ class _CoursewarePageState extends State<CoursewarePage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: isHighlight ? colors.primaryContainer : colors.secondaryContainer,
+        color: isHighlight
+            ? colors.primaryContainer
+            : colors.secondaryContainer,
         borderRadius: BorderRadius.circular(6),
       ),
       child: MiuixText(
         label,
         fontSize: 11,
-        color: isHighlight ? colors.onPrimaryContainer : colors.onSecondaryContainer,
+        color: isHighlight
+            ? colors.onPrimaryContainer
+            : colors.onSecondaryContainer,
       ),
     );
   }
@@ -1346,7 +1424,8 @@ class _CoursewarePageState extends State<CoursewarePage> {
     final crawlKey = act.coursewareId.isNotEmpty ? act.coursewareId : act.id;
     final isCrawling = _crawlingIds.contains(crawlKey);
     final isCached = cachedPpt != null;
-    final isComplete = cachedPpt != null &&
+    final isComplete =
+        cachedPpt != null &&
         _completePresentationKeys.contains(_presentationKey(cachedPpt));
 
     IconData typeIcon;
@@ -1366,9 +1445,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
       iconColor = colors.onSurfaceVariantActions;
     }
 
-    final dateStr = act.createdAt > 0
-        ? _formatDate(act.createdAt)
-        : '';
+    final dateStr = act.createdAt > 0 ? _formatDate(act.createdAt) : '';
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -1377,8 +1454,8 @@ class _CoursewarePageState extends State<CoursewarePage> {
         onPressed: isCached
             ? () => _openViewer(cachedPpt)
             : (act.isLesson || act.isCourseware
-                ? () => _crawlActivity(act)
-                : (act.hasReplay ? () => _showReplayDialog(act) : null)),
+                  ? () => _crawlActivity(act)
+                  : (act.hasReplay ? () => _showReplayDialog(act) : null)),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
           child: Column(
@@ -1462,7 +1539,9 @@ class _CoursewarePageState extends State<CoursewarePage> {
                                   vertical: 1.5,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFFAB47BC).withValues(alpha: 0.15),
+                                  color: const Color(
+                                    0xFFAB47BC,
+                                  ).withValues(alpha: 0.15),
                                   borderRadius: BorderRadius.circular(4),
                                 ),
                                 child: const MiuixText(
@@ -1511,11 +1590,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     ),
                     const SizedBox(width: 8),
-                    MiuixText(
-                      '正在抓取...',
-                      fontSize: 12,
-                      color: colors.primary,
-                    ),
+                    MiuixText('正在抓取...', fontSize: 12, color: colors.primary),
                     const SizedBox(width: 8),
                   ] else if (isCached) ...[
                     MiuixTextButton(
@@ -1667,10 +1742,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          MiuixText(
-            '确定删除「${ppt?.displayTitle ?? ''}」吗？',
-            fontSize: 15,
-          ),
+          MiuixText('确定删除「${ppt?.displayTitle ?? ''}」吗？', fontSize: 15),
           const SizedBox(height: 8),
           MiuixText(
             '这份课件的本地缓存会被移除，它独占的图片也会一并清理。'

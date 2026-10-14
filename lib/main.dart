@@ -1,22 +1,22 @@
-import'dart:ui' show PlatformDispatcher;
-import'package:flutter/material.dart';
-import'package:flutter/services.dart';
-import'package:flutter_localizations/flutter_localizations.dart';
+import 'dart:ui' show PlatformDispatcher;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 // [移除] dynamic_color：已取消 Material You 动态取色，改为固定主题色 + 纯白/纯黑背景
 // [新增] flutter_miuix：HyperOS 设计语言（Miuix）组件库。
 // 用户已拍板「所有规范都按 miuix」，后续底栏与各页面逐步迁移到 Miuix 组件。
-import'package:flutter_miuix/miuix.dart';
-import'package:package_info_plus/package_info_plus.dart';
-import'package:url_launcher/url_launcher.dart';
-import'package:dio/dio.dart';
+import 'package:flutter_miuix/miuix.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:dio/dio.dart';
 
-import'./pages/accounts.dart';
-import'./pages/courses/list.dart';
-import'./pages/login.dart';
+import './pages/accounts.dart';
+import './pages/courses/list.dart';
+import './pages/login.dart';
 // [新增] 「课件」Tab（全部课程 → 该课课件列表 → 离线浏览）
-import'./pages/courseware/list.dart';
+import './pages/courseware/list.dart';
 // [新增] 「设置」Tab（原账号页右上角菜单里的全部入口）
-import'./pages/settings/settings.dart';
+import './pages/settings/settings.dart';
 // [新增] 玻璃底栏的几何契约（占位高度 / 页面留白）
 import './pages/widget/miuix_nav_metrics.dart';
 // [新增] 统一底栏宿主（NavigationBarHost：传统 Miuix / Liquid Glass 动态切换）
@@ -25,16 +25,15 @@ import './pages/widget/navigation_bar_host.dart';
 import './pages/widget/liquid_glass_shader_filter.dart';
 // [新增] 深浅色外观设置（见 setting/theme_setting.dart）
 import './setting/theme_setting.dart';
-import'./api/api_service.dart';
-import'./session/cookie.dart';
-import'./session/account.dart';
-import'./platform.dart';
+import './api/api_service.dart';
+import './session/cookie.dart';
+import './session/account.dart';
+import './platform.dart';
 import './utils/storage.dart';
 // [新增] 运行日志
 import './utils/app_logger.dart';
 // [/新增]
 import 'push/easemob.dart';
-
 
 // 全局Navigator Key,用于在无context时显示dialog
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -132,14 +131,11 @@ class MyApp extends StatelessWidget {
           navigatorKey: navigatorKey,
           title: '课程助手',
           locale: const Locale('zh', 'CN'),
-          supportedLocales: const [
-            Locale('zh', 'CN'),
-            Locale('en', 'US')
-          ],
+          supportedLocales: const [Locale('zh', 'CN'), Locale('en', 'US')],
           localizationsDelegates: const [
             GlobalMaterialLocalizations.delegate,
             GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate
+            GlobalCupertinoLocalizations.delegate,
           ],
           // [改动] 取消 Material You 动态取色（不再跟随壁纸），改为固定主题色 + 纯白/纯黑背景
           // 原来的 DynamicColorBuilder 已移除，因此 dynamic_color 依赖不再需要
@@ -149,7 +145,7 @@ class MyApp extends StatelessWidget {
           builder: (context, child) {
             return ThemeSetting.blurScope(_MiuixScope(child: child));
           },
-          home: const _GlassNavInsets(child: MyHomePage()),
+          home: const _GlassNavInsets(child: MainPage()),
           routes: {
             '/accounts': (context) => const AccountsPage(),
             '/login': (context) => const LoginPage(),
@@ -215,9 +211,7 @@ class MyApp extends StatelessWidget {
       cardTheme: CardThemeData(
         color: const Color(0xFF101014),
         elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
       pageTransitionsTheme: PageTransitionsTheme(
         builders: {
@@ -252,14 +246,15 @@ class _MiuixScope extends StatelessWidget {
           builder: (context, scale, _) {
             final mq = MediaQuery.of(context);
             return MediaQuery(
-              data: mq.copyWith(
-                textScaler: TextScaler.linear(scale),
-              ),
+              data: mq.copyWith(textScaler: TextScaler.linear(scale)),
               child: MiuixTheme(
                 data: MiuixThemeData.of(brightness),
                 child: AnnotatedRegion<SystemUiOverlayStyle>(
                   value: _overlayStyleOf(brightness),
-                  child: Material(type: MaterialType.transparency, child: child!),
+                  child: Material(
+                    type: MaterialType.transparency,
+                    child: child!,
+                  ),
                 ),
               ),
             );
@@ -345,20 +340,6 @@ class _GlassNavInsets extends StatelessWidget {
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key});
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  @override
-  Widget build(BuildContext context) {
-    return const MainPage();
-  }
-}
-
 class MainPage extends StatefulWidget {
   const MainPage({super.key});
 
@@ -371,8 +352,9 @@ class _MainPageState extends State<MainPage> {
   /// 0 课程 / 1 账号 / 2 课件 / 3 设置
   int _selectedIndex = 0;
 
-  late final PageController _pageController =
-      PageController(initialPage: _selectedIndex);
+  late final PageController _pageController = PageController(
+    initialPage: _selectedIndex,
+  );
 
   @override
   void dispose() {
@@ -451,9 +433,10 @@ class _MainPageState extends State<MainPage> {
         _showUpdateDialog(
           latestVersion: latestVersion,
           releaseNotes: (data['body'] ?? '暂无更新说明').toString(),
-          downloadUrl: (data['html_url'] ??
-                  'https://github.com/makisekurse/course_helper/releases')
-              .toString(),
+          downloadUrl:
+              (data['html_url'] ??
+                      'https://github.com/makisekurse/course_helper/releases')
+                  .toString(),
         );
       } else {
         AppLogger.i('更新检查', '已是最新（当前 $currentVersion，线上 $tag）');
@@ -477,7 +460,7 @@ class _MainPageState extends State<MainPage> {
     try {
       final latestParts = latest.split('.').map(int.parse).toList();
       final currentParts = current.split('.').map(int.parse).toList();
-      
+
       // 不写死 3 段：`1.2` 与 `1.2.3.1` 都要能比
       final len = latestParts.length > currentParts.length
           ? latestParts.length
@@ -485,7 +468,7 @@ class _MainPageState extends State<MainPage> {
       for (int i = 0; i < len; i++) {
         final latestNum = i < latestParts.length ? latestParts[i] : 0;
         final currentNum = i < currentParts.length ? currentParts[i] : 0;
-        
+
         if (latestNum > currentNum) return true;
         if (latestNum < currentNum) return false;
       }
@@ -539,7 +522,6 @@ class _MainPageState extends State<MainPage> {
       ),
     );
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -613,15 +595,17 @@ class _MainPageState extends State<MainPage> {
       _selectedIndex = index;
     });
     if (_pageController.hasClients) {
-      _pageController.animateToPage(
-        index,
-        duration: const Duration(milliseconds: 320),
-        curve: Curves.easeOutCubic,
-      ).then((_) {
-        if (_targetNavIndex == index) {
-          _targetNavIndex = null;
-        }
-      });
+      _pageController
+          .animateToPage(
+            index,
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeOutCubic,
+          )
+          .then((_) {
+            if (_targetNavIndex == index) {
+              _targetNavIndex = null;
+            }
+          });
     }
     (coursesPageKey.currentState as dynamic)?.onVisibilityChanged(index == 0);
   }
