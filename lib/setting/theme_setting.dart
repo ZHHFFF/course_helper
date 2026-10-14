@@ -50,7 +50,8 @@ class ThemeSetting {
   static final ValueNotifier<bool> liquidGlass =
       ValueNotifier<bool>(true);
 
-  /// 预测性返回手势开关。默认开启 (true)
+  /// Android 14+ 系统预测性返回的跟随动画。默认开启 (true)。
+  /// 关闭仅停用跟随动画，系统返回和普通水平转场仍然保留。
   static final ValueNotifier<bool> predictiveBack =
       ValueNotifier<bool>(true);
 

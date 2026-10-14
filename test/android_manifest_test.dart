@@ -44,6 +44,21 @@ void main() {
     manifest = file.readAsStringSync();
   });
 
+  test('应用启用系统预测性返回，MainActivity 不覆盖禁用', () {
+    final application = RegExp(r'<application\b[^>]*>').firstMatch(manifest)!;
+    expect(
+      application.group(0),
+      contains('android:enableOnBackInvokedCallback="true"'),
+    );
+    final activity = RegExp(
+      r'<activity\b[^>]*android:name="\.MainActivity"[^>]*>',
+    ).firstMatch(manifest)!;
+    expect(
+      activity.group(0),
+      isNot(contains('android:enableOnBackInvokedCallback="false"')),
+    );
+  });
+
   test('声明了 flutter_foreground_task 的前台服务', () {
     expect(
       manifest,

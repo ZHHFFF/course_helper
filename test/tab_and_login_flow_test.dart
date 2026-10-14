@@ -385,9 +385,9 @@ void main() {
       expect(find.text('液態玻璃'), findsOneWidget);
       expect(find.text('控制懸浮底欄 Lens，與模糊設定獨立'), findsOneWidget);
 
-      // 5. 預測性返回手勢
-      expect(find.text('預測性返回手勢'), findsOneWidget);
-      expect(find.text('啟用對預測性返回手勢的支援'), findsOneWidget);
+      // 5. 預測性返回動畫：開關不代表禁用系統返回
+      expect(find.text('預測性返回動畫'), findsOneWidget);
+      expect(find.text('Android 14 以上返回手勢跟隨動畫；關閉仍可正常返回'), findsOneWidget);
 
       // 6. 介面縮放
       expect(find.text('介面縮放'), findsOneWidget);
