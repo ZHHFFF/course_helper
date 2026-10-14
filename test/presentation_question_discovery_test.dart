@@ -33,6 +33,11 @@ Map<String, dynamic> _ppt(String id, int pages, {int questionIndex = 1}) => {
   },
 };
 
+Finder _detailText(String text) => find.descendant(
+  of: find.byType(CoursewareQuestionDetails),
+  matching: find.text(text),
+);
+
 void main() {
   late ClassroomTestEnv env;
   late Map<String, Map<String, dynamic>> ppts;
@@ -98,9 +103,7 @@ void main() {
     );
     final hint = find.descendant(
       of: card,
-      matching: find.textContaining(
-        page == null ? '发现课件题目 · 第' : '发现课件题目 · 第 $page 页 ·',
-      ),
+      matching: find.textContaining(page == null ? '查看题目详情' : '第 $page 页'),
     );
     await Scrollable.ensureVisible(tester.element(hint), alignment: 0.5);
     await tester.pumpAndSettle();
@@ -127,11 +130,13 @@ void main() {
     ppts['A'] = _ppt('A', 86, questionIndex: 85);
     await mount(tester);
     await showPpt(tester, 'A', 1, op: 'hello');
-    expect(find.text('发现课件题目 · 第 86 页 · 单选题'), findsOneWidget);
+    expect(find.text('发现课件题目'), findsOneWidget);
+    expect(find.text('第 86 页'), findsOneWidget);
+    expect(find.text('查看题目详情'), findsOneWidget);
     expect(find.text('题目发布'), findsNothing);
     expect(visiblePage(tester), 0);
     await openHint(tester, 'A');
-    expect(find.text('题干 A'), findsOneWidget);
+    expect(_detailText('题干 A'), findsOneWidget);
     expect(find.text('A. 选项 A'), findsOneWidget);
     expect(visiblePage(tester), 0);
     await tester.tap(find.text('关闭'));
@@ -172,8 +177,8 @@ void main() {
     await showPpt(tester, 'A', 1);
     await showPpt(tester, 'B', 3);
     await openHint(tester, 'A');
-    expect(find.text('题干 A'), findsOneWidget);
-    expect(find.text('题干 B'), findsNothing);
+    expect(_detailText('题干 A'), findsOneWidget);
+    expect(_detailText('题干 B'), findsNothing);
     expect(visiblePage(tester), 2);
     await jump(tester);
     expect(visiblePage(tester), 1);
@@ -193,7 +198,7 @@ void main() {
     await openHint(tester, 'A');
     await showPpt(tester, 'B', 3);
     expect(find.byType(CoursewareQuestionDetails), findsOneWidget);
-    expect(find.text('题干 A'), findsOneWidget);
+    expect(_detailText('题干 A'), findsOneWidget);
     await jump(tester);
     expect(find.textContaining('2/3', findRichText: true), findsOneWidget);
     await tester.tap(find.text('回到当前页'));
@@ -268,7 +273,7 @@ void main() {
     await tester.pump(const Duration(seconds: 4));
     await tester.pumpAndSettle();
     await openHint(tester, 'A');
-    expect(find.text('题干 changed'), findsOneWidget);
+    expect(_detailText('题干 changed'), findsOneWidget);
     await tester.tap(find.text('关闭'));
     await tester.pumpAndSettle();
     await finish(tester);
@@ -314,12 +319,13 @@ void main() {
     ppts['A'] = raw;
     await mount(tester);
     await showPpt(tester, 'A', 1);
-    expect(find.text('发现课件题目 · 第 2 页 · 未知题型'), findsOneWidget);
+    expect(find.text('第 2 页'), findsOneWidget);
     await openHint(tester, 'A');
-    expect(find.text('未知题型'), findsOneWidget);
+    expect(_detailText('未知题型'), findsOneWidget);
     await jump(tester);
     expect(visiblePage(tester), 1);
-    expect(find.text('未知题型'), findsOneWidget);
+    // The existing slide type chip and the new timeline type label coexist.
+    expect(find.text('未知题型'), findsNWidgets(2));
     expect(find.text('提交'), findsNothing);
     await finish(tester);
   });

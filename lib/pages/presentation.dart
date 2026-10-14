@@ -39,6 +39,7 @@ import '../utils/ppt_exporter.dart';
 import 'widget/answer_search_dialog.dart';
 import 'widget/suggested_answer_card.dart';
 import 'widget/courseware_question_discovery_card.dart';
+import 'widget/classroom_timeline_card.dart';
 import '../setting/theme_setting.dart';
 
 // [/新增]
@@ -2634,16 +2635,23 @@ class _PresentationPageState extends State<PresentationPage>
                                   ],
                                 ),
                               ),
-                            ListView.builder(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              controller: _scrollController,
-                              padding: const EdgeInsets.all(12),
-                              itemCount: _timeline.length,
-                              itemBuilder: (context, index) {
-                                final event = _timeline[index];
-                                return _buildTimelineItem(event);
-                              },
+                            Container(
+                              margin: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: MiuixTheme.of(context).colors.surface,
+                                borderRadius: BorderRadius.circular(28),
+                              ),
+                              child: ListView.builder(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                controller: _scrollController,
+                                padding: const EdgeInsets.all(12),
+                                itemCount: _timeline.length,
+                                itemBuilder: (context, index) {
+                                  final event = _timeline[index];
+                                  return _buildTimelineItem(event);
+                                },
+                              ),
                             ),
                           ],
                         ),
@@ -2666,6 +2674,7 @@ class _PresentationPageState extends State<PresentationPage>
         key: ValueKey(discoveries.identity),
         batch: discoveries,
         isCurrent: discoveries.presentationId == _currentPresentationId,
+        timeLabel: _formatTime(event.timestamp),
         onJump: _jumpToDiscoveredQuestion,
       );
     }
@@ -2677,7 +2686,7 @@ class _PresentationPageState extends State<PresentationPage>
         switch (event.code) {
           case 'LESSON_START':
             bgColor = Colors.green;
-            icon = Icons.school;
+            icon = Icons.school_outlined;
             break;
           case 'SHOW_PRESENTATION':
           case 'START_PRESENTATION':
@@ -2690,7 +2699,7 @@ class _PresentationPageState extends State<PresentationPage>
             break;
           case 'LESSON_FINISH':
             bgColor = Colors.red;
-            icon = Icons.school;
+            icon = Icons.school_outlined;
           default:
             bgColor = Colors.grey;
             icon = Icons.info;
@@ -2713,71 +2722,35 @@ class _PresentationPageState extends State<PresentationPage>
       onTap: event.type == 'problem'
           ? () => _handleTimelineProblemClick(event)
           : null,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        child: Row(
+      child: ClassroomTimelineCard(
+        icon: icon,
+        color: bgColor,
+        iconAlignment: CrossAxisAlignment.center,
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: bgColor.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Icon(icon, color: bgColor, size: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: MiuixText(
+                    _getEventTitle(event),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (event.type == 'problem')
+                  Icon(
+                    Icons.arrow_forward_ios,
+                    size: 14,
+                    color: MiuixTheme.of(context).colors.primary,
+                  ),
+              ],
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.05),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            _getEventTitle(event),
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                              color: Theme.of(context).colorScheme.onSurface,
-                            ),
-                          ),
-                        ),
-                        if (event.type == 'problem')
-                          Icon(
-                            Icons.arrow_forward_ios,
-                            size: 14,
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _formatTime(event.timestamp),
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            const SizedBox(height: 4),
+            MiuixText(
+              _formatTime(event.timestamp),
+              fontSize: 12,
+              color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
             ),
           ],
         ),

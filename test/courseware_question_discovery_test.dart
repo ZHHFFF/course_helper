@@ -4,6 +4,7 @@ import 'package:course_helper/models/courseware_question_discovery.dart';
 import 'package:course_helper/models/presentation.dart';
 import 'package:course_helper/pages/widget/courseware_question_details.dart';
 import 'package:course_helper/pages/widget/courseware_question_discovery_card.dart';
+import 'package:course_helper/pages/widget/classroom_timeline_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_miuix/miuix.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,9 +18,12 @@ CoursewareQuestionBatch _batch(
   String lesson = 'lesson',
   String presentationId = 'ppt',
   String cover = '',
+  int leadingSlides = 0,
+  String title = '课件',
 }) {
   final presentation = Presentation.fromJson({
     'slides': [
+      for (var i = 0; i < leadingSlides; i++) {'index': 999},
       for (final problem in problems)
         {'index': 999, 'problem': problem, 'cover': cover},
     ],
@@ -27,7 +31,7 @@ CoursewareQuestionBatch _batch(
   return CoursewareQuestionBatch.fromScan(
     lessonId: lesson,
     presentationId: presentationId,
-    title: '课件',
+    title: title,
     scan: SlideScanner.scan(presentation),
     slides: presentation.slides,
   );
@@ -67,17 +71,29 @@ void main() {
     WidgetTester tester,
     CoursewareQuestionBatch batch, {
     bool dark = false,
+    bool isCurrent = true,
+    String timeLabel = '刚刚',
+    double scale = 1,
     Future<void> Function(CoursewareQuestionDiscovery)? onJump,
   }) => tester.pumpWidget(
     MaterialApp(
       theme: dark ? ThemeData.dark() : ThemeData.light(),
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(
+          context,
+        ).copyWith(textScaler: TextScaler.linear(scale)),
+        child: child!,
+      ),
       home: MiuixTheme(
         data: dark ? MiuixThemeData.dark() : MiuixThemeData.light(),
         child: Scaffold(
-          body: CoursewareQuestionDiscoveryCard(
-            batch: batch,
-            isCurrent: true,
-            onJump: onJump ?? (_) async {},
+          body: SingleChildScrollView(
+            child: CoursewareQuestionDiscoveryCard(
+              batch: batch,
+              isCurrent: isCurrent,
+              timeLabel: timeLabel,
+              onJump: onJump ?? (_) async {},
+            ),
           ),
         ),
       ),
@@ -100,10 +116,16 @@ void main() {
         _batch([_problem(1, type: entry.key, body: body)]),
         onJump: (_) async => jumps++,
       );
-      await tester.tap(find.text('发现课件题目 · 第 1 页 · ${entry.value}'));
+      await tester.tap(find.text('第 1 页'));
       await tester.pumpAndSettle();
       expect(find.byType(CoursewareQuestionDetails), findsOneWidget);
-      expect(find.text(entry.value), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(CoursewareQuestionDetails),
+          matching: find.text(entry.value),
+        ),
+        findsOneWidget,
+      );
       expect(
         tester
             .widgetList<SelectableText>(find.byType(SelectableText))
@@ -129,18 +151,25 @@ void main() {
       _batch([for (var i = 0; i < 4; i++) _problem(i)]),
       onJump: (discovery) async => jumps.add(discovery),
     );
-    expect(find.text('发现课件题目 · 共 4 题'), findsOneWidget);
-    expect(find.text('发现课件题目 · 第 4 页 · 单选题'), findsNothing);
+    expect(find.text('共 4 题'), findsOneWidget);
+    expect(find.text('第 4 页'), findsNothing);
     await tester.tap(find.text('展开题目'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('发现课件题目 · 第 4 页 · 单选题'));
+    await Scrollable.ensureVisible(
+      tester.element(find.text('第 4 页')),
+      alignment: 0.5,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 4 页'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('跳转到第 4 页'));
     await tester.pumpAndSettle();
     expect(jumps.single.item.slideIndex, 3);
+    await Scrollable.ensureVisible(tester.element(find.text('收起题目')));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('收起题目'));
     await tester.pumpAndSettle();
-    expect(find.text('发现课件题目 · 第 4 页 · 单选题'), findsNothing);
+    expect(find.text('第 4 页'), findsNothing);
   });
 
   testWidgets('纯图片题明确未识别内容，同时展示题目插图、选项图和原页预览', (tester) async {
@@ -166,7 +195,7 @@ void main() {
         },
       ], cover: cover),
     );
-    await tester.tap(find.text('发现课件题目 · 第 1 页 · 单选题'));
+    await tester.tap(find.text('第 1 页'));
     await flushClassroomTasks(tester);
     expect(find.text('未获取到题干文字，图片内容尚未识别，请查看原页。'), findsOneWidget);
     expect(find.text('A. 图片选项（见题目相关图片）'), findsOneWidget);
@@ -189,7 +218,7 @@ void main() {
       dark: true,
       onJump: (_) async => jumps++,
     );
-    await tester.tap(find.text('发现课件题目 · 第 1 页 · 单选题'));
+    await tester.tap(find.text('第 1 页'));
     await tester.pumpAndSettle();
     final context = tester.element(find.byType(CoursewareQuestionDetails));
     expect(
@@ -201,4 +230,116 @@ void main() {
     expect(jumps, 1);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('参考布局：圆形图标、独立卡片、实际页码、题型、时间和两行摘要', (tester) async {
+    const body = '下列关于全麻药物作用机制的描述，正确的是。这里是实际扫描的完整题干，预览只显示两行，详情保留全部内容。';
+    final batch = _batch([_problem(86, body: body)], leadingSlides: 85);
+    await mount(tester, batch);
+    expect(find.text('第 86 页'), findsOneWidget);
+    expect(find.text('发现课件题目'), findsOneWidget);
+    expect(find.text('单选题'), findsOneWidget);
+    expect(find.text('刚刚'), findsOneWidget);
+    expect(find.text('查看题目详情'), findsOneWidget);
+    final preview = tester.widget<Text>(find.text(body));
+    expect(preview.maxLines, 2);
+    expect(preview.overflow, TextOverflow.ellipsis);
+    final icon = tester.getRect(find.byIcon(Icons.quiz_outlined));
+    final content = tester.getRect(find.byType(MiuixCard));
+    expect(icon.right, lessThan(content.left));
+    expect(icon.top, content.top);
+    expect(
+      tester.getTopLeft(find.text('刚刚')).dx,
+      greaterThan(tester.getTopLeft(find.text('发现课件题目')).dx),
+    );
+    expect(find.byType(ClassroomTimelineCard), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('详情入口和摘要均可点击，查看不跳页，完整文字不被摘要截断', (tester) async {
+    final body = '真实的长题干文字。' * 60;
+    var jumps = 0;
+    await mount(
+      tester,
+      _batch([_problem(1, body: body)]),
+      onJump: (_) async => jumps++,
+    );
+    await tester.tap(find.text('查看题目详情'));
+    await tester.pumpAndSettle();
+    final detail = find.byType(CoursewareQuestionDetails);
+    expect(
+      find.descendant(of: detail, matching: find.text(body)),
+      findsOneWidget,
+    );
+    expect(jumps, 0);
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(body));
+    await tester.pumpAndSettle();
+    expect(detail, findsOneWidget);
+    expect(jumps, 0);
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('历史卡片显示原课件与真实时间标签，纯图片摘要不伪造文字', (tester) async {
+    await mount(
+      tester,
+      _batch(
+        [_problem(1, body: '<img src="https://img/body.png">')],
+        cover: 'https://img/page.png',
+        title: '旧课件',
+      ),
+      isCurrent: false,
+      timeLabel: '4分钟前',
+    );
+    expect(find.text('历史课件 · 旧课件'), findsOneWidget);
+    expect(find.text('4分钟前'), findsOneWidget);
+    expect(find.text('图片内容尚未识别，请查看原页。'), findsOneWidget);
+    expect(find.byType(Image), findsNothing, reason: '预览不额外请求图片，详情沿用原有图片加载流程');
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final dark in [false, true]) {
+    for (final scale in [1.2, 2.0]) {
+      testWidgets('窄屏、大字号布局无溢出：dark=$dark scale=$scale', (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(320, 900);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        await mount(
+          tester,
+          _batch([
+            for (var i = 0; i < 4; i++) _problem(i, body: '$i：${'长题干。' * 80}'),
+          ]),
+          dark: dark,
+          scale: scale,
+          timeLabel: '10/14 17:23',
+        );
+        await tester.tap(find.text('展开题目'));
+        await tester.pumpAndSettle();
+        expect(find.text('查看题目详情'), findsNWidgets(4));
+        await Scrollable.ensureVisible(
+          tester.element(find.text('查看题目详情').last),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final colors = MiuixTheme.of(
+          tester.element(find.byType(CoursewareQuestionDiscoveryCard)),
+        ).colors;
+        final cards = tester.widgetList<MiuixCard>(find.byType(MiuixCard));
+        expect(
+          cards.every((card) => card.colors == null),
+          isTrue,
+          reason: '内容卡片使用主题默认颜色，不能写死白色',
+        );
+        expect(
+          colors.surfaceContainer,
+          (dark ? MiuixThemeData.dark() : MiuixThemeData.light())
+              .colors
+              .surfaceContainer,
+        );
+      });
+    }
+  }
 }

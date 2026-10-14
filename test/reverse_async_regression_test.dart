@@ -146,6 +146,10 @@ void main() {
       );
       var canOpenHistory = false;
       if (hasHistory) {
+        // The redesigned timeline has larger spacing; scroll to the event
+        // before testing the existing historical-question click behavior.
+        await Scrollable.ensureVisible(tester.element(find.text('题目发布')));
+        await tester.pump();
         await tester.tap(find.text('题目发布'));
         await flushClassroomTasks(tester);
         await tester.pump(const Duration(milliseconds: 400));
