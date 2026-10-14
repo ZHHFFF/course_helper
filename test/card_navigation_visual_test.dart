@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:course_helper/main.dart';
+import 'package:course_helper/pages/accounts.dart';
+import 'package:course_helper/pages/login.dart';
 import 'package:course_helper/navigation/miuix_page_transition.dart';
 import 'package:course_helper/pages/settings/appearance.dart';
 import 'package:course_helper/pages/settings/settings.dart';
@@ -72,6 +74,26 @@ void main() {
     ThemeSetting.mode.value = ThemeMode.system;
     ThemeSetting.floatingNavBar.value = false;
     await env.dispose();
+  });
+
+  testWidgets('named account and login routes retain arguments and results', (tester) async {
+    await tester.pumpWidget(const MyApp());
+    await flushClassroomTasks(tester);
+    await tester.pumpAndSettle();
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+    for (final entry in <String, Type>{'/accounts': AccountsPage, '/login': LoginPage}.entries) {
+      final argument = Object();
+      final result = navigator.pushNamed(entry.key, arguments: argument);
+      await flushClassroomTasks(tester);
+      await tester.pumpAndSettle();
+      final route = ModalRoute.of(tester.element(find.byType(entry.value).last))!;
+      expect(route.settings.name, entry.key);
+      expect(route.settings.arguments, same(argument));
+      navigator.pop(true);
+      expect(await result, isTrue);
+      await tester.pumpAndSettle();
+    }
+    expect(tester.takeException(), isNull);
   });
 
   for (final dark in [false, true]) {

@@ -90,6 +90,7 @@ Future<void> _measure() async {
           : 'other',
       'platform': Platform.operatingSystem,
       'candidate': Platform.environment['NAV_PROFILE_CANDIDATE'],
+      'run_id': Platform.environment['NAV_PROFILE_RUN_ID'],
       'shader_filter_supported': ImageFilter.isShaderFilterSupported,
       'frames': _frames,
       'intervals': _intervals,
@@ -98,9 +99,8 @@ Future<void> _measure() async {
           'Desktop software GL. Not Android hardware or predictive-back acceptance.',
     }),
   );
-  // Give the VM-service collector time to flush the final timeline.
-  await Future<void>.delayed(const Duration(seconds: 3));
-  exit(0);
+  // Keep the service alive for its final flush. The runner stops this desktop
+  // app through Flutter's machine protocol, preserving the process exit status.
 }
 
 class _ProfileApp extends StatefulWidget {

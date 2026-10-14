@@ -1,5 +1,7 @@
 # 卡片式双向页面转场
 
+> 历史记录：本文描述 test97 / `6514c8f` 时的卡片转场。当前分支已改为统一 Miuix 水平视差和 Leading 圆角，实际实现、参数与验证见 [MIUIX_NAVIGATION_REPORT.md](MIUIX_NAVIGATION_REPORT.md)。
+
 ## 实现前审计与方案
 
 基线：master `013b3b9`。已阅读用户提供的《页面转场开发说明》，查看三行分镜和 ZIP 中 Push / Back / Cancel 原始关键帧；未读取 MP4。

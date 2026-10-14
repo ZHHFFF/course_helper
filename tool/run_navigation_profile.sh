@@ -5,6 +5,12 @@ probe_source=$(cd "$2" && pwd)
 output=$(realpath -m "$3")
 probe=$(mktemp -d)
 mkdir -p "$output"
+if [ -f "$output/frames.json" ] || [ -f "$output/timeline.json" ] || [ -f "$output/run.log" ]; then
+  archive=$(mktemp -d "$output/previous-run.XXXXXX")
+  for file in frames.json timeline.json run.log; do
+    if [ -f "$output/$file" ]; then mv "$output/$file" "$archive/"; fi
+  done
+fi
 flutter create --no-pub --platforms=linux --project-name navigation_profile "$probe" >/dev/null
 python3 - "$source_repo" "$probe_source" "$probe" <<'PY'
 from pathlib import Path
@@ -31,8 +37,29 @@ cd "$probe"
 flutter pub get >/dev/null
 export NAV_PROFILE_OUTPUT="$output"
 export NAV_PROFILE_CANDIDATE="${4:-300-260}"
+export NAV_PROFILE_RUN_ID="$probe"
 export LIBGL_ALWAYS_SOFTWARE=1
-xvfb-run -a flutter run --profile -d linux --disable-dds --host-vmservice-port=8181 > "$output/run.log" 2>&1 &
+export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
+mkfifo "$probe/commands.pipe"
+xvfb-run -a flutter run --machine --profile -d linux --disable-dds --host-vmservice-port=8181 < "$probe/commands.pipe" > "$output/run.log" 2>&1 &
 runner=$!
-python3 "$probe_source/tool/collect_navigation_timeline.py" "$output"
+exec 3> "$probe/commands.pipe"
+python3 "$probe_source/tool/collect_navigation_timeline.py" "$output" "$NAV_PROFILE_RUN_ID"
+python3 - "$output/run.log" >&3 <<'PY'
+import json
+import sys
+from pathlib import Path
+for line in Path(sys.argv[1]).read_text().splitlines():
+    try:
+        messages = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(messages, list):
+        for message in messages:
+            if message.get('event') == 'app.start':
+                print(json.dumps([{'id': 1, 'method': 'app.stop', 'params': {'appId': message['params']['appId']}}]))
+                sys.exit(0)
+raise RuntimeError('No Flutter machine app.start event')
+PY
 wait "$runner"
+exec 3>&-

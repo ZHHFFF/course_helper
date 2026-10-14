@@ -167,15 +167,15 @@ class _MyAppState extends State<MyApp> {
               return ThemeSetting.blurScope(_MiuixScope(child: child));
             },
             onGenerateRoute: (settings) => switch (settings.name) {
-              '/' => MiuixPageRoute<void>(
+              '/' => MiuixPageRoute(
                 settings: settings,
                 builder: (_) => const _GlassNavInsets(child: MainPage()),
               ),
-              '/accounts' => MiuixPageRoute<void>(
+              '/accounts' => MiuixPageRoute(
                 settings: settings,
                 builder: (_) => const AccountsPage(),
               ),
-              '/login' => MiuixPageRoute<void>(
+              '/login' => MiuixPageRoute(
                 settings: settings,
                 builder: (_) => const LoginPage(),
               ),

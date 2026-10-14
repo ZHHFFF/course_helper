@@ -18,7 +18,7 @@ Compose MiuixDefault：全宽线性前景、0.25W 线性视差；几何不含 ea
 
 Flutter 1.2.0 可用：MiuixMotion.standardDecelerate、standardAccelerate、sinOut、pressSpring（1/.35）、bouncySpring（.85/.45）、folmeSpring。没有 NavDisplay/NavTransitions 导航 API；需应用适配。退出不使用 bouncySpring，防止过冲。
 
-锁定的 cupertino_predictive_back 1.0.0 源码把 CupertinoPageTransition 与 SDK PredictiveBackPageTransitionsBuilder 嵌套，并随 popGestureInProgress 切换活动动画；后者采用 SDK 自身的预测性缩放、圆角与收尾规则。当前基线已绕过该组件，本次继续使用应用适配器，没有重新启用它，也没有新增依赖。
+此前采用的 cupertino_predictive_back 1.0.0 源码把 CupertinoPageTransition 与 SDK PredictiveBackPageTransitionsBuilder 嵌套，并随 popGestureInProgress 切换活动动画；后者采用 SDK 自身的预测性缩放、圆角与收尾规则。当前基线已移除该依赖；审查其历史缓存源码后，本次继续使用应用适配器，没有重新引入它，也没有新增应用依赖。
 
 审计所有生产 MaterialPageRoute 调用点、两条命名路由、PopScope；没有 CupertinoPageRoute、PageRouteBuilder、WillPopScope 或嵌套 Navigator。课件 _stage 和底栏 PageView 是内部状态，不改其业务行为。
 

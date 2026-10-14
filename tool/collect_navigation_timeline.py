@@ -15,10 +15,23 @@ for _ in range(240):
         if matches:
             uri = matches[-1]
             break
+        for line in log.read_text(errors='replace').splitlines():
+            try:
+                messages = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(messages, list):
+                continue
+            for message in messages:
+                if message.get('event') == 'app.debugPort':
+                    uri = message['params']['wsUri']
+        if uri:
+            break
     time.sleep(1)
 if uri is None:
     raise RuntimeError('Profile VM service did not start')
-connection = websocket.create_connection(uri.replace('http://', 'ws://') + 'ws', timeout=1, suppress_origin=True)
+socket_uri = uri if uri.startswith('ws://') else uri.replace('http://', 'ws://') + 'ws'
+connection = websocket.create_connection(socket_uri, timeout=1, suppress_origin=True)
 events = []
 request_id = 0
 
@@ -61,10 +74,14 @@ unique = {json.dumps(event, sort_keys=True): event for event in events}
 (output / 'timeline.json').write_text(json.dumps({
     'traceEvents': list(unique.values()), 'displayTimeUnit': 'ms',
     'source': 'Profile VM Service / DevTools Timeline', 'dartVersion': vm.get('version'),
+    'run_id': sys.argv[2],
 }))
 connection.close()
 frames = json.loads((output / 'frames.json').read_text())
 assert frames['mode'] == 'profile', frames['mode']
+assert frames['run_id'] == sys.argv[2], 'Stale result from another run'
 assert len(frames['frames']) > 100, len(frames['frames'])
 assert events, 'No timeline events captured'
+for name in ['navigation.push', 'navigation.pop']:
+    assert sum(event.get('name') == name for event in unique.values()) >= 30, name
 print(f"Profile: {len(frames['frames'])} frames, {len(unique)} timeline events.")
