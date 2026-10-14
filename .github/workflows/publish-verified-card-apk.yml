@@ -1,0 +1,68 @@
+name: Publish verified card navigation APK
+
+on:
+  push:
+    branches: [codex/publish-card-apk-test97]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: 6514c8f6d62758e71033def63f53d28121c3255c
+      SOURCE_RUN: '38577620724'
+      APK_NAME: course-helper-1.2.3-test97-6514c8f-arm64.apk
+      RELEASE_TAG: test-apk-card-navigation-test97
+    steps:
+      - name: Download and verify the existing APK
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > source-run.json
+          jq -e --arg sha "$SOURCE_SHA" '.head_sha == $sha' source-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs" > source-jobs.json
+          jq -e '
+            .jobs[] | select(.name == "build") | .steps |
+            map(select(.name == "Prepare signing key" or
+                       .name == "Analyze (errors only)" or
+                       .name == "Run unit tests" or
+                       .name == "Build release APK (arm64-v8a only)" or
+                       .name == "Upload APK")) |
+            length == 5 and all(.[]; .conclusion == "success")
+          ' source-jobs.json
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "$APK_NAME" --dir apk
+          printf '%s  %s\n' 'a8403b3688f7626d62f0e9e8af1f9db484a60c46cac5f0231d3d2eee97ba0104' "apk/$APK_NAME" | sha256sum --check
+
+      - name: Publish the verified APK
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          本测试包同时包含 PPT 题目发现、新版时间线提示卡片、双向卡片式页面转场及系统圆角适配。
+
+          - 复用 SlideScanner 的课件识题结果；展示独立的本地发现提示和只读详情，可主动跳转到原 PPT 页。
+          - 提示卡片采用参考图的时间线布局：题目页码、题型、真实题干摘要、发现时间和“查看题目详情”。不把发现提示当成教师正式发布的可答题目；纯图片题仅提示和原页预览，不声称完成 OCR。
+          - 普通 Push/Pop 与 Android 预测性返回共用不透明卡片层：横移、圆角、轻微缩小及底页遮罩；取消从当前位置回弹，确认从松手位置继续滑出。
+          - 优先读取系统四角圆角，保留零值和四角差异；只有系统未提供时才回退到 28dp。
+          - 保留预测性返回开关、课件内部切换、缓存、课堂消息和题目历史逻辑。
+
+          Android ARM64，最低 Android 7.0，版本 1.2.3-test97。
+          包名 com.anerycoft.coursehelper，实际 versionCode 4097。
+          与 test91/test92 使用相同仓库固定测试签名，支持覆盖安装；APK 签名已验证。
+
+          flutter analyze 无问题；相关测试 102 项通过；完整测试 543 项通过、7 项原有跳过。GitHub 构建也已通过静态检查和完整测试。
+          转场和系统圆角已通过 Flutter Widget 与系统事件模拟测试；Android 真机系统栏、OEM 手势和原生渲染尚未验收。
+
+          APK SHA-256：a8403b3688f7626d62f0e9e8af1f9db484a60c46cac5f0231d3d2eee97ba0104。
+
+          题目发现功能与新版卡片已合入 master（PR #3、#5）；最新卡片转场和系统圆角代码位于 PR #6，尚未合并主线。
+          代码：https://github.com/ZHHFFF/course_helper/pull/6
+          构建来源：https://github.com/ZHHFFF/course_helper/actions/runs/38577620724
+          NOTES
+          gh release create "$RELEASE_TAG" "apk/$APK_NAME" \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
+            --prerelease --title '题目发现与卡片转场测试包 1.2.3-test97' \
+            --notes-file release-notes.md
