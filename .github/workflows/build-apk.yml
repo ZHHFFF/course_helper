@@ -8,7 +8,7 @@ on:
 
 env:
   JAVA_VERSION: "17"
-  # 版本号：用 CI 的运行序号，保证只增不减 —— 新包才能直接覆盖安装旧包
+  # 构建显示序号；已发布 test88 的实际 versionCode 是 2088。
   BUILD_NUMBER: ${{ github.run_number }}
 
 jobs:
@@ -18,6 +18,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # GitHub 表达式不支持加法，用 shell 保留已发布 APK 的 2000 偏移。
+      - name: Set APK version code
+        run: echo "VERSION_CODE=$((2000 + BUILD_NUMBER))" >> "$GITHUB_ENV"
 
       # ⚠️ `cache: gradle` 必须开（2026-09-24 加）。
       #
@@ -78,13 +82,13 @@ jobs:
       - name: Run unit tests
         run: flutter test
 
-      # versionCode 用 run_number（只增不减）；versionName 带上第几次构建，
+      # versionCode 用 2000 + run_number；versionName 带上第几次构建，
       # 这样在手机「应用信息」里也能看出装的是哪一版。
       - name: Build release APK (arm64-v8a only)
         run: |
           flutter build apk --release --split-per-abi \
             --target-platform android-arm64 \
-            --build-number="${{ env.BUILD_NUMBER }}" \
+            --build-number="${{ env.VERSION_CODE }}" \
             --build-name="1.2.3-test${{ env.BUILD_NUMBER }}"
 
       # 文件名带上版本和 commit，一眼能看出是哪个包
@@ -102,7 +106,7 @@ jobs:
             echo "| 项 | 值 |"
             echo "| --- | --- |"
             echo "| 文件 | \`${NAME}\` |"
-            echo "| versionCode | ${{ env.BUILD_NUMBER }} |"
+            echo "| versionCode | ${{ env.VERSION_CODE }} |"
             echo "| versionName | 1.2.3-test${{ env.BUILD_NUMBER }} |"
             echo "| commit | \`${{ github.sha }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -124,7 +128,7 @@ jobs:
           flutter build apk --release --split-per-abi \
             --target-platform android-arm64 \
             --target lib/experiment/layer_block_experiment.dart \
-            --build-number="${{ env.BUILD_NUMBER }}" \
+            --build-number="${{ env.VERSION_CODE }}" \
             --build-name="1.2.3-exp${{ env.BUILD_NUMBER }}"
 
       - name: Rename experiment APK
