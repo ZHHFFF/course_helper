@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_miuix/miuix.dart';
 
@@ -67,7 +68,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   void _open(Widget page) {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+    Navigator.push(context, MiuixPageRoute(builder: (_) => page));
   }
 
   @override

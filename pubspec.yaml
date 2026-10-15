@@ -14,7 +14,8 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.2.24+2033
 
 environment:
-  flutter: ^3.41.8
+  # MediaQuery.displayCornerRadiiOf is available from Flutter 3.44.
+  flutter: ^3.44.0
   sdk: ^3.12.2
 
 # Dependencies specify other packages that your package needs in order to work.
@@ -26,9 +27,6 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
-  # Audited 1.0.0: Cupertino ordinary motion + Flutter system predictive back.
-  cupertino_predictive_back: 1.0.0
 
   # [2026-09-24 清理] 删掉 7 个「零 import」依赖（马尾辫审查结论）：
   #   cupertino_icons / flutter_speed_dial / camera / time / http_parser /
