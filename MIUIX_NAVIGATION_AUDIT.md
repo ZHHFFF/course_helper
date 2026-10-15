@@ -22,4 +22,4 @@ Flutter 1.2.0 可用：MiuixMotion.standardDecelerate、standardAccelerate、sin
 
 审计所有生产 MaterialPageRoute 调用点、两条命名路由、PopScope；没有 CupertinoPageRoute、PageRouteBuilder、WillPopScope 或嵌套 Navigator。课件 _stage 和底栏 PageView 是内部状态，不改其业务行为。
 
-验证：保留原覆盖，扩展真实设置→外观/日志/缓存，多个中间帧、前后同步、快速返回、左右边缘、取消/确认、PopScope、状态保留、系统会话中移除/切换路由，检查绘制层和内容 build 次数；运行分析、全量测试、Android 构建。提供可复现 Profile 探针和原始帧数据。云端 adb 无设备、无 Android emulator/KVM；Linux 工具链不足，尝试使用 GitHub Linux Profile runner / Xvfb，结果只能作为软件渲染补充，不能宣称 Android 真机性能或 OEM 预测性返回验收。
+验证：保留原覆盖，扩展真实设置→外观/日志/缓存，多个中间帧、前后同步、快速返回、左右边缘、取消/确认、PopScope、状态保留、系统会话中移除/切换路由，检查绘制层和内容 build 次数；运行分析、全量测试、Android 构建。提供可复现 Profile 探针和原始帧数据。云端 adb 无设备、无 Android emulator/KVM；GitHub Actions 被禁用后，已在本地 Docker / Xvfb / llvmpipe 完成五组 Profile 对照，原始数据和结果见 MIUIX_NAVIGATION_REPORT.md。软件光栅化仍超出帧预算，不能宣称 Android 真机性能或 OEM 预测性返回验收。
