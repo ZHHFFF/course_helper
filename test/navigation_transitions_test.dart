@@ -942,6 +942,47 @@ void main() {
     expect(tester.getRect(_page('next')), const Rect.fromLTWH(0, 0, 800, 600));
   });
 
+  testWidgets('replacement during drag cannot commit against the new route', (
+    tester,
+  ) async {
+    final harness = _Harness();
+    await _mount(tester, harness);
+    _push(harness, '/next');
+    await tester.pumpAndSettle();
+    expect(await _backEvent(tester, 'startBackGesture'), isTrue);
+    await _backEvent(tester, 'updateBackGestureProgress', progress: .5);
+    await tester.pump();
+    unawaited(harness.nav.currentState!.pushReplacementNamed('/third'));
+    await tester.pump();
+    await _backEvent(tester, 'commitBackGesture');
+    await tester.pumpAndSettle();
+    expect(harness.observer.popped, isEmpty);
+    expect(_page('third'), findsOneWidget);
+    expect(harness.nav.currentState!.userGestureInProgress, isFalse);
+  });
+
+  testWidgets('same-frame removal consumes the old native commit', (
+    tester,
+  ) async {
+    final harness = _Harness();
+    await _mount(tester, harness);
+    _push(harness, '/third');
+    await tester.pumpAndSettle();
+    expect(_page('third'), findsOneWidget);
+    _push(harness, '/next');
+    await tester.pumpAndSettle();
+    expect(await _backEvent(tester, 'startBackGesture'), isTrue);
+    await _backEvent(tester, 'updateBackGestureProgress', progress: .5);
+    await tester.pump();
+    final route = ModalRoute.of(tester.element(_page('next')))!;
+    harness.nav.currentState!.removeRoute(route);
+    await _backEvent(tester, 'commitBackGesture');
+    await tester.pumpAndSettle();
+    expect(harness.observer.popped, isEmpty);
+    expect(_page('third'), findsOneWidget);
+    expect(harness.nav.currentState!.userGestureInProgress, isFalse);
+  });
+
   testWidgets('duplicate terminal events during settlement do not pop twice', (
     tester,
   ) async {
@@ -995,15 +1036,13 @@ void main() {
         expect(render.effectiveCorners.topRight, Radius.zero);
         expect(render.effectiveCorners.bottomRight, Radius.zero);
         expect(tester.getRect(_page('next')).size, const Size(800, 600));
-        final clips = tester.layers
-            .whereType<ClipRSuperellipseLayer>()
-            .toList();
+        final clips = tester.layers.whereType<ClipRRectLayer>().toList();
         expect(clips, hasLength(1));
         expect(clips.single.clipBehavior, Clip.antiAlias);
         _expectOpaque(tester, 'next');
       }
       await tester.pumpAndSettle();
-      expect(tester.layers.whereType<ClipRSuperellipseLayer>(), isEmpty);
+      expect(tester.layers.whereType<ClipRRectLayer>(), isEmpty);
     },
   );
 

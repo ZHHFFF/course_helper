@@ -76,17 +76,26 @@ void main() {
     await env.dispose();
   });
 
-  testWidgets('named account and login routes retain arguments and results', (tester) async {
+  testWidgets('named account and login routes retain arguments and results', (
+    tester,
+  ) async {
     await tester.pumpWidget(const MyApp());
     await flushClassroomTasks(tester);
     await tester.pumpAndSettle();
-    final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
-    for (final entry in <String, Type>{'/accounts': AccountsPage, '/login': LoginPage}.entries) {
+    final navigator = tester.state<NavigatorState>(
+      find.byType(Navigator).first,
+    );
+    for (final entry in <String, Type>{
+      '/accounts': AccountsPage,
+      '/login': LoginPage,
+    }.entries) {
       final argument = Object();
       final result = navigator.pushNamed(entry.key, arguments: argument);
       await flushClassroomTasks(tester);
       await tester.pumpAndSettle();
-      final route = ModalRoute.of(tester.element(find.byType(entry.value).last))!;
+      final route = ModalRoute.of(
+        tester.element(find.byType(entry.value).last),
+      )!;
       expect(route.settings.name, entry.key);
       expect(route.settings.arguments, same(argument));
       navigator.pop(true);

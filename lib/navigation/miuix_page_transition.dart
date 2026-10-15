@@ -71,7 +71,7 @@ class RenderMiuixPageTransition extends RenderProxyBox {
   Color _background;
   bool _reduceMotion;
   final _transformLayer = LayerHandle<TransformLayer>();
-  final _clipLayer = LayerHandle<ClipRSuperellipseLayer>();
+  final _clipLayer = LayerHandle<ClipRRectLayer>();
   final _paint = Paint();
 
   void configure({
@@ -163,9 +163,9 @@ class RenderMiuixPageTransition extends RenderProxyBox {
     0,
   );
 
-  ui.RSuperellipse get _shape {
+  ui.RRect get _shape {
     final r = effectiveCorners;
-    return ui.RSuperellipse.fromRectAndCorners(
+    return ui.RRect.fromRectAndCorners(
       Offset.zero & size,
       topLeft: r.topLeft,
       topRight: r.topRight,
@@ -176,10 +176,15 @@ class RenderMiuixPageTransition extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    // Parallax can uncover a few pixels around the leading clip. Extend the
-    // page's own theme surface behind its moving content, not a global color.
-    if (_covered > 0) {
-      context.canvas.drawRect(offset & size, _paint..color = _background);
+    // Extend only the trailing gap left by parallax. A partially entered page
+    // must keep the older route visible at its leading edge.
+    final shift = translation.dx;
+    if (_covered > 0 && _sign * shift < 0) {
+      final left = _direction == TextDirection.ltr ? size.width + shift : 0.0;
+      context.canvas.drawRect(
+        Rect.fromLTWH(offset.dx + left, offset.dy, shift.abs(), size.height),
+        _paint..color = _background,
+      );
     }
     if (_primary > 0 && _primary < 1) {
       context.canvas.drawRect(
@@ -207,7 +212,7 @@ class RenderMiuixPageTransition extends RenderProxyBox {
           _clipLayer.layer = null;
           paintPage(context, transformedOffset);
         } else {
-          _clipLayer.layer = context.pushClipRSuperellipse(
+          _clipLayer.layer = context.pushClipRRect(
             needsCompositing,
             transformedOffset,
             Offset.zero & size,

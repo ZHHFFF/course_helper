@@ -171,6 +171,10 @@ class MiuixPageRoute<T> extends MaterialPageRoute<T> {
   @override
   void handleCommitBackGesture() {
     if (_disposed || !_gestureActive || !_acceptingUpdates) return;
+    if (!isCurrent) {
+      abandonGesture();
+      return;
+    }
     _acceptingUpdates = false;
     _releaseVelocity = _velocityAtRelease();
     unawaited(_commit());

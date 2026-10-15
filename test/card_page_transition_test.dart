@@ -11,6 +11,58 @@ const _underColor = Color(0xFF008744);
 const _frontColor = Color(0xFF0057E7);
 
 void main() {
+  for (final rtl in [false, true]) {
+    testWidgets(
+      'partly entered covered page preserves the older page, rtl=$rtl',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(400, 800);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Directionality(
+              textDirection: rtl ? TextDirection.rtl : TextDirection.ltr,
+              child: RepaintBoundary(
+                key: _capture,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    const ColoredBox(color: _underColor),
+                    const MiuixPageTransition(
+                      animation: AlwaysStoppedAnimation(.5),
+                      secondaryAnimation: AlwaysStoppedAnimation(.1),
+                      child: ColoredBox(color: _frontColor),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+        final boundary = tester.renderObject<RenderRepaintBoundary>(
+          find.byKey(_capture),
+        );
+        await tester.runAsync(() async {
+          final image = await boundary.toImage();
+          try {
+            final bytes = (await image.toByteData(
+              format: ui.ImageByteFormat.rawRgba,
+            ))!;
+            final index = (400 * image.width + (rtl ? 399 : 0)) * 4;
+            final expected = Color.alphaBlend(
+              Colors.black.withValues(alpha: .09),
+              _underColor,
+            );
+            expect(bytes.getUint8(index + 1), closeTo(expected.g * 255, 1));
+            expect(bytes.getUint8(index + 3), 255);
+          } finally {
+            image.dispose();
+          }
+        });
+      },
+    );
+  }
   for (final dark in [false, true]) {
     for (final rtl in [false, true]) {
       for (final progress in [0.15, 0.5, 0.85, 1.0]) {

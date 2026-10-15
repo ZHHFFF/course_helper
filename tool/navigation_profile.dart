@@ -91,6 +91,29 @@ Future<void> _measure() async {
       'platform': Platform.operatingSystem,
       'candidate': Platform.environment['NAV_PROFILE_CANDIDATE'],
       'run_id': Platform.environment['NAV_PROFILE_RUN_ID'],
+      'renderer_sha256': Platform.environment['NAV_PROFILE_RENDERER_SHA256'],
+      'window': {
+        'physical_width': WidgetsBinding
+            .instance
+            .platformDispatcher
+            .views
+            .first
+            .physicalSize
+            .width,
+        'physical_height': WidgetsBinding
+            .instance
+            .platformDispatcher
+            .views
+            .first
+            .physicalSize
+            .height,
+        'dpr': WidgetsBinding
+            .instance
+            .platformDispatcher
+            .views
+            .first
+            .devicePixelRatio,
+      },
       'shader_filter_supported': ImageFilter.isShaderFilterSupported,
       'frames': _frames,
       'intervals': _intervals,

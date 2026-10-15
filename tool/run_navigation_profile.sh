@@ -38,6 +38,10 @@ flutter pub get >/dev/null
 export NAV_PROFILE_OUTPUT="$output"
 export NAV_PROFILE_CANDIDATE="${4:-300-260}"
 export NAV_PROFILE_RUN_ID="$probe"
+renderer="$source_repo/lib/navigation/miuix_page_transition.dart"
+if [ ! -f "$renderer" ]; then renderer="$source_repo/lib/navigation/card_page_transition.dart"; fi
+export NAV_PROFILE_RENDERER_SHA256
+NAV_PROFILE_RENDERER_SHA256=$(sha256sum "$renderer" | cut -d ' ' -f 1)
 export LIBGL_ALWAYS_SOFTWARE=1
 export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 mkfifo "$probe/commands.pipe"
