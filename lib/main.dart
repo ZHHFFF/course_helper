@@ -427,9 +427,13 @@ class _MainPageState extends State<MainPage> {
         return;
       }
 
-      if (_isNewerVersion(latestVersion, mine)) {
+      if (!mounted) return;
+      // 跳过的是具体 release tag，不能把后续测试包一并跳过。
+      final skippedTag = StorageManager.prefs.getString('skip_release_tag');
+      if (tag != skippedTag && _isNewerVersion(latestVersion, mine)) {
         _showUpdateDialog(
           latestVersion: latestVersion,
+          releaseTag: tag,
           releaseNotes: (data['body'] ?? '暂无更新说明').toString(),
           downloadUrl:
               (data['html_url'] ??
@@ -478,6 +482,7 @@ class _MainPageState extends State<MainPage> {
 
   void _showUpdateDialog({
     required String latestVersion,
+    required String releaseTag,
     required String releaseNotes,
     required String downloadUrl,
   }) {
@@ -505,6 +510,13 @@ class _MainPageState extends State<MainPage> {
           ),
         ),
         actions: [
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await StorageManager.prefs.setString('skip_release_tag', releaseTag);
+            },
+            child: const Text('跳过该版本'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('稍后'),

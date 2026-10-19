@@ -26,6 +26,8 @@ import '../actives/vote.dart';
 import '../actives/questionnaire.dart';
 import 'content.dart';
 import '../presentation.dart';
+import '../push/groups.dart';
+import '../../push/easemob.dart';
 import '../../setting/theme_setting.dart';
 
 
@@ -139,6 +141,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
   int _loadGeneration = 0;
   int _pollGeneration = 0;
   StreamSubscription? _accountChangeSubscription;
+  StreamSubscription? _messageStoreSubscription;
   Timer? _refreshTimer;
   List<dynamic> _lastOnLessonCourses = [];
   bool _isVisible = false;
@@ -195,8 +198,12 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     _loadCourses();
 
     // 监听账户变更事件
+    _messageStoreSubscription = ActivityMessageStore().changes.listen((_) {
+      if (mounted) setState(() {});
+    });
     _accountChangeSubscription =
         AccountChangeNotifier().accountChanges.listen((_) {
+          ActivityMessageStore().clearAll();
           if (mounted) {
             _lastOnLessonCourses = [];
             _loadCourses();
@@ -604,6 +611,12 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final courses = PlatformManager().isChaoxing
+        ? [
+            ..._courses.where((c) => ActivityMessageStore().countOf(c.courseId, c.classId) > 0),
+            ..._courses.where((c) => ActivityMessageStore().countOf(c.courseId, c.classId) == 0),
+          ]
+        : _courses;
     // 底栏已固定为「贴边 Miuix 标准样式」（2026-09-22 用户拍板取消悬浮），
     // 高度是常量，不再需要按设置重建整个脚手架。
     return MiuixScaffold(
@@ -624,6 +637,14 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
           blurred: ThemeSetting.blurOf(context),
           scrollBehavior: _topBarBehavior,
           actions: [
+            if (PlatformManager().isChaoxing)
+              MiuixIconButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const GroupsPage()),
+                ),
+                child: const Icon(Icons.group),
+              ),
             MiuixIconButton(
               onPressed: () {
                 Navigator.push(
@@ -664,7 +685,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                 ),
               )
             : ListView.builder(
-                itemCount: _courses.length,
+                itemCount: courses.length,
                 // 顶部留白吃掉顶栏高度 → 内容才会从顶栏底下滚过（玻璃顶栏的关键）。
                 // 底部留白由脚手架的 bottomBar 占位给出，再加 16dp 余量。
                 padding: EdgeInsets.only(
@@ -672,7 +693,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                   bottom: contentPadding.bottom + 16,
                 ),
                 itemBuilder: (context, index) {
-                  final course = _courses[index];
+                  final course = courses[index];
                   final colors = MiuixTheme.of(context).colors;
                   return Padding(
                     // MiuixCard 没有 margin 参数，外边距由外面这层 Padding 提供
@@ -685,6 +706,9 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                       // 的按压反馈），不再自己套 InkWell
                       feedbackType: MiuixPressFeedbackType.sink,
                       onPressed: () {
+                        if (PlatformManager().isChaoxing) {
+                          ActivityMessageStore().clear(course.courseId, course.classId);
+                        }
                         Navigator.push(
                           context,
                           PlatformManager().isChaoxing ?
@@ -713,15 +737,20 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                           // 改成 Row 居中对齐即可（头像也跟着与文字块居中）
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            if (course.image.isNotEmpty)
-                              AvatarWidget(
+                            Badge.count(
+                              count: PlatformManager().isChaoxing
+                                  ? ActivityMessageStore().countOf(course.courseId, course.classId)
+                                  : 0,
+                              isLabelVisible: PlatformManager().isChaoxing &&
+                                  ActivityMessageStore().countOf(course.courseId, course.classId) > 0,
+                              child: course.image.isNotEmpty
+                                  ? AvatarWidget(
                                 imageUrl: course.image,
                                 size: 50,
                                 borderRadius: 6,
                                 iconSize: 25,
                               )
-                            else
-                              Container(
+                                  : Container(
                                 width: 50,
                                 height: 50,
                                 decoration: BoxDecoration(
@@ -736,6 +765,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                                   ),
                                 ),
                               ),
+                            ),
                             const SizedBox(width: 12),
                             Expanded(
                               child: Column(
@@ -799,6 +829,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _accountChangeSubscription?.cancel();
+    _messageStoreSubscription?.cancel();
     _refreshTimer?.cancel();
     super.dispose();
   }

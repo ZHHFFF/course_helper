@@ -12,6 +12,7 @@ import '../../../models/user.dart';
 import '../../../models/active.dart';
 import '../../../models/course.dart';
 import '../../../session/account.dart';
+import '../../../utils/app_logger.dart';
 import '../../widget/accounts_selector.dart';
 import '../../widget/baidu_map.dart';
 import '../../widget/captcha.dart';
@@ -170,6 +171,7 @@ class SignInPageState extends State<SignInPage> {
   bool _needPhoto = false;
   String? _locationRange;
   String? _designatedPlace;
+  bool _skipLocationAutoFill = false;
 
   // 签到码相关
   final List<TextEditingController> _codeControllers = [];
@@ -205,6 +207,7 @@ class SignInPageState extends State<SignInPage> {
   bool get needFace => _needFace;
   String? get designatedPlace => _designatedPlace;
   String? get locationRange => _locationRange;
+  bool get skipLocationAutoFill => _skipLocationAutoFill;
   List<User> get selectedAccounts => _selectedAccounts;
   User? get currentUser => _currentUser;
   SignStrategy? get currentStrategy => _currentStrategy;
@@ -245,6 +248,7 @@ class SignInPageState extends State<SignInPage> {
     _signParams.address = null;
     _signParams.latitude = null;
     _signParams.longitude = null;
+    _skipLocationAutoFill = true;
     if (mounted) setState(() {});
   }
 
@@ -308,9 +312,10 @@ class SignInPageState extends State<SignInPage> {
         // 根据 otherId 确定签到类型
         if (widget.active.signType == null) {
           widget.active.signType = getSignTypeFromIndex(_signTypeId);
-        } else if (widget.active.signType != SignType.normal) {
-          _locationRange = activeInfo['locationRange'];
-          _designatedPlace = activeInfo['locationText'];
+        }
+        if (widget.active.signType != SignType.normal) {
+          _locationRange = activeInfo['locationRange']?.toString();
+          _designatedPlace = activeInfo['locationText']?.toString();
         }
 
         switch (widget.active.signType) {
@@ -359,7 +364,7 @@ class SignInPageState extends State<SignInPage> {
         _assignImages();
       }
     } catch (e, stackTrace) {
-      debugPrint('签到信息解析失败：$e \n$stackTrace');
+      AppLogger.e('签到', '签到信息解析失败：$e\n$stackTrace');
     }
   }
 
@@ -732,10 +737,10 @@ class SignLocationUi {
       future: loadCourseLocation(state),
       builder: (context, snapshot) {
         // 课程配置选择位置（仅在未选择位置且有配置时自动填充）
-        if (!hasLocation && snapshot.hasData && snapshot.data?.location != null) {
+        if (!state.skipLocationAutoFill && !hasLocation && snapshot.hasData && snapshot.data?.location != null) {
           final location = snapshot.data!.location!;
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (state.mounted && state.signParams.address == null) {
+            if (state.mounted && !state.skipLocationAutoFill && state.signParams.address == null) {
               state.signParams.latitude = double.tryParse(location.latitude);
               state.signParams.longitude = double.tryParse(location.longitude);
               state.signParams.address = location.address.isEmpty ? '未知位置' : location.address;
