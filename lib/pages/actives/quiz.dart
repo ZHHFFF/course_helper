@@ -21,6 +21,7 @@ import '../../../api/answer_search.dart';
 import '../../../setting/auto_answer_setting.dart';
 import '../../../session/account.dart';
 import '../../../utils/app_logger.dart';
+import '../../../utils/quiz_html.dart';
 // [/新增]
 import '../../../models/user.dart';
 import '../../../models/active.dart';
@@ -404,16 +405,10 @@ class _QuizPageState extends State<QuizPage> {
 
   Future<void> _loadQuizDataFromHtml(String htmlContent) async {
     try {
-      RegExp quizListRegex = RegExp(r'quizList\s*=\s*(\[.*?\]);', multiLine: true, dotAll: true);
-      RegExp activeRegex = RegExp(r'active\s*=\s*(\{.*?\});', multiLine: true, dotAll: true);
+      final quizListJson = extractQuizJson(htmlContent, 'quizList');
+      final activeJson = extractQuizJson(htmlContent, 'active');
 
-      Match? quizListMatch = quizListRegex.firstMatch(htmlContent);
-      Match? activeMatch = activeRegex.firstMatch(htmlContent);
-
-      if (quizListMatch != null && activeMatch != null) {
-        String quizListJson = quizListMatch.group(1)!;
-        String activeJson = activeMatch.group(1)!;
-
+      if (quizListJson != null && activeJson != null) {
         List<dynamic> quizList = json.decode(quizListJson);
         Map<String, dynamic> activeData = json.decode(activeJson);
 
@@ -497,16 +492,10 @@ class _QuizPageState extends State<QuizPage> {
 
       String htmlContent = response.data.toString();
 
-      RegExp quizListRegex = RegExp(r'quizList\s*=\s*(\[.*?\]);', multiLine: true, dotAll: true);
-      RegExp activeRegex = RegExp(r'active\s*=\s*(\{.*?\});', multiLine: true, dotAll: true);
+      final quizListJson = extractQuizJson(htmlContent, 'quizList');
+      final activeJson = extractQuizJson(htmlContent, 'active');
 
-      Match? quizListMatch = quizListRegex.firstMatch(htmlContent);
-      Match? activeMatch = activeRegex.firstMatch(htmlContent);
-
-      if (quizListMatch != null && activeMatch != null) {
-        String quizListJson = quizListMatch.group(1)!;
-        String activeJson = activeMatch.group(1)!;
-
+      if (quizListJson != null && activeJson != null) {
         List<dynamic> quizList = json.decode(quizListJson);
         Map<String, dynamic> activeData = json.decode(activeJson);
 
