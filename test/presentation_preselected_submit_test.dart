@@ -1,5 +1,7 @@
 import 'package:course_helper/api/api_service.dart';
 import 'package:course_helper/api/course.dart';
+import 'package:course_helper/cache/answer_draft_store.dart';
+import 'package:course_helper/cache/course_cache.dart';
 import 'package:course_helper/models/user.dart';
 import 'package:course_helper/pages/presentation.dart';
 import 'package:course_helper/session/account.dart';
@@ -119,6 +121,85 @@ void main() {
     await flushClassroomTasks(tester);
     expect(tester.takeException(), isNull);
   }
+
+  Future<void> reenter(WidgetTester tester) async {
+    await finish(tester);
+    await tester.runAsync(AnswerDraftStore.flush);
+    AccountManager.allAccounts.clear();
+    await mount(tester);
+  }
+
+  testWidgets('退出重进恢复预选答案，普通退出不标记课堂结束，恢复后可自动提交', (tester) async {
+    await mount(tester);
+    await select(tester, 'B');
+    await reenter(tester);
+    expect(await tester.runAsync(() => CourseCache.finishedAt('lesson')), isNull);
+    expect(tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
+        .groupValue, 'B');
+    await publish(tester);
+    expect(submissions, hasLength(1));
+    expect(submissions.single['result'], ['B']);
+    await finish(tester);
+  });
+
+  testWidgets('取消预选后退出重进，旧选项不能重新出现', (tester) async {
+    await mount(tester);
+    await select(tester, 'B');
+    tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
+        .onChanged(null);
+    await tester.pump();
+    await reenter(tester);
+    expect(tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
+        .groupValue, isNull);
+    await finish(tester);
+  });
+
+  testWidgets('简答题重进恢复输入框和实际提交内容', (tester) async {
+    (slide['problem'] as Map)['problemType'] = 5;
+    await mount(tester);
+    await tester.enterText(find.byType(TextField), '我核对后的答案');
+    await reenter(tester);
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '我核对后的答案');
+    await publish(tester);
+    expect(submissions.single['result']['content'], '我核对后的答案');
+    await finish(tester);
+  });
+
+  testWidgets('多空填空题重进后各空按原顺序恢复', (tester) async {
+    (slide['problem'] as Map)['problemType'] = 4;
+    (slide['problem'] as Map)['body'] = '第一空[填空1]，第二空[填空2]';
+    await mount(tester);
+    await tester.enterText(find.byType(TextField).at(0), '答案一');
+    await tester.enterText(find.byType(TextField).at(1), '答案二');
+    await reenter(tester);
+    expect(tester.widget<TextField>(find.byType(TextField).at(0))
+        .controller!.text, '答案一');
+    expect(tester.widget<TextField>(find.byType(TextField).at(1))
+        .controller!.text, '答案二');
+    await finish(tester);
+  });
+
+  testWidgets('服务端确认下课才清理草稿，退出重进不会写回旧答案', (tester) async {
+    await mount(tester);
+    await select(tester, 'B');
+    final Future<void> ending = state(tester).debugHandleMessage({
+      'op': 'hello', 'message': 'lesson finished',
+    });
+    await flushClassroomTasks(tester);
+    await ending;
+    final saved = await tester.runAsync(
+      () => AnswerDraftStore.readLesson('lesson'),
+    );
+    expect(saved!.finished, isTrue);
+    expect(saved.answers, isEmpty);
+    await reenter(tester);
+    expect(tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
+        .groupValue, isNull);
+    await publish(tester);
+    expect(submissions, isEmpty);
+    await finish(tester);
+  });
 
   testWidgets('无搜索缓存时直接提交预选答案，不等待搜索也不覆盖选项', (tester) async {
     await mount(tester);

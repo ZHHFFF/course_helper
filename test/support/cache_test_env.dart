@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:course_helper/cache/answer_cache.dart';
+import 'package:course_helper/cache/answer_draft_store.dart';
 import 'package:course_helper/cache/answer_queue.dart';
 import 'package:course_helper/cache/course_cache.dart';
 import 'package:course_helper/cache/ppt_cache.dart';
@@ -61,6 +62,7 @@ class CacheTestEnv {
 
   /// 收尾：还原 channel、删临时目录
   Future<void> dispose() async {
+    await AnswerDraftStore.flush();
     AnswerQueue.debugReset();
     AnswerCache.clearMemory();
     PptCache.clearMemory();

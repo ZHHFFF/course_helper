@@ -22,6 +22,7 @@ import '../api/answer_search.dart';
 import '../models/answer_result.dart';
 // [新增] PPT 缓存 + 后台识题
 import '../cache/answer_cache.dart';
+import '../cache/answer_draft_store.dart';
 import '../cache/answer_queue.dart';
 import '../cache/cached_image.dart';
 import '../cache/course_cache.dart';
@@ -239,34 +240,78 @@ class _PresentationPageState extends State<PresentationPage>
   /// 但**直接清空**又会把用户填好的答案弄丢 ——
   /// 「填完翻页看一眼再翻回来，答案没了」。
   /// 所以按 problemId 存一份，切回去能原样恢复。
-  final Map<String, List<String>> _answersByProblem = {};
-  final Map<String, String> _textAnswersByProblem = {};
+  final Map<String, AnswerDraft> _answerDrafts = {};
+  String? _answerOwnerPresentationId;
+  late final Future<void> _draftsLoaded;
+  bool _lessonFinished = false;
+  final TextEditingController _textAnswerController = TextEditingController();
+  final List<TextEditingController> _blankControllers = [];
 
-  /// 切题：先存下旧题的作答，再恢复新题的
+  Future<void> _loadSavedDrafts() async {
+    final saved = await AnswerDraftStore.readLesson(widget.lessonId);
+    if (!mounted || _lessonFinished) return;
+    _lessonFinished = saved.finished;
+    _answerDrafts.addAll(saved.answers);
+  }
+
+  void _syncAnswerControllers() {
+    final text = _textAnswer ?? '';
+    if (_textAnswerController.text != text) _textAnswerController.text = text;
+    final count = _currentProblem == null
+        ? 0
+        : AnswerFilling.blankCount(_currentProblem!.body);
+    while (_blankControllers.length < count) {
+      _blankControllers.add(TextEditingController());
+    }
+    for (var i = 0; i < _blankControllers.length; i++) {
+      final value = i < (_answer?.length ?? 0) ? _answer![i] : '';
+      if (_blankControllers[i].text != value) _blankControllers[i].text = value;
+    }
+  }
+
+  void _saveCurrentDraft() {
+    final problemId = _answerOwnerProblemId;
+    final presentationId = _answerOwnerPresentationId;
+    if (_lessonFinished || problemId == null || presentationId == null) return;
+    final draft = AnswerDraft(options: _answer, text: _textAnswer);
+    _answerDrafts[AnswerDraftStore.key(presentationId, problemId)] = draft;
+    unawaited(AnswerDraftStore.save(
+      widget.lessonId, presentationId, problemId, draft,
+    ));
+  }
+
+  /// 切题前保存旧题，按课件和题号恢复新题，避免不同课件的同名题串答案。
   void _syncAnswerOwner() {
     final newId = _currentProblem?.problemId;
-    if (newId == _answerOwnerProblemId) return;
-
-    // 1. 把旧题的作答存起来
-    final oldId = _answerOwnerProblemId;
-    if (oldId != null) {
-      final a = _answer;
-      if (a != null && a.any((k) => k.trim().isNotEmpty)) {
-        _answersByProblem[oldId] = List<String>.of(a);
-      }
-      final t = _textAnswer;
-      if (t != null && t.trim().isNotEmpty) {
-        _textAnswersByProblem[oldId] = t;
-      }
-    }
-
-    // 2. 换成新题的作答（没有就清空）
+    final presentationId = _currentPresentationId;
+    if (newId == _answerOwnerProblemId &&
+        presentationId == _answerOwnerPresentationId) return;
+    _saveCurrentDraft();
     _answerOwnerProblemId = newId;
-    _answer = newId == null ? null : _answersByProblem[newId]?.toList();
-    _textAnswer = newId == null ? null : _textAnswersByProblem[newId];
-    if (newId == null) {
+    _answerOwnerPresentationId = presentationId;
+    final draft = newId == null || presentationId == null
+        ? null
+        : _answerDrafts[AnswerDraftStore.key(presentationId, newId)];
+    _answer = draft?.options?.toList();
+    _textAnswer = draft?.text;
+    _syncAnswerControllers();
+    if (newId == null) _uploadedImageUrls.clear();
+  }
+
+  Future<void> _finishLessonDrafts() async {
+    _lessonFinished = true;
+    _autoSubmitQueue.clear();
+    _countdownTimer?.cancel();
+    setState(() {
+      _answerDrafts.clear();
+      _answer = null;
+      _textAnswer = null;
       _uploadedImageUrls.clear();
-    }
+      _selectedImages.clear();
+      _syncAnswerControllers();
+    });
+    await AnswerDraftStore.finishLesson(widget.lessonId);
+    await CourseCache.markFinished(widget.lessonId);
   }
 
   StreamSubscription<AnswerJobResult>? _answerSub;
@@ -276,6 +321,7 @@ class _PresentationPageState extends State<PresentationPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _draftsLoaded = _loadSavedDrafts();
     _answerSub = AnswerQueue.results.listen(_onAnswerReady);
     _initialize();
     _startForegroundService();
@@ -296,6 +342,7 @@ class _PresentationPageState extends State<PresentationPage>
 
   @override
   void dispose() {
+    _saveCurrentDraft();
     WidgetsBinding.instance.removeObserver(this);
     _answerSub?.cancel();
 
@@ -315,11 +362,7 @@ class _PresentationPageState extends State<PresentationPage>
     PptCache.clearMemory();
     AnswerCache.clearMemory();
 
-    // 离开课堂 = 这节课对本人结束了。缓存再留 24 小时，
-    // 防止「下课后还想回去翻两眼」时页面空白
-    if (_currentPresentationId != null) {
-      unawaited(CourseCache.markFinished(widget.lessonId));
-    }
+    // 返回主界面只离开页面；草稿保留到服务端确认课堂结束。
 
     // 主动关闭：置了它之后，断开回调不会再安排重连（否则页面都销毁了
     // 还在后台反复重连，白耗电）。代次 +1 让迟到的回调直接失效。
@@ -337,12 +380,19 @@ class _PresentationPageState extends State<PresentationPage>
     _ws?.close();
     _pageController.dispose();
     _scrollController.dispose();
+    _textAnswerController.dispose();
+    for (final controller in _blankControllers) {
+      controller.dispose();
+    }
     _stopForegroundService();
     super.dispose();
   }
 
   Future<void> _initialize() async {
+    await _draftsLoaded;
+    if (!mounted) return;
     await _checkToken();
+    if (!mounted) return;
 
     // ⚠️ 这里**曾经**每次进课堂都跑一遍 `CourseCache.cleanup()`
     // （结束标记超 24h 删 / 7 天无写入删）。2026-09-22 用户拍板
@@ -352,6 +402,7 @@ class _PresentationPageState extends State<PresentationPage>
 
     // 把本节课已有的答案缓存读进内存，切页时展示是同步的、不闪
     await AnswerCache.preload(widget.lessonId);
+    if (!mounted) return;
     AnswerQueue.resetCounters();
 
     _connectWebSocket(recheckTokenIfMissing: false);
@@ -376,14 +427,14 @@ class _PresentationPageState extends State<PresentationPage>
   /// 已经填过的指纹不会重复填，避免覆盖用户的手动修改。
   Future<void> _autoSelectIfCurrent(String hash) async {
     await AutoAnswerSetting.ensureLoaded();
-    if (!AutoAnswerSetting.autoSelect.value) return;
+    if (_lessonFinished || !AutoAnswerSetting.autoSelect.value) return;
     if (!mounted) return;
     if (_currentHash != hash) return; // 不是当前页的题，不抢填
 
     // 判据是「作答区有没有内容」，不是「有没有自动填过」。
     //
     // 因为切题时 `_syncAnswerOwner()` 会把 `_answer` 换成新题的值
-    // （旧题的存进 `_answersByProblem`，切回来能恢复）：
+    // （旧题的存进 `_answerDrafts`，切回来能恢复）：
     // 如果用「填过就不再填」的标记，A→B→A 切回来时 A 会被误判成
     // 已经处理过而不重新填。而「有内容就不动」同时兼顾了
     // 「不覆盖用户手动修改」。
@@ -416,7 +467,7 @@ class _PresentationPageState extends State<PresentationPage>
     String logTag = '自动答题',
   }) {
     final problem = _currentProblem;
-    if (problem == null || !mounted) return false;
+    if (problem == null || !mounted || _lessonFinished) return false;
 
     final raw = picked.answer.trim();
 
@@ -428,21 +479,33 @@ class _PresentationPageState extends State<PresentationPage>
         final count = AnswerFilling.blankCount(problem.body);
         final list = AnswerFilling.splitBlanks(raw, count);
         if (list.isEmpty) return false;
-        setState(() => _answer = list);
+        setState(() {
+          _answer = list;
+          _syncAnswerControllers();
+          _saveCurrentDraft();
+        });
         AppLogger.i(logTag, '已自动预选（填空 $count 空）：${list.join(" | ")}');
         return true;
 
       // ---- 填空题（没标记，UI 是单个输入框）----
       case AnswerField.fillSingle:
         if (raw.isEmpty) return false;
-        setState(() => _textAnswer = raw);
+        setState(() {
+          _textAnswer = raw;
+          _syncAnswerControllers();
+          _saveCurrentDraft();
+        });
         AppLogger.i(logTag, '已自动预选（填空）：$raw');
         return true;
 
       // ---- 简答题 ----
       case AnswerField.shortAnswer:
         if (raw.isEmpty) return false;
-        setState(() => _textAnswer = raw);
+        setState(() {
+          _textAnswer = raw;
+          _syncAnswerControllers();
+          _saveCurrentDraft();
+        });
         AppLogger.i(logTag, '已自动预选（简答）：$raw');
         return true;
 
@@ -453,7 +516,11 @@ class _PresentationPageState extends State<PresentationPage>
             .toList();
         final keys = picked.matchOptionKeys(options);
         if (keys.isEmpty) return false;
-        setState(() => _answer = keys);
+        setState(() {
+          _answer = keys;
+          _syncAnswerControllers();
+          _saveCurrentDraft();
+        });
         AppLogger.i(logTag, '已自动预选：${keys.join("、")}（${picked.source}）');
         return true;
     }
@@ -471,6 +538,7 @@ class _PresentationPageState extends State<PresentationPage>
   /// 走到提交那一步发现「有人正在提交」就**直接丢掉**了。
   /// 现在改成排队，前一道处理完接着处理下一道。
   Future<void> _maybeAutoSubmit(String problemId) async {
+    if (_lessonFinished) return;
     try {
       await AutoAnswerSetting.ensureLoaded();
       AppLogger.i(
@@ -544,7 +612,7 @@ class _PresentationPageState extends State<PresentationPage>
   ///
   /// 只由 [_maybeAutoSubmit] 的队列循环调用，保证同一时刻只有一道题在跑。
   Future<void> _doAutoSubmit(String problemId) async {
-    if (_autoSubmitted.contains(problemId)) return;
+    if (_lessonFinished || _autoSubmitted.contains(problemId)) return;
 
     try {
       // ---- 第 1 步：先定位并切到题目页 ----
@@ -601,6 +669,7 @@ class _PresentationPageState extends State<PresentationPage>
       final hash = _currentHash;
       bool isCurrentTarget() =>
           mounted &&
+          !_lessonFinished &&
           _currentPresentationId == targetPresentationId &&
           _currentSlideIndex == index &&
           _currentProblem?.problemId == targetProblemId &&
@@ -711,6 +780,7 @@ class _PresentationPageState extends State<PresentationPage>
       AppLogger.i('自动答题', '${delay.inMilliseconds}ms 后自动提交题目 $problemId');
       await Future<void>.delayed(delay);
       if (!mounted ||
+          _lessonFinished ||
           _currentPresentationId != targetPresentationId ||
           index >= _slideModels.length ||
           _slideModels[index].problem?.problemId != targetProblemId) {
@@ -756,7 +826,7 @@ class _PresentationPageState extends State<PresentationPage>
     final latest = <String, _AccountSubmitResult>{};
     var retries = 0;
 
-    while (pending.isNotEmpty && mounted) {
+    while (pending.isNotEmpty && mounted && !_lessonFinished) {
       final batch = await _submitForAccounts(snapshot, pending);
       for (final result in batch.accounts) {
         latest[result.user.uid] = result;
@@ -844,6 +914,7 @@ class _PresentationPageState extends State<PresentationPage>
   }) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
+      if (_lessonFinished) return null;
       if (stopWaiting?.call() ?? false) return _suggested[hash];
       final c = _suggested[hash];
       if (c != null) {
@@ -1398,8 +1469,8 @@ class _PresentationPageState extends State<PresentationPage>
       switch (op) {
         case 'hello':
           if (messageText == 'lesson finished') {
-            // 课堂结束 → 打标记，缓存再留 24 小时就清掉
-            unawaited(CourseCache.markFinished(widget.lessonId));
+            // 服务端确认结束才清除实际作答，普通退出保留草稿。
+            await _finishLessonDrafts();
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) {
                 ScaffoldMessenger.of(
@@ -1718,6 +1789,7 @@ class _PresentationPageState extends State<PresentationPage>
       () => _fetchPresentation(presentationId),
     );
     final presentation = await pending;
+    await _draftsLoaded;
     if (identical(_presentationLoads[presentationId], pending)) {
       _presentationLoads.remove(presentationId);
     }
@@ -2849,6 +2921,7 @@ class _PresentationPageState extends State<PresentationPage>
 
   /// 手动提交仍取当前作答区；自动提交只走预先冻结的 _SubmitSnapshot。
   Future<void> _submitAnswer() async {
+    if (_lessonFinished) return;
     final problemId = _currentProblem?.problemId ?? _timelineProblemId;
     if (problemId == null) return;
 
@@ -3117,6 +3190,7 @@ class _PresentationPageState extends State<PresentationPage>
           children: [
             Expanded(
               child: TextField(
+                controller: _textAnswerController,
                 decoration: const InputDecoration(
                   hintText: '请输入答案',
                   border: OutlineInputBorder(),
@@ -3124,6 +3198,7 @@ class _PresentationPageState extends State<PresentationPage>
                 maxLines: 3,
                 onChanged: (value) {
                   _textAnswer = value;
+                  _saveCurrentDraft();
                 },
               ),
             ),
@@ -3200,12 +3275,14 @@ class _PresentationPageState extends State<PresentationPage>
 
     if (blanks.isEmpty) {
       return TextField(
+        controller: _textAnswerController,
         decoration: const InputDecoration(
           hintText: '请输入答案',
           border: OutlineInputBorder(),
         ),
         onChanged: (value) {
           _textAnswer = value;
+          _saveCurrentDraft();
         },
       );
     }
@@ -3216,6 +3293,7 @@ class _PresentationPageState extends State<PresentationPage>
         return Padding(
           padding: const EdgeInsets.only(bottom: 12),
           child: TextField(
+            controller: _blankControllers[index],
             decoration: InputDecoration(
               labelText: '填空${index + 1}',
               hintText: '请输入第${index + 1}个空的答案',
@@ -3228,6 +3306,7 @@ class _PresentationPageState extends State<PresentationPage>
               }
               answers[index] = value;
               _answer = answers;
+              _saveCurrentDraft();
             },
           ),
         );
@@ -3248,6 +3327,7 @@ class _PresentationPageState extends State<PresentationPage>
       onChanged: (value) {
         setState(() {
           _answer = value != null ? [value] : null;
+          _saveCurrentDraft();
         });
       },
       child: Column(
@@ -3292,6 +3372,7 @@ class _PresentationPageState extends State<PresentationPage>
                 selectedKeys.remove(key);
               }
               _answer = selectedKeys.toList();
+              _saveCurrentDraft();
             });
           },
         );
