@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../models/user.dart';
@@ -114,7 +115,7 @@ class QRCodeSign implements SignStrategy {
     // 权限已获得，打开扫描页面
     Navigator.push(
       context,
-      MaterialPageRoute(
+      MiuixPageRoute(
         builder: (context) => ScanPage(
           onScanResult: (String data) async {
             state.signParams.qrCodeData = data;
