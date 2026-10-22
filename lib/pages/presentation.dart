@@ -599,52 +599,6 @@ class _PresentationPageState extends State<PresentationPage>
       }
 
       final hash = _currentHash;
-      if (hash == null) {
-        AppLogger.w('自动答题', '第 ${index + 1} 页没识别到题目，放弃自动提交');
-        return;
-      }
-
-      // 先确认这题确实被扫描器收录了。
-      //
-      // 没收录 = AI 根本没搜过它（题干为空、或题目整个画成图片被标记成
-      // 需要识图）。这种情况下等下去也没用，直接放弃，别白等 25 秒。
-      final scanned = _scan.byHash[hash];
-      if (scanned == null) {
-        AppLogger.w('自动答题', '指纹 ${_short(hash)} 不在扫描结果里（题干为空或题目是图片），放弃自动提交');
-        return;
-      }
-      if (scanned.needsVision) {
-        AppLogger.w('自动答题', '这题需要识图，AI 文本检索拿不到答案，放弃自动提交');
-        return;
-      }
-
-      // ---- 第 2 步：等答案就绪 ----
-      //
-      // AI 检索一道题要 3~6 秒。老师发题那一刻答案大概率还没回来，
-      // 原来这里是「没答案就 return」→ 结果什么都不做。
-      // 现在改成最多等 [answerWait] 秒。
-      var cached = _suggested[hash];
-      if (cached == null || !cached.usable) {
-        // 等答案的时间**不能超过本题的剩余作答时间** ——
-        // 否则等到答案了，题也早就关闭、交不上去了。
-        // 留 2 秒余量给「填写 + 提交」这两步。
-        final remain = _countdownSeconds;
-        final budget = (remain != null && remain > 0)
-            ? Duration(seconds: (remain - 2).clamp(1, answerWait.inSeconds))
-            : answerWait;
-        AppLogger.i(
-          '自动答题',
-          '答案还没搜好，最多等 ${budget.inSeconds}s'
-              '（本题剩余 ${remain == null || remain <= 0 ? "不限时" : "${remain}s"}）',
-        );
-        cached = await _waitForAnswer(hash, timeout: budget);
-      }
-      if (cached == null || !cached.usable || cached.results.isEmpty) {
-        AppLogger.w('自动答题', '等到超时仍没拿到可用答案（status=${cached?.status}），放弃自动提交');
-        return;
-      }
-      if (!mounted) return;
-
       bool isCurrentTarget() =>
           mounted &&
           _currentPresentationId == targetPresentationId &&
@@ -653,29 +607,85 @@ class _PresentationPageState extends State<PresentationPage>
           _answerOwnerProblemId == targetProblemId &&
           _currentHash == hash;
 
-      // ---- 第 2.5 步：确认还停在题目所在的页 ----
-      //
-      // 等答案的这几秒里，老师完全可能翻页（slide / slidenav 会把用户带走）。
-      // 这时候往下走，答案会被填到**当前页别的题**上，提交也就交错了题。
-      // 所以提交前必须复核一次，不在了就切回去。
-      if (_currentSlideIndex != index) {
-        if (_currentPresentationId != targetPresentationId) return;
-        AppLogger.w(
-          '自动答题',
-          '等答案期间页面被翻到第 ${_currentSlideIndex + 1} 页，切回第 ${index + 1} 页',
-        );
-        _toSlide(index + 1, animate: false);
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-      }
-      if (!isCurrentTarget()) {
-        AppLogger.w('自动答题', '题目 $problemId 的页面或作答归属已改变，放弃自动提交');
-        return;
-      }
-
-      // ---- 第 3 步：填答案 ----
+      // 已有作答优先：手动搜题回填或直接选择的答案不依赖扫描和检索缓存。
+      // 切到目标题后已恢复它自己的作答，避免把别题的答案提交到这里。
       if (!_isAnswerFilled()) {
-        _fillAnswerSilently(scanned.question, cached.results.first);
-        await Future<void>.delayed(const Duration(milliseconds: 150));
+        if (hash == null) {
+          AppLogger.w('自动答题', '第 ${index + 1} 页没识别到题目，放弃自动提交');
+          return;
+        }
+
+        // 先确认这题确实被扫描器收录了。
+        //
+        // 没收录 = AI 根本没搜过它（题干为空、或题目整个画成图片被标记成
+        // 需要识图）。这种情况下等下去也没用，直接放弃，别白等 25 秒。
+        final scanned = _scan.byHash[hash];
+        if (scanned == null) {
+          AppLogger.w('自动答题', '指纹 ${_short(hash)} 不在扫描结果里（题干为空或题目是图片），放弃自动提交');
+          return;
+        }
+        if (scanned.needsVision) {
+          AppLogger.w('自动答题', '这题需要识图，AI 文本检索拿不到答案，放弃自动提交');
+          return;
+        }
+
+        // ---- 第 2 步：等答案就绪 ----
+        //
+        // AI 检索一道题要 3~6 秒。老师发题那一刻答案大概率还没回来，
+        // 原来这里是「没答案就 return」→ 结果什么都不做。
+        // 现在改成最多等 [answerWait] 秒。
+        var cached = _suggested[hash];
+        if (cached == null || !cached.usable) {
+          // 等答案的时间**不能超过本题的剩余作答时间** ——
+          // 否则等到答案了，题也早就关闭、交不上去了。
+          // 留 2 秒余量给「填写 + 提交」这两步。
+          final remain = _countdownSeconds;
+          final budget = (remain != null && remain > 0)
+              ? Duration(seconds: (remain - 2).clamp(1, answerWait.inSeconds))
+              : answerWait;
+          AppLogger.i(
+            '自动答题',
+            '答案还没搜好，最多等 ${budget.inSeconds}s'
+                '（本题剩余 ${remain == null || remain <= 0 ? "不限时" : "${remain}s"}）',
+          );
+          cached = await _waitForAnswer(
+            hash,
+            timeout: budget,
+            stopWaiting: () => isCurrentTarget() && _isAnswerFilled(),
+          );
+        }
+        if (!mounted) return;
+
+        // ---- 第 2.5 步：确认还停在题目所在的页 ----
+        //
+        // 等答案的这几秒里，老师完全可能翻页（slide / slidenav 会把用户带走）。
+        // 这时候往下走，答案会被填到**当前页别的题**上，提交也就交错了题。
+        // 所以提交前必须复核一次，不在了就切回去。
+        if (_currentSlideIndex != index) {
+          if (_currentPresentationId != targetPresentationId) return;
+          AppLogger.w(
+            '自动答题',
+            '等答案期间页面被翻到第 ${_currentSlideIndex + 1} 页，切回第 ${index + 1} 页',
+          );
+          _toSlide(index + 1, animate: false);
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+        }
+        if (!isCurrentTarget()) {
+          AppLogger.w('自动答题', '题目 $problemId 的页面或作答归属已改变，放弃自动提交');
+          return;
+        }
+
+        // ---- 第 3 步：填答案 ----
+        if (!_isAnswerFilled()) {
+          if (cached == null || !cached.usable || cached.results.isEmpty) {
+            AppLogger.w('自动答题', '等到超时仍没拿到可用答案（status=${cached?.status}），放弃自动提交');
+            return;
+          }
+          _fillAnswerSilently(scanned.question, cached.results.first);
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+        }
+      } else {
+        AppLogger.i('自动答题', '题目 $problemId 已有作答，直接使用预选答案');
       }
 
       if (!isCurrentTarget() || !_isAnswerFilled()) {
@@ -723,7 +733,7 @@ class _PresentationPageState extends State<PresentationPage>
   Future<void> _submitAutoSnapshot(
     _SubmitSnapshot snapshot,
     String ownerProblemId,
-    String hash,
+    String? hash,
     String? presentationId,
   ) async {
     final accounts = List<User>.of(AccountManager.allAccounts);
@@ -830,9 +840,11 @@ class _PresentationPageState extends State<PresentationPage>
   Future<CachedAnswer?> _waitForAnswer(
     String hash, {
     Duration timeout = const Duration(seconds: 25),
+    bool Function()? stopWaiting,
   }) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
+      if (stopWaiting?.call() ?? false) return _suggested[hash];
       final c = _suggested[hash];
       if (c != null) {
         if (c.usable) return c;
