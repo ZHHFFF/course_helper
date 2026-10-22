@@ -1,5 +1,6 @@
 import 'package:course_helper/api/api_service.dart';
 import 'package:course_helper/cache/course_cache.dart';
+import 'package:course_helper/cache/answer_draft_store.dart';
 import 'package:course_helper/platform.dart';
 import 'package:course_helper/session/account.dart';
 import 'package:flutter/material.dart';
@@ -35,7 +36,7 @@ Widget classroomTestApp(Widget child) => MaterialApp(
   home: MiuixTheme(data: MiuixThemeData.light(), child: child),
 );
 
-/// 保持原来的 8 轮 pump/runAsync；不能用 settle 吞掉受控请求竞态。
+/// 保留 8 轮 pump/runAsync，另排空新增的草稿 I/O；不 settle 受控请求或定时器。
 Future<void> flushClassroomTasks(WidgetTester tester) async {
   for (var i = 0; i < 8; i++) {
     await tester.pump(const Duration(milliseconds: 1));
@@ -43,6 +44,21 @@ Future<void> flushClassroomTasks(WidgetTester tester) async {
       () => Future<void>.delayed(const Duration(milliseconds: 5)),
     );
   }
+  await completeClassroomIo(tester, AnswerDraftStore.flush());
+}
+
+/// 文件 I/O 使用真实时钟，队列回调仍需 Widget Test 的虚拟时钟推进。
+Future<void> completeClassroomIo(WidgetTester tester, Future<void> task) async {
+  var completed = false;
+  final completion = task.whenComplete(() => completed = true);
+  for (var i = 0; i < 200 && !completed; i++) {
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 5)),
+    );
+  }
+  expect(completed, isTrue, reason: '异步文件任务应在有界等待内完成');
+  await completion;
 }
 
 Map<String, dynamic> emptyPresentationResponse(int pages) => {
