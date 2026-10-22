@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_miuix/miuix.dart';
 import 'package:flutter_baidu_mapapi_base/flutter_baidu_mapapi_base.dart';
@@ -887,7 +888,7 @@ class SignLocationUi {
 
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      MiuixPageRoute(
         builder: (context) => MiuixScaffold(
           topBar: MiuixTopAppBar(
             title: '选择签到位置',

@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 // ============================================================================
 // 课件 Tab（底栏第 3 个）
 // ============================================================================
@@ -459,7 +460,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
       }
       Navigator.push(
         context,
-        MaterialPageRoute(
+        MiuixPageRoute(
           builder: (_) => CourseContentPage(
             courseId: entry.courseId,
             courseName: entry.name,
@@ -1622,7 +1623,7 @@ class _CoursewarePageState extends State<CoursewarePage> {
                         final entry = _entry;
                         Navigator.push(
                           context,
-                          MaterialPageRoute(
+                          MiuixPageRoute(
                             builder: (_) => PresentationPage(
                               lessonId: act.coursewareId,
                               title: act.title,

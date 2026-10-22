@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_miuix/miuix.dart';
 
@@ -98,7 +99,7 @@ class _CourseContentPageState extends State<CourseContentPage> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
+                MiuixPageRoute(
                   builder: (context) => CourseSettingsPage(
                     courseId: widget.courseId,
                   ),

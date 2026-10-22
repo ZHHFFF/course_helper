@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'package:flutter/material.dart';
 // [新增] Miuix：顶栏 / 脚手架按「所有规范都按 miuix」迁移
 import 'package:flutter_miuix/miuix.dart';
@@ -357,7 +358,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   Future<void> _navigateToPasswordLogin() async {
     final result = await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const LoginPage(initialLoginType: 'password')),
+      MiuixPageRoute(builder: (_) => const LoginPage(initialLoginType: 'password')),
     );
     if (result == true) {
       await _loadAccounts();
@@ -367,7 +368,7 @@ class _AccountsPageState extends State<AccountsPage> with TickerProviderStateMix
   Future<void> _navigateToCaptchaLogin() async {
     final result = await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const LoginPage(initialLoginType: 'captcha')),
+      MiuixPageRoute(builder: (_) => const LoginPage(initialLoginType: 'captcha')),
     );
     if (result == true) {
       await _loadAccounts();

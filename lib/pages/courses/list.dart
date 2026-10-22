@@ -1,3 +1,4 @@
+import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:dio/dio.dart';
@@ -51,7 +52,7 @@ class CoursesPage extends StatefulWidget {
       case ActiveType.scheduledSignIn:
         Navigator.push(
           context,
-          MaterialPageRoute(
+          MiuixPageRoute(
             builder: (context) => SignInPage(
               active: active,
               courseId: courseId,
@@ -65,7 +66,7 @@ class CoursesPage extends StatefulWidget {
       case ActiveType.topicDiscuss:
         Navigator.push(
           context,
-          MaterialPageRoute(
+          MiuixPageRoute(
             builder: (context) => TopicDiscussPage(active: active),
           ),
         );
@@ -74,7 +75,7 @@ class CoursesPage extends StatefulWidget {
       case ActiveType.quiz:
         Navigator.push(
           context,
-          MaterialPageRoute(
+          MiuixPageRoute(
             builder: (context) => QuizPage(
               active: active,
               courseId: courseId,
@@ -87,7 +88,7 @@ class CoursesPage extends StatefulWidget {
       case ActiveType.evaluation:
         Navigator.push(
           context,
-          MaterialPageRoute(
+          MiuixPageRoute(
             builder: (context) => EvaluatePage(
               active: active,
               courseId: courseId,
@@ -100,7 +101,7 @@ class CoursesPage extends StatefulWidget {
       case ActiveType.vote:
         Navigator.push(
           context,
-          MaterialPageRoute(
+          MiuixPageRoute(
             builder: (context) => VotePage(
               active: active,
               courseId: courseId,
@@ -113,7 +114,7 @@ class CoursesPage extends StatefulWidget {
       case ActiveType.questionnaire:
         Navigator.push(
           context,
-          MaterialPageRoute(
+          MiuixPageRoute(
             builder: (context) => QuestionnairePage(
               active: active,
               courseId: courseId,
@@ -444,7 +445,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
               if (!mounted) return;
               Navigator.push(
                 context,
-                MaterialPageRoute(
+                MiuixPageRoute(
                   builder: (context) => SignInPage(
                     active: Active(
                         type: 2,
@@ -649,7 +650,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(
+                  MiuixPageRoute(
                     builder: (context) => ScanPage(
                       onScanResult: handleScanContent,
                     ),
@@ -712,14 +713,14 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                         Navigator.push(
                           context,
                           PlatformManager().isChaoxing ?
-                          MaterialPageRoute(
+                          MiuixPageRoute(
                             builder: (context) => CourseContentPage(
                               courseId: course.courseId,
                               courseName: course.name,
                               classId: course.classId,
                               cpi: course.cpi!
                             ),
-                          ) : MaterialPageRoute(
+                          ) : MiuixPageRoute(
                             builder: (context) => PresentationPage(
                               lessonId: course.lessonId!,
                               title: course.name,
