@@ -35,22 +35,34 @@ class AnswerDraftStore {
 
   // 所有读、改、写串行化：快速切题/退出重进不能读到较早版本，
   // 课堂结束清理后，迟到的保存也不能把答案写回去。
-  static Future<void> _pending = Future<void>.value();
+  static Future<void>? _pending;
 
   static Future<T> _serial<T>(Future<T> Function() action) {
-    final result = _pending.then((_) => action());
-    _pending = result.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    final result = (_pending ?? Future<void>.value()).then((_) => action());
+    late final Future<void> pending;
+    // 空闲时释放已完成的尾任务，避免静态队列继续持有调用者的异步上下文。
+    void clearIfIdle() {
+      if (identical(_pending, pending)) _pending = null;
+    }
+
+    pending = result.then<void>(
+      (_) => clearIfIdle(),
+      onError: (Object _, StackTrace _) => clearIfIdle(),
+    );
+    _pending = pending;
     return result;
   }
 
-  static Future<void> flush() => _pending;
+  static Future<void> flush() => _pending ?? Future<void>.value();
 
   static String key(String presentationId, String problemId) =>
       '${presentationId.length}:$presentationId$problemId';
 
   static Future<File> _file(String lessonId) async => File(
-    p.join((await CourseCache.lessonDir(lessonId, create: false)).path,
-        'answer_drafts.json'),
+    p.join(
+      (await CourseCache.lessonDir(lessonId, create: false)).path,
+      'answer_drafts.json',
+    ),
   );
 
   static Future<LessonAnswerDrafts> _read(String lessonId) async {

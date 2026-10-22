@@ -96,13 +96,19 @@ void main() {
     await loading;
     await tester.pump(const Duration(milliseconds: 400));
     // 课件加载后才加入提交账号，避免测试触发真实签到和 WebSocket。
-    final user = User.fromJson({'uid': 'test-user', 'platform': 'rainClassroom'});
+    final user = User.fromJson({
+      'uid': 'test-user',
+      'platform': 'rainClassroom',
+    });
     AccountManager.allAccounts.add(user);
-    RCCourseApi(user).debugStoreTokensForLesson('lesson', 'bearer', 'lesson-token');
+    RCCourseApi(
+      user,
+    ).debugStoreTokensForLesson('lesson', 'bearer', 'lesson-token');
   }
 
   Future<void> select(WidgetTester tester, String value) async {
-    tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
+    tester
+        .widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
         .onChanged(value);
     await tester.pump();
   }
@@ -124,7 +130,6 @@ void main() {
 
   Future<void> reenter(WidgetTester tester) async {
     await finish(tester);
-    await tester.runAsync(AnswerDraftStore.flush);
     AccountManager.allAccounts.clear();
     await mount(tester);
   }
@@ -133,9 +138,16 @@ void main() {
     await mount(tester);
     await select(tester, 'B');
     await reenter(tester);
-    expect(await tester.runAsync(() => CourseCache.finishedAt('lesson')), isNull);
-    expect(tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
-        .groupValue, 'B');
+    expect(
+      await tester.runAsync(() => CourseCache.finishedAt('lesson')),
+      isNull,
+    );
+    expect(
+      tester
+          .widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
+          .groupValue,
+      'B',
+    );
     await publish(tester);
     expect(submissions, hasLength(1));
     expect(submissions.single['result'], ['B']);
@@ -145,12 +157,17 @@ void main() {
   testWidgets('取消预选后退出重进，旧选项不能重新出现', (tester) async {
     await mount(tester);
     await select(tester, 'B');
-    tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
+    tester
+        .widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
         .onChanged(null);
     await tester.pump();
     await reenter(tester);
-    expect(tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
-        .groupValue, isNull);
+    expect(
+      tester
+          .widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
+          .groupValue,
+      isNull,
+    );
     await finish(tester);
   });
 
@@ -159,8 +176,10 @@ void main() {
     await mount(tester);
     await tester.enterText(find.byType(TextField), '我核对后的答案');
     await reenter(tester);
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        '我核对后的答案');
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '我核对后的答案',
+    );
     await publish(tester);
     expect(submissions.single['result']['content'], '我核对后的答案');
     await finish(tester);
@@ -173,29 +192,37 @@ void main() {
     await tester.enterText(find.byType(TextField).at(0), '答案一');
     await tester.enterText(find.byType(TextField).at(1), '答案二');
     await reenter(tester);
-    expect(tester.widget<TextField>(find.byType(TextField).at(0))
-        .controller!.text, '答案一');
-    expect(tester.widget<TextField>(find.byType(TextField).at(1))
-        .controller!.text, '答案二');
+    expect(
+      tester.widget<TextField>(find.byType(TextField).at(0)).controller!.text,
+      '答案一',
+    );
+    expect(
+      tester.widget<TextField>(find.byType(TextField).at(1)).controller!.text,
+      '答案二',
+    );
     await finish(tester);
   });
 
   testWidgets('服务端确认下课才清理草稿，退出重进不会写回旧答案', (tester) async {
     await mount(tester);
     await select(tester, 'B');
-    final Future<void> ending = state(tester).debugHandleMessage({
-      'op': 'hello', 'message': 'lesson finished',
-    });
+    final Future<void> ending = state(
+      tester,
+    ).debugHandleMessage({'op': 'hello', 'message': 'lesson finished'});
     await flushClassroomTasks(tester);
-    await ending;
+    await completeClassroomIo(tester, ending);
     final saved = await tester.runAsync(
       () => AnswerDraftStore.readLesson('lesson'),
     );
     expect(saved!.finished, isTrue);
     expect(saved.answers, isEmpty);
     await reenter(tester);
-    expect(tester.widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
-        .groupValue, isNull);
+    expect(
+      tester
+          .widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
+          .groupValue,
+      isNull,
+    );
     await publish(tester);
     expect(submissions, isEmpty);
     await finish(tester);

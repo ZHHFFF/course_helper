@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_miuix/miuix.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 import 'package:course_helper/api/api_service.dart';
 import 'package:course_helper/cache/cached_image.dart';
 import 'package:course_helper/pages/presentation.dart';
@@ -23,6 +24,16 @@ void main() {
 
   for (final coverAlt in [' https://img/alt.png ', '', null]) {
     testWidgets('实时课堂保持 coverAlt 原值而不回退到 cover：$coverAlt', (tester) async {
+      // 此用例只验证 URL 与导航；UI 和后台预取使用的图片均走本地夹具。
+      await tester.runAsync(() async {
+        for (final url in [
+          'https://img/cover.png',
+          if (coverAlt != null && coverAlt.trim().isNotEmpty) coverAlt,
+        ]) {
+          final file = await SlideImageStore.fileFor('lesson', url);
+          await file.writeAsBytes(img.encodePng(img.Image(width: 2, height: 2)));
+        }
+      });
       ApiService.debugSetHttpClientAdapter(
         JsonHttpAdapter(
           (_) async => {

@@ -285,7 +285,9 @@ class _PresentationPageState extends State<PresentationPage>
     final newId = _currentProblem?.problemId;
     final presentationId = _currentPresentationId;
     if (newId == _answerOwnerProblemId &&
-        presentationId == _answerOwnerPresentationId) return;
+        presentationId == _answerOwnerPresentationId) {
+      return;
+    }
     _saveCurrentDraft();
     _answerOwnerProblemId = newId;
     _answerOwnerPresentationId = presentationId;
