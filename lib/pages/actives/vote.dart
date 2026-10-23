@@ -200,7 +200,7 @@ class _VotePageState extends State<VotePage> {
 
   Widget _buildOptionCard(Map<String, dynamic> option, int index) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      padding: const EdgeInsets.symmetric(vertical: 6),
       child: MiuixCard(
         child: RadioListTile<String>(
           title: Text(

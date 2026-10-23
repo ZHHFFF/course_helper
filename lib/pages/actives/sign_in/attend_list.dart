@@ -131,7 +131,7 @@ class _AttendListWidgetState extends State<AttendListWidget> {
             errorBuilder: (context, error, stackTrace) => Container(
               width: 50,
               height: 60,
-              color: Colors.grey[200],
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
               child: const Icon(Icons.broken_image, size: 24)
             )
           ),
@@ -142,20 +142,20 @@ class _AttendListWidgetState extends State<AttendListWidget> {
         extraWidget = Flexible(
           child: Text(
             title,
-            style: const TextStyle(fontSize: 12, color: Colors.grey),
+            style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         );
       }
     }
 
     return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+      margin: const EdgeInsets.symmetric(vertical: 6),
       child: InkWell(
         onTap: () => {
           if (title != null) _handleItemClick(title, longitude, latitude)
         },
         child: Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.all(16),
           child: Row(
           children: [
             AvatarWidget(
@@ -175,7 +175,7 @@ class _AttendListWidgetState extends State<AttendListWidget> {
                   ),
                   Text(
                     timeFormatted,
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
                   )
                 ],
               ),
@@ -220,7 +220,7 @@ class _AttendListWidgetState extends State<AttendListWidget> {
     
     if (signedList.isEmpty) {
       return Card(
-        margin: const EdgeInsets.symmetric(horizontal: 8),
+        margin: EdgeInsets.zero,
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
@@ -244,7 +244,7 @@ class _AttendListWidgetState extends State<AttendListWidget> {
     }
 
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 8),
+      margin: EdgeInsets.zero,
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
@@ -270,7 +270,7 @@ class _AttendListWidgetState extends State<AttendListWidget> {
               ),
               Icon(
                 _isExpanded ? Icons.expand_less : Icons.expand_more,
-                color: Colors.grey
+                color: Theme.of(context).colorScheme.onSurfaceVariant
               ),
             ],
           ),

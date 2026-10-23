@@ -432,10 +432,10 @@ class SignInPageState extends State<SignInPage> {
         children: [
           SingleChildScrollView(
             padding: EdgeInsets.only(
-              top: contentPadding.top + 20,
-              bottom: contentPadding.bottom + 20,
-              left: 20,
-              right: 20,
+              top: contentPadding.top + 16,
+              bottom: contentPadding.bottom + 16,
+              left: 16,
+              right: 16,
             ),
             child: Column(
               children: [

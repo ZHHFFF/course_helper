@@ -240,7 +240,7 @@ class _EvaluatePageState extends State<EvaluatePage> {
     final content = norm['content'];
     
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: MiuixCard(
         child: Padding(
         padding: const EdgeInsets.all(16),
@@ -367,9 +367,7 @@ class _EvaluatePageState extends State<EvaluatePage> {
                         })
                       else
                         // 单一总分模式
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          child: TextField(
+                        TextField(
                             controller: _totalScoreController,
                             keyboardType: TextInputType.number,
                             inputFormatters: [
@@ -390,14 +388,11 @@ class _EvaluatePageState extends State<EvaluatePage> {
                               border: OutlineInputBorder(),
                             ),
                           ),
-                        ),
                       
                       const SizedBox(height: 16),
                       
                       // 评语输入框
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: TextField(
+                      TextField(
                           controller: _commentController,
                           maxLines: 5,
                           decoration: const InputDecoration(
@@ -406,7 +401,6 @@ class _EvaluatePageState extends State<EvaluatePage> {
                             border: OutlineInputBorder(),
                           ),
                         ),
-                      ),
                       
                       const SizedBox(height: 20),
                       

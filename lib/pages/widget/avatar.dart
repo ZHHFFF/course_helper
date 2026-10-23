@@ -45,7 +45,7 @@ class AvatarWidget extends StatefulWidget {
   /// 默认图标大小，默认40
   final double iconSize;
   
-  /// 默认图标的颜色，默认Colors.grey[400]
+  /// 默认图标颜色跟随主题的次要内容色。
   final Color? iconColor;
   
   /// 加载指示器的线宽，默认2
@@ -134,7 +134,7 @@ class _AvatarWidgetState extends State<AvatarWidget> {
           return Icon(
             Icons.person,
             size: widget.iconSize,
-            color: widget.iconColor ?? Colors.grey[400],
+            color: widget.iconColor ?? Theme.of(context).colorScheme.onSurfaceVariant,
           );
         },
       );
@@ -177,7 +177,7 @@ class _AvatarWidgetState extends State<AvatarWidget> {
           return Icon(
             Icons.person,
             size: widget.iconSize,
-            color: widget.iconColor ?? Colors.grey[400],
+            color: widget.iconColor ?? Theme.of(context).colorScheme.onSurfaceVariant,
           );
         },
       );
@@ -194,7 +194,7 @@ class _AvatarWidgetState extends State<AvatarWidget> {
     return Icon(
       Icons.person,
       size: widget.iconSize,
-      color: widget.iconColor ?? Colors.grey[400],
+      color: widget.iconColor ?? Theme.of(context).colorScheme.onSurfaceVariant,
     );
   }
 }
