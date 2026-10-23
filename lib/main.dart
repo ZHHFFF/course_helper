@@ -3,7 +3,7 @@ import 'package:course_helper/navigation/miuix_page_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-// [移除] dynamic_color：已取消 Material You 动态取色，改为固定主题色 + 纯白/纯黑背景
+// 固定 Miuix 色板；Material 兼容控件与 Miuix 共用 app_theme.dart。
 // [新增] flutter_miuix：HyperOS 设计语言（Miuix）组件库。
 // 用户已拍板「所有规范都按 miuix」，后续底栏与各页面逐步迁移到 Miuix 组件。
 import 'package:flutter_miuix/miuix.dart';
@@ -27,6 +27,7 @@ import './pages/widget/liquid_glass_shader_filter.dart';
 // [新增] 深浅色外观设置（见 setting/theme_setting.dart）
 import './setting/theme_setting.dart';
 import './navigation/page_transitions.dart';
+import './theme/app_theme.dart';
 import './api/api_service.dart';
 import './session/cookie.dart';
 import './session/account.dart';
@@ -151,6 +152,8 @@ class _MyAppState extends State<MyApp> {
             navigatorKey: navigatorKey,
             navigatorObservers: [_backDispatcher],
             title: '课程助手',
+            // Miuix 主题直接切换；兼容控件同步切换，避免两套色板短暂分离。
+            themeAnimationDuration: Duration.zero,
             locale: const Locale('zh', 'CN'),
             supportedLocales: const [Locale('zh', 'CN'), Locale('en', 'US')],
             localizationsDelegates: const [
@@ -158,10 +161,15 @@ class _MyAppState extends State<MyApp> {
               GlobalWidgetsLocalizations.delegate,
               GlobalCupertinoLocalizations.delegate,
             ],
-            // [改动] 取消 Material You 动态取色（不再跟随壁纸），改为固定主题色 + 纯白/纯黑背景
-            // 原来的 DynamicColorBuilder 已移除，因此 dynamic_color 依赖不再需要
-            theme: _buildLightTheme(pageTransitions: pageTransitions),
-            darkTheme: _buildDarkTheme(pageTransitions: pageTransitions),
+            // Material 与 Miuix 共用同一套颜色和排版，覆盖输入、弹窗等兼容控件。
+            theme: appMaterialTheme(
+              brightness: Brightness.light,
+              pageTransitions: pageTransitions,
+            ),
+            darkTheme: appMaterialTheme(
+              brightness: Brightness.dark,
+              pageTransitions: pageTransitions,
+            ),
             themeMode: themeMode,
             builder: (context, child) {
               return ThemeSetting.blurScope(_MiuixScope(child: child));
@@ -184,66 +192,6 @@ class _MyAppState extends State<MyApp> {
           );
         },
       ),
-    );
-  }
-
-  /// 浅色主题：纯白背景 + Miuix 蓝色主色（seed 0xFF3482FF）
-  static ThemeData _buildLightTheme({
-    required PageTransitionsTheme pageTransitions,
-  }) {
-    final base = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF3482FF),
-      brightness: Brightness.light,
-    );
-    return ThemeData(
-      useMaterial3: true,
-      colorScheme: base.copyWith(
-        surface: Colors.white,
-        surfaceContainerLowest: Colors.white,
-        surfaceContainerLow: Colors.white,
-        surfaceContainer: const Color(0xFFF7F7F9),
-        surfaceContainerHigh: const Color(0xFFF2F2F5),
-        surfaceContainerHighest: const Color(0xFFECECF0),
-        onSurface: const Color(0xFF1A1A1F),
-        onSurfaceVariant: const Color(0xFF6A6A78),
-        outlineVariant: const Color(0xFFE4E4EA),
-      ),
-      scaffoldBackgroundColor: Colors.white,
-      pageTransitionsTheme: pageTransitions,
-    );
-  }
-
-  /// 深色主题：纯黑背景（真黑，非灰黑）
-  static ThemeData _buildDarkTheme({
-    required PageTransitionsTheme pageTransitions,
-  }) {
-    final base = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF3482FF),
-      brightness: Brightness.dark,
-    );
-    return ThemeData(
-      useMaterial3: true,
-      colorScheme: base.copyWith(
-        // 真黑背景
-        surface: Colors.black,
-        surfaceContainerLowest: Colors.black,
-        // 卡片层级：从 #101014 起，逐级提亮，保证在纯黑上可分辨
-        surfaceContainerLow: const Color(0xFF101014),
-        surfaceContainer: const Color(0xFF16161B),
-        surfaceContainerHigh: const Color(0xFF1E1E24),
-        surfaceContainerHighest: const Color(0xFF27272E),
-        onSurface: const Color(0xFFF2F2F5),
-        onSurfaceVariant: const Color(0xFF9A9AA8),
-        outlineVariant: const Color(0xFF33333C),
-      ),
-      scaffoldBackgroundColor: Colors.black,
-      // Card 默认用 surfaceContainerLow，显式再指定一次避免主题推导差异
-      cardTheme: CardThemeData(
-        color: const Color(0xFF101014),
-        elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-      pageTransitionsTheme: pageTransitions,
     );
   }
 }
@@ -272,7 +220,7 @@ class _MiuixScope extends StatelessWidget {
             return MediaQuery(
               data: mq.copyWith(textScaler: TextScaler.linear(scale)),
               child: MiuixTheme(
-                data: MiuixThemeData.of(brightness),
+                data: appMiuixTheme(brightness),
                 child: AnnotatedRegion<SystemUiOverlayStyle>(
                   value: _overlayStyleOf(brightness),
                   child: Material(
@@ -539,7 +487,10 @@ class _MainPageState extends State<MainPage> {
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
-              await StorageManager.prefs.setString('skip_release_tag', releaseTag);
+              await StorageManager.prefs.setString(
+                'skip_release_tag',
+                releaseTag,
+              );
             },
             child: const Text('跳过该版本'),
           ),

@@ -8,6 +8,7 @@
 /// - 传 [initial]：直接把缓存结果摆出来，不再等一次请求
 /// - 传 [onSearch]：走调用页的检索入口（会命中缓存 / 复用 in-flight 请求）
 library;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -46,7 +47,7 @@ class AnswerSearchDialog extends StatefulWidget {
 
   /// 自定义检索入口；为 null 时直接调 `AnswerSearchApi.search`
   final Future<AnswerSearchSnapshot> Function({required bool forceRefresh})?
-      onSearch;
+  onSearch;
 
   const AnswerSearchDialog({
     super.key,
@@ -125,8 +126,12 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
         _fromCache = snapshot.fromCache;
         // 命中缓存时 AnswerSearchApi.lastAIError 是上一次请求留下的，
         // 不能拿来当本次的失败原因
-        _aiErrorHint = snapshot.fromCache ? snapshot.error : AnswerSearchApi.lastAIError;
-        _requestInfo = snapshot.fromCache ? null : AnswerSearchApi.lastRequestInfo;
+        _aiErrorHint = snapshot.fromCache
+            ? snapshot.error
+            : AnswerSearchApi.lastAIError;
+        _requestInfo = snapshot.fromCache
+            ? null
+            : AnswerSearchApi.lastRequestInfo;
         _isSearching = false;
       });
     } catch (e) {
@@ -161,9 +166,9 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
   Future<void> _copyAnswer(AnswerSearchResult result) async {
     await Clipboard.setData(ClipboardData(text: result.answer));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('答案已复制')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('答案已复制')));
   }
 
   Color _getConfidenceColor(double confidence) {
@@ -195,24 +200,36 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
         children: [
           const Icon(Icons.search, size: 20),
           const SizedBox(width: 8),
-          const Text('答案检索'),
-          const SizedBox(width: 8),
-          if (_fromCache && !_isSearching)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                '来自缓存',
-                style: TextStyle(
-                  fontSize: 10,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
+          Expanded(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Text('答案检索'),
+                if (_fromCache && !_isSearching)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      '来自缓存',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+              ],
             ),
-          const Spacer(),
+          ),
           if (!_isSearching)
             IconButton(
               icon: const Icon(Icons.refresh, size: 20),
@@ -225,7 +242,7 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
       content: SizedBox(
         width: double.maxFinite,
         child: _isSearching
-            ? const Column(
+            ? Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   CircularProgressIndicator(),
@@ -234,38 +251,44 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                   SizedBox(height: 8),
                   Text(
                     '思考型模型可能需要十几秒到几分钟',
-                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               )
             : _errorMessage != null
-                ? Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.error_outline,
-                          color: Theme.of(context).colorScheme.error, size: 48),
-                      const SizedBox(height: 8),
-                      Text(_errorMessage!, textAlign: TextAlign.center),
-                    ],
-                  )
-                : Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _buildQuestionPreview(),
-                      const SizedBox(height: 8),
-                      if (_results.isEmpty)
-                        _buildEmptyResult()
-                      else
-                        Flexible(
-                          child: ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: _results.length,
-                            itemBuilder: (context, index) =>
-                                _buildResultCard(_results[index]),
-                          ),
-                        ),
-                    ],
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.error_outline,
+                    color: Theme.of(context).colorScheme.error,
+                    size: 48,
                   ),
+                  const SizedBox(height: 8),
+                  Text(_errorMessage!, textAlign: TextAlign.center),
+                ],
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildQuestionPreview(),
+                  const SizedBox(height: 8),
+                  if (_results.isEmpty)
+                    _buildEmptyResult()
+                  else
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: _results.length,
+                        itemBuilder: (context, index) =>
+                            _buildResultCard(_results[index]),
+                      ),
+                    ),
+                ],
+              ),
       ),
       actions: [
         TextButton(
@@ -287,7 +310,7 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -365,7 +388,11 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Icon(Icons.search_off, size: 48, color: Colors.grey),
+        Icon(
+          Icons.search_off,
+          size: 48,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
         const SizedBox(height: 8),
         const Text('未找到相关答案'),
         const SizedBox(height: 6),
@@ -416,16 +443,19 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
     final canApply = _canApply(result);
 
     return Card(
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.spaceBetween,
               children: [
                 _buildSourceBadge(result),
-                const Spacer(),
                 _buildConfidenceBadge(result),
               ],
             ),
@@ -437,7 +467,7 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                 color: isBuiltin
                     ? Colors.green.withValues(alpha: 0.08)
                     : Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(12),
                 border: isBuiltin
                     ? Border.all(color: Colors.green.withValues(alpha: 0.3))
                     : null,
@@ -469,12 +499,16 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                   color: Colors.orange.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(4),
                   border: Border.all(
-                      color: Colors.orange.withValues(alpha: 0.3)),
+                    color: Colors.orange.withValues(alpha: 0.3),
+                  ),
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.warning_amber,
-                        size: 16, color: Colors.orange.shade700),
+                    Icon(
+                      Icons.warning_amber,
+                      size: 16,
+                      color: Colors.orange.shade700,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -495,7 +529,11 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  Icon(Icons.info_outline, size: 14, color: Colors.amber.shade800),
+                  Icon(
+                    Icons.info_outline,
+                    size: 14,
+                    color: Colors.amber.shade800,
+                  ),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
@@ -525,8 +563,9 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed:
-                        canApply ? () => Navigator.of(context).pop(result) : null,
+                    onPressed: canApply
+                        ? () => Navigator.of(context).pop(result)
+                        : null,
                     icon: const Icon(Icons.check_circle_outline, size: 16),
                     label: Text(
                       _applyLabel(result),

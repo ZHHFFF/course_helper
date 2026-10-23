@@ -202,9 +202,7 @@ class _CaptchaPageState extends State<CaptchaPage> {
   }
 
   Widget _buildSlideCaptchaContainer() {
-    Color borderColor = Theme.of(context).brightness == Brightness.dark
-        ? Colors.grey.shade700
-        : Colors.grey.shade300;
+    final borderColor = Theme.of(context).colorScheme.outline;
 
     return SizedBox(
       width: backgroundWidth,
@@ -225,21 +223,21 @@ class _CaptchaPageState extends State<CaptchaPage> {
                 return Container(
                   width: backgroundWidth,
                   height: backgroundHeight,
-                  color: Colors.grey.shade200,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   child: const Center(child: Text('加载中...')),
                 );
               },
               errorBuilder: (context, error, stackTrace) => Container(
                 width: backgroundWidth,
                 height: backgroundHeight,
-                color: Colors.grey.shade200,
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 child: Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.error, color: Colors.grey.shade600, size: 40),
+                      Icon(Icons.error, color: Theme.of(context).colorScheme.onSurfaceVariant, size: 40),
                       const SizedBox(height: 8),
-                      Text('图片加载失败', style: TextStyle(color: Colors.grey.shade600)),
+                      Text('图片加载失败', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                     ],
                   ),
                 ),

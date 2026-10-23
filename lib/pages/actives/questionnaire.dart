@@ -195,14 +195,17 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
                         ),
                         
                         // 账号选择器
-                        AccountsSelector(
-                          onSelectionChanged: (selected) {
-                            setState(() {
-                              _selectedAccounts = selected;
-                            });
-                          },
-                          initiallyExpanded: false,
-                          initialSelected: _initialSelectedAccounts,
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: AccountsSelector(
+                            onSelectionChanged: (selected) {
+                              setState(() {
+                                _selectedAccounts = selected;
+                              });
+                            },
+                            initiallyExpanded: false,
+                            initialSelected: _initialSelectedAccounts,
+                          ),
                         ),
                         
                         const SizedBox(height: 16),
@@ -367,13 +370,13 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
             secondary: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: isSelected ? Theme.of(context).colorScheme.primary : Colors.grey[300],
+                color: isSelected ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
                 optionLabel,
                 style: TextStyle(
-                  color: isSelected ? Colors.white : Colors.grey[700],
+                  color: isSelected ? Colors.white : Theme.of(context).colorScheme.onSurfaceVariant,
                   fontWeight: FontWeight.bold,
                   fontSize: 14,
                 ),
@@ -426,13 +429,13 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
           secondary: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: isSelected ? Theme.of(context).colorScheme.primary : Colors.grey[300],
+              color: isSelected ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.surfaceContainerHighest,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
               optionLabel,
               style: TextStyle(
-                color: isSelected ? Colors.white : Colors.grey[700],
+                color: isSelected ? Colors.white : Theme.of(context).colorScheme.onSurfaceVariant,
                 fontWeight: FontWeight.bold,
                 fontSize: 14,
               ),
@@ -467,7 +470,7 @@ class _QuestionnairePageState extends State<QuestionnairePage> {
       decoration: InputDecoration(
         hintText: '请输入答案',
         border: const OutlineInputBorder(),
-        hintStyle: TextStyle(color: Colors.grey[400]),
+        hintStyle: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
       ),
       controller: controller,
       onChanged: (value) {
