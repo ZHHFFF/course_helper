@@ -88,6 +88,44 @@ void main() {
     await flushClassroomTasks(tester);
   });
 
+  testWidgets('跟随系统切换首帧同步已打开的弹窗，保留底层输入', (tester) async {
+    ThemeSetting.mode.value = ThemeMode.system;
+    tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
+    addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+    await tester.pumpWidget(const MyApp());
+    await flushClassroomTasks(tester);
+    await tester.pumpAndSettle();
+    navigatorKey.currentState!.push(
+      MiuixPageRoute<void>(builder: (_) => const _Controls()),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, '系统切换前的作答');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('查看弹窗'));
+    await tester.pumpAndSettle();
+    final route = ModalRoute.of(tester.element(find.byType(AlertDialog)));
+    for (final brightness in [Brightness.dark, Brightness.light]) {
+      tester.platformDispatcher.platformBrightnessTestValue = brightness;
+      await tester.pump();
+      final context = tester.element(find.byType(AlertDialog));
+      expect(Theme.of(context).brightness, brightness);
+      expect(Theme.of(context).colorScheme.primary,
+          MiuixTheme.of(context).colors.primary);
+      expect(Theme.of(context).dialogTheme.backgroundColor,
+          MiuixTheme.of(context).colors.surfaceContainer);
+      expect(ModalRoute.of(context), same(route));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    expect(find.text('系统切换前的作答'), findsOneWidget);
+    expect(navigatorKey.currentState!.canPop(), isTrue);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await flushClassroomTasks(tester);
+  });
+
   for (final dark in [false, true]) {
     for (final width in [320.0, 390.0]) {
       for (final scale in [1.0, 1.2]) {

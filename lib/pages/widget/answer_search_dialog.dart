@@ -196,6 +196,8 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      // 标题和所有内容共享滚动区域，键盘/横屏压缩高度时仍可关闭。
+      scrollable: true,
       title: Row(
         children: [
           const Icon(Icons.search, size: 20),
@@ -279,14 +281,7 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                   if (_results.isEmpty)
                     _buildEmptyResult()
                   else
-                    Flexible(
-                      child: ListView.builder(
-                        shrinkWrap: true,
-                        itemCount: _results.length,
-                        itemBuilder: (context, index) =>
-                            _buildResultCard(_results[index]),
-                      ),
-                    ),
+                    ..._results.map(_buildResultCard),
                 ],
               ),
       ),
@@ -315,7 +310,10 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               // 题型标签
               Container(
@@ -333,7 +331,6 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                   ),
                 ),
               ),
-              const SizedBox(width: 6),
               // 来源标签
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -353,8 +350,7 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                   ),
                 ),
               ),
-              if (q.options.isNotEmpty) ...[
-                const SizedBox(width: 6),
+              if (q.options.isNotEmpty)
                 Text(
                   '${q.options.length} 个选项',
                   style: TextStyle(
@@ -362,7 +358,6 @@ class _AnswerSearchDialogState extends State<AnswerSearchDialog> {
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
-              ],
             ],
           ),
           const SizedBox(height: 6),

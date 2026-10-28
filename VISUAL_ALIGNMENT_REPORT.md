@@ -81,3 +81,23 @@ flutter test --no-pub \
 反向审查确认：布局改动未修改点击、提交、回填、返回结果及事件处理；主题修改未增加监听器或动画控制器；未加入页级 Opacity/模糊/着色器；输入仍使用原 TextField 与控制器。登录、课件切换、历史题目、发现提示、草稿持久化、预选提交、缓存、导出、导航及取消逻辑继续由完整套件覆盖。示例数据只由截图命令启用，普通构建没有该标志。
 
 没有 Android/iOS 真机或已登录课堂，尚未逐页完成真实数据、原生地图/扫码、系统字体和 GPU 性能验收。本次未构建或发布新 APK，也未合并主线；视觉预览与完整回归不等同于真机验收。
+
+## 2026-10-28 审查后补强（待 Flutter 运行验证）
+
+本次在 `2542f91` 上补充以下修改，原文的 639 项通过记录仅适用于上一版实现，不代表本次新增修改已通过运行验收。
+
+- 答案检索的题型、图片来源、选项数改为 Wrap，避免图片题在窄屏上继续挤在单行。
+- AlertDialog 使用统一滚动区域，覆盖标题、加载、错误、空结果和答案列表；关闭操作固定在内容区域外。移除嵌套的 Flexible/ListView，避免短高度下题干挤占结果空间以及滚动区域无界约束。
+- 新增 8 项窄屏测试：真实应用主题、320×600、120% 应用文字缩放、220dp 键盘遮挡，分别覆盖深浅色的结果/加载/长错误/空结果；检查滚动、关闭、复制、回填返回值、底层作答保留、关闭后的请求完成。
+- 新增 1 项 MyApp 回归：跟随系统明暗切换，检查已打开弹窗首帧的两套主题同步、路由身份及底层输入保留。
+
+当前环境没有 Flutter/Dart SDK；尝试获取 SDK 未成功，因此没有执行 dart format、flutter analyze 或 flutter test。只完成差异与语法检查，不能把静态检查当作 Widget 测试通过。待具备项目要求的 SDK 后执行：
+
+```sh
+dart format lib/pages/widget/answer_search_dialog.dart test/answer_search_dialog_layout_test.dart test/app_visual_alignment_test.dart
+flutter analyze --no-pub
+flutter test --no-pub test/answer_search_dialog_layout_test.dart test/app_visual_alignment_test.dart --reporter expanded
+flutter test --no-pub --reporter expanded
+```
+
+仓库 CONTRIBUTING.md 明确当前维护 Android。合并前仍需 Android 真机检查系统字体、启动/后台恢复、真实课堂与作答恢复、扫码/原生地图、系统栏及默认模糊/玻璃效果；本次未构建 APK、未触发工作流、未合并 PR。已有 PNG 未重新生成，仍是上一版预览。
