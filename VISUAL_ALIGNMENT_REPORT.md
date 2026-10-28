@@ -1,6 +1,6 @@
 # 全局视觉对齐
 
-基线：`f68538c`（PR #8 已合并）；实现提交：`8b67358`。沿用锁定的 Flutter 3.47.6 / flutter_miuix 1.2.0，无新增依赖或字体资源。
+基线：`f68538c`（PR #8 已合并）；实现提交：`8b67358`；后续弹窗补强：`24a2930`，最新验证见末节。沿用锁定的 Flutter 3.47.6 / flutter_miuix 1.2.0，无新增依赖或字体资源。
 
 ## 统一规则
 
@@ -71,33 +71,31 @@ flutter test --no-pub \
 | --- | --- |
 | dart format | 新主题、main.dart、检索弹窗和新增视觉测试已格式化；既有业务文件保留局部差异 |
 | flutter analyze --no-pub | No issues found |
-| 新视觉测试 | 9 项通过：8 组深浅色 × 320/390dp × 100/120% 缩放，加主题首帧同步/输入与路由保留 |
-| 带示例数据和字体的 PNG 导出 | 9 项通过，生成 16 张原图与 2 张标注总览 |
-| flutter test --no-pub --reporter expanded | 639 项通过，7 项原有跳过，无失败 |
+| 新视觉测试 | 18 项通过：视觉/主题 10 项，加键盘约束下弹窗布局与操作 8 项 |
+| 带示例数据和字体的 PNG 导出 | 前一版导出：9 项通过，16 张原图与 2 张标注总览；补强后未重导 |
+| flutter test --no-pub --reporter expanded | 648 项通过，7 项原有跳过，无失败 |
 | git diff --check | 通过 |
 
 新增测试实际进入 MyApp，检查控件最终表面、默认文字尺寸、正常/禁用按钮颜色、输入框填充、账号选择卡位置、输入、两种弹窗打开和关闭。窄屏检索弹窗的两处溢出、主题切换首帧的两套蓝色差异均在修复前失败，修复后通过。
 
 反向审查确认：布局改动未修改点击、提交、回填、返回结果及事件处理；主题修改未增加监听器或动画控制器；未加入页级 Opacity/模糊/着色器；输入仍使用原 TextField 与控制器。登录、课件切换、历史题目、发现提示、草稿持久化、预选提交、缓存、导出、导航及取消逻辑继续由完整套件覆盖。示例数据只由截图命令启用，普通构建没有该标志。
 
-没有 Android/iOS 真机或已登录课堂，尚未逐页完成真实数据、原生地图/扫码、系统字体和 GPU 性能验收。本次未构建或发布新 APK，也未合并主线；视觉预览与完整回归不等同于真机验收。
+没有 Android/iOS 真机或已登录课堂，尚未逐页完成真实数据、原生地图/扫码、系统字体和 GPU 性能验收。本次未构建或发布新 APK；视觉预览与完整回归不等同于真机验收，合并状态以 PR #9 为准。
 
-## 2026-10-28 审查后补强（待 Flutter 运行验证）
+## 2026-10-28 合并前验证
 
-本次在 `2542f91` 上补充以下修改，原文的 639 项通过记录仅适用于上一版实现，不代表本次新增修改已通过运行验收。
+补强提交 `24a2930` 将图片题的题型、来源、选项数改为 Wrap；弹窗标题和全部内容统一滚动，关闭操作固定在内容区域外，覆盖结果、加载、长错误和空结果状态。新增 8 项 320×600、120% 缩放、220dp 键盘遮挡测试，以及 1 项跟随系统明暗切换时的弹窗/底层输入保持测试。
 
-- 答案检索的题型、图片来源、选项数改为 Wrap，避免图片题在窄屏上继续挤在单行。
-- AlertDialog 使用统一滚动区域，覆盖标题、加载、错误、空结果和答案列表；关闭操作固定在内容区域外。移除嵌套的 Flexible/ListView，避免短高度下题干挤占结果空间以及滚动区域无界约束。
-- 新增 8 项窄屏测试：真实应用主题、320×600、120% 应用文字缩放、220dp 键盘遮挡，分别覆盖深浅色的结果/加载/长错误/空结果；检查滚动、关闭、复制、回填返回值、底层作答保留、关闭后的请求完成。
-- 新增 1 项 MyApp 回归：跟随系统明暗切换，检查已打开弹窗首帧的两套主题同步、路由身份及底层输入保留。
+本次在最新主线基础上实际运行，使用 Flutter 3.47.6 / Dart 3.13.5：
 
-当前环境没有 Flutter/Dart SDK；尝试获取 SDK 未成功，因此没有执行 dart format、flutter analyze 或 flutter test。只完成差异与语法检查，不能把静态检查当作 Widget 测试通过。待具备项目要求的 SDK 后执行：
+| 命令 | 结果 |
+| --- | --- |
+| dart format（三个补强相关 Dart 文件） | 完成，两份测试文件需要格式化 |
+| flutter analyze --no-pub | No issues found |
+| flutter test --no-pub test/answer_search_dialog_layout_test.dart test/app_visual_alignment_test.dart --reporter expanded | 18 项通过 |
+| flutter test --no-pub --reporter expanded | 648 项通过，7 项原有跳过，无失败 |
+| git diff --check | 通过 |
 
-```sh
-dart format lib/pages/widget/answer_search_dialog.dart test/answer_search_dialog_layout_test.dart test/app_visual_alignment_test.dart
-flutter analyze --no-pub
-flutter test --no-pub test/answer_search_dialog_layout_test.dart test/app_visual_alignment_test.dart --reporter expanded
-flutter test --no-pub --reporter expanded
-```
+首轮系统主题测试在点击步骤失败：默认窗口高 600dp，按钮中心位于 y=609，点击未命中，弹窗没有打开。测试现先 ensureVisible，再断言按钮 hitTestable 后点击；主题首帧颜色、路由身份、复制/回填返回值和底层输入保留的断言没有放宽。产品代码不需要为此改动。
 
-仓库 CONTRIBUTING.md 明确当前维护 Android。合并前仍需 Android 真机检查系统字体、启动/后台恢复、真实课堂与作答恢复、扫码/原生地图、系统栏及默认模糊/玻璃效果；本次未构建 APK、未触发工作流、未合并 PR。已有 PNG 未重新生成，仍是上一版预览。
+现有 PNG 仍为前一版稳定画面预览，没有重新导出补强后的弹窗。Android 真机的系统字体、启动/后台恢复、真实课堂与作答恢复、扫码/原生地图、系统栏及默认模糊/玻璃效果仍未验收。此次测试未构建 APK，也未将本地通过结果描述为 GitHub Actions 或真机通过。

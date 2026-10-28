@@ -41,85 +41,108 @@ void main() {
             return null;
           },
         );
-        addTearDown(() => tester.binding.defaultBinaryMessenger
-            .setMockMethodCallHandler(SystemChannels.platform, null));
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
 
-        await tester.pumpWidget(MaterialApp(
-          theme: appMaterialTheme(
-            brightness: brightness,
-            pageTransitions: const PageTransitionsTheme(),
-          ),
-          builder: (context, child) => MediaQuery(
-            data: MediaQuery.of(context).copyWith(
-              textScaler: TextScaler.linear(1.2),
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: appMaterialTheme(
+              brightness: brightness,
+              pageTransitions: const PageTransitionsTheme(),
             ),
-            child: MiuixTheme(
-              data: appMiuixTheme(brightness),
-              child: child!,
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(1.2)),
+              child: MiuixTheme(data: appMiuixTheme(brightness), child: child!),
             ),
-          ),
-          home: Scaffold(body: Builder(builder: (context) => Column(
-            children: [
-              TextField(controller: input),
-              TextButton(
-                onPressed: () async {
-                  applied = await showDialog<AnswerSearchResult>(
-                    context: context,
-                    builder: (_) => AnswerSearchDialog(
-                      question: StandardizedQuestion(
-                        questionText: '',
-                        questionType: 'multiple',
-                        imageUrls: ['https://example.invalid/question.png'],
-                        options: [
-                          StandardizedOption(key: 'A', value: '选项一'),
-                          StandardizedOption(key: 'B', value: '选项二'),
-                        ],
-                      ),
-                      initial: state == 'results'
-                          ? AnswerSearchSnapshot(results: [answer], fromCache: true)
-                          : null,
-                      onSearch: ({required forceRefresh}) => search.future,
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => Column(
+                  children: [
+                    TextField(controller: input),
+                    TextButton(
+                      onPressed: () async {
+                        applied = await showDialog<AnswerSearchResult>(
+                          context: context,
+                          builder: (_) => AnswerSearchDialog(
+                            question: StandardizedQuestion(
+                              questionText: '',
+                              questionType: 'multiple',
+                              imageUrls: [
+                                'https://example.invalid/question.png',
+                              ],
+                              options: [
+                                StandardizedOption(key: 'A', value: '选项一'),
+                                StandardizedOption(key: 'B', value: '选项二'),
+                              ],
+                            ),
+                            initial: state == 'results'
+                                ? AnswerSearchSnapshot(
+                                    results: [answer],
+                                    fromCache: true,
+                                  )
+                                : null,
+                            onSearch: ({required forceRefresh}) =>
+                                search.future,
+                          ),
+                        );
+                        returned = true;
+                      },
+                      child: const Text('打开检索'),
                     ),
-                  );
-                  returned = true;
-                },
-                child: const Text('打开检索'),
+                  ],
+                ),
               ),
-            ],
-          ))),
-        ));
+            ),
+          ),
+        );
         await tester.tap(find.text('打开检索'));
         // loading 有持续动画，不能 pumpAndSettle。
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
         if (state == 'error') {
-          search.completeError(StateError(List.filled(30, '服务暂时不可用').join('\n')));
+          search.completeError(
+            StateError(List.filled(30, '服务暂时不可用').join('\n')),
+          );
         } else if (state == 'empty') {
           search.complete(const AnswerSearchSnapshot(results: []));
         }
         await tester.pump();
         expect(tester.takeException(), isNull);
         expect(find.text('关闭').hitTestable(), findsOneWidget);
-        final dialogScroll = find.descendant(
-          of: find.byType(AlertDialog),
-          matching: find.byType(SingleChildScrollView),
-        ).first;
-        final scrollable = find.descendant(
-          of: dialogScroll,
-          matching: find.byType(Scrollable),
-        ).first;
+        final dialogScroll = find
+            .descendant(
+              of: find.byType(AlertDialog),
+              matching: find.byType(SingleChildScrollView),
+            )
+            .first;
+        final scrollable = find
+            .descendant(of: dialogScroll, matching: find.byType(Scrollable))
+            .first;
         if (state == 'results' || state == 'error') {
-          expect(tester.state<ScrollableState>(scrollable)
-              .position.maxScrollExtent, greaterThan(0));
+          expect(
+            tester.state<ScrollableState>(scrollable).position.maxScrollExtent,
+            greaterThan(0),
+          );
         }
 
         if (state == 'results') {
-          await tester.scrollUntilVisible(find.text('复制答案'), 80,
-              scrollable: scrollable);
+          await tester.scrollUntilVisible(
+            find.text('复制答案'),
+            80,
+            scrollable: scrollable,
+          );
           await tester.tap(find.text('复制答案'));
           await tester.pump();
           expect(copied, 'A');
-          await tester.tap(find.widgetWithIcon(FilledButton, Icons.check_circle_outline));
+          await tester.tap(
+            find.widgetWithIcon(FilledButton, Icons.check_circle_outline),
+          );
         } else {
           await tester.tap(find.text('关闭'));
         }

@@ -102,6 +102,9 @@ void main() {
     await tester.enterText(find.byType(TextField).first, '系统切换前的作答');
     FocusManager.instance.primaryFocus?.unfocus();
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('查看弹窗'));
+    await tester.pumpAndSettle();
+    expect(find.text('查看弹窗').hitTestable(), findsOneWidget);
     await tester.tap(find.text('查看弹窗'));
     await tester.pumpAndSettle();
     final route = ModalRoute.of(tester.element(find.byType(AlertDialog)));
@@ -110,10 +113,14 @@ void main() {
       await tester.pump();
       final context = tester.element(find.byType(AlertDialog));
       expect(Theme.of(context).brightness, brightness);
-      expect(Theme.of(context).colorScheme.primary,
-          MiuixTheme.of(context).colors.primary);
-      expect(Theme.of(context).dialogTheme.backgroundColor,
-          MiuixTheme.of(context).colors.surfaceContainer);
+      expect(
+        Theme.of(context).colorScheme.primary,
+        MiuixTheme.of(context).colors.primary,
+      );
+      expect(
+        Theme.of(context).dialogTheme.backgroundColor,
+        MiuixTheme.of(context).colors.surfaceContainer,
+      );
       expect(ModalRoute.of(context), same(route));
       await tester.pumpAndSettle();
     }
