@@ -243,6 +243,7 @@ class AccountsSelectorState extends State<AccountsSelector> {
     }
 
     return Card(
+      margin: EdgeInsets.zero,
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
@@ -267,29 +268,21 @@ class AccountsSelectorState extends State<AccountsSelector> {
                 true : _selectedSelectableCount == 0 ?
                 false : null,
                 onChanged: _hasSelectableAccounts ? _toggleSelectAll : null,
-                fillColor: WidgetStateProperty.resolveWith<Color>(
-                      (Set<WidgetState> states) {
-                    if (states.contains(WidgetState.selected)) {
-                      return Theme.of(context).colorScheme.primary;
-                    }
-                    return Colors.transparent;
-                  },
-                ),
               ),
               // 展开/收起图标
               Icon(
                 _isExpanded ? Icons.expand_less : Icons.expand_more,
-                color: Colors.grey,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ],
           ),
           children: [
             if (_allAccounts.isEmpty)
-              const Padding(
+              Padding(
                 padding: EdgeInsets.all(16.0),
                 child: Text(
                   '没有账户',
-                  style: TextStyle(fontSize: 18, color: Colors.grey),
+                  style: TextStyle(fontSize: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               )
             else
@@ -359,7 +352,7 @@ class AccountsSelectorState extends State<AccountsSelector> {
                                               return Container(
                                                 width: 40,
                                                 height: 40,
-                                                color: Colors.grey.shade200,
+                                                color: Theme.of(context).colorScheme.surfaceContainerHighest,
                                                 child: Center(
                                                   child: CircularProgressIndicator(
                                                     strokeWidth: 2,
@@ -374,8 +367,8 @@ class AccountsSelectorState extends State<AccountsSelector> {
                                               return Container(
                                                 width: 40,
                                                 height: 40,
-                                                color: Colors.grey.shade200,
-                                                child: const Icon(Icons.broken_image, size: 20, color: Colors.grey),
+                                                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                                child: Icon(Icons.broken_image, size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
                                               );
                                             },
                                           ),

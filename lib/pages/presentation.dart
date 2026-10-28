@@ -2306,11 +2306,11 @@ class _PresentationPageState extends State<PresentationPage>
                     return const Center(child: CircularProgressIndicator());
                   },
                   errorBuilder: (context, error, stackTrace) {
-                    return const Center(
+                    return Center(
                       child: Icon(
                         Icons.error_outline,
                         size: 48,
-                        color: Colors.grey,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     );
                   },
@@ -2381,24 +2381,24 @@ class _PresentationPageState extends State<PresentationPage>
         content: (contentPadding) => Padding(
           padding: EdgeInsets.only(top: _isFullScreen ? 0 : contentPadding.top),
           child: _isLoading
-              ? const Center(
+              ? Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       CircularProgressIndicator(),
                       SizedBox(height: 16),
-                      Text('加载 PPT 中...', style: TextStyle(color: Colors.grey)),
+                      Text('加载 PPT 中...', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                     ],
                   ),
                 )
               : !_isInitialized
-              ? const Center(
+              ? Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       CircularProgressIndicator(),
                       SizedBox(height: 16),
-                      Text('等待课堂数据...', style: TextStyle(color: Colors.grey)),
+                      Text('等待课堂数据...', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                     ],
                   ),
                 )
@@ -2481,11 +2481,11 @@ class _PresentationPageState extends State<PresentationPage>
                                       );
                                     },
                                     errorBuilder: (context, error, stackTrace) {
-                                      return const Center(
+                                      return Center(
                                         child: Icon(
                                           Icons.error_outline,
                                           size: 48,
-                                          color: Colors.grey,
+                                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                                         ),
                                       );
                                     },
@@ -2787,7 +2787,7 @@ class _PresentationPageState extends State<PresentationPage>
             bgColor = Colors.red;
             icon = Icons.school_outlined;
           default:
-            bgColor = Colors.grey;
+            bgColor = Theme.of(context).colorScheme.onSurfaceVariant;
             icon = Icons.info;
         }
         break;
@@ -2800,7 +2800,7 @@ class _PresentationPageState extends State<PresentationPage>
         icon = Icons.person_add;
         break;
       default:
-        bgColor = Colors.grey;
+        bgColor = Theme.of(context).colorScheme.onSurfaceVariant;
         icon = Icons.info;
     }
 

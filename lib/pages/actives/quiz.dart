@@ -1145,7 +1145,7 @@ class _QuizPageState extends State<QuizPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('第${index + 1}空：', style: const TextStyle(color: Colors.grey)),
+              Text('第${index + 1}空：', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
               Stack(
                 children: [
                   TextField(
@@ -1442,13 +1442,16 @@ class _QuizPageState extends State<QuizPage> {
                           ),
                         ),
 
-                        AccountsSelector(
-                          onSelectionChanged: (selected) {
-                            setState(() {
-                              _selectedAccounts = selected;
-                            });
-                          },
-                          initiallyExpanded: false,
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: AccountsSelector(
+                            onSelectionChanged: (selected) {
+                              setState(() {
+                                _selectedAccounts = selected;
+                              });
+                            },
+                            initiallyExpanded: false,
+                          ),
                         ),
 
                         const SizedBox(height: 16),

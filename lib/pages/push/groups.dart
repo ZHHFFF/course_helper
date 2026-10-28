@@ -131,7 +131,7 @@ class _GroupsPageState extends State<GroupsPage> {
               ? Center(
                   child: Text(
                     EasemobIM().isLoggedIn ? '暂无群聊' : '请到账号列表开启推送服务',
-                    style: const TextStyle(fontSize: 18, color: Colors.grey),
+                    style: TextStyle(fontSize: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                 )
               : ListView.builder(
@@ -179,7 +179,7 @@ class _GroupsPageState extends State<GroupsPage> {
                               : null,
                           trailing: Icon(
                             Icons.chevron_right,
-                            color: Colors.grey[400],
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                           onTap: () {
                             Navigator.push(
@@ -414,10 +414,10 @@ class _GroupMessagesPageState extends State<GroupMessagesPage> {
           child: _isLoading
               ? const Center(child: CircularProgressIndicator())
               : _messages.isEmpty
-              ? const Center(
+              ? Center(
                   child: Text(
                     '暂无签到消息',
-                    style: TextStyle(fontSize: 18, color: Colors.grey),
+                    style: TextStyle(fontSize: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                 )
               : ListView.builder(
@@ -466,9 +466,9 @@ class _GroupMessagesPageState extends State<GroupMessagesPage> {
                                   courseName,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 14,
-                                    color: Colors.grey,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                                   ),
                                 ),
                               if (active.description.isNotEmpty)
@@ -476,9 +476,9 @@ class _GroupMessagesPageState extends State<GroupMessagesPage> {
                                   active.description,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 12,
-                                    color: Colors.grey,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                                   ),
                                 ),
                             ],

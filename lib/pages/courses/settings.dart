@@ -486,7 +486,7 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                                                           return Container(
                                                             width: 80,
                                                             height: 80,
-                                                            color: Colors.grey.shade200,
+                                                            color: Theme.of(context).colorScheme.surfaceContainerHighest,
                                                             child: Center(
                                                               child: CircularProgressIndicator(
                                                                 strokeWidth: 2,
@@ -501,8 +501,8 @@ class _CourseSettingsPageState extends State<CourseSettingsPage> {
                                                           return Container(
                                                             width: 80,
                                                             height: 80,
-                                                            color: Colors.grey.shade200,
-                                                            child: const Icon(Icons.broken_image, color: Colors.grey),
+                                                            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                                            child: Icon(Icons.broken_image, color: Theme.of(context).colorScheme.onSurfaceVariant),
                                                           );
                                                         },
                                                       ),
