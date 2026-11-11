@@ -1,0 +1,77 @@
+name: Publish verified PDF and upstream APK
+
+on:
+  push:
+    branches: [codex/publish-pdf-upstream-20261111]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: f7b0b939409872e45446c68f25ad4b12c094c310
+      SOURCE_RUN: '43049706866'
+      APK_NAME: course-helper-1.2.3-test98-f7b0b93-arm64.apk
+      RELEASE_TAG: test-apk-pdf-upstream-test98
+    steps:
+      - name: Wait for and download the successful master build
+        run: |
+          set -euo pipefail
+          gh run watch "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --exit-status --interval 15
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > source-run.json
+          jq -e --arg sha "$SOURCE_SHA" '.head_sha == $sha and .head_branch == "master" and .conclusion == "success"' source-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs" > source-jobs.json
+          jq -e '
+            .jobs[] | select(.name == "build") | .steps |
+            map(select(.name == "Prepare signing key" or
+                       .name == "Analyze (errors only)" or
+                       .name == "Run unit tests" or
+                       .name == "Build release APK (arm64-v8a only)" or
+                       .name == "Upload APK")) |
+            length == 5 and all(.[]; .conclusion == "success")
+          ' source-jobs.json
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "$APK_NAME" --dir apk
+
+      - name: Verify signature and upgrade compatibility
+        run: |
+          set -euo pipefail
+          # Compare with the previously published test97 instead of assuming the key is unchanged.
+          curl --fail --location --retry 3 \
+            'https://github.com/ZHHFFF/course_helper/releases/download/test-apk-card-navigation-test97/course-helper-1.2.3-test97-6514c8f-arm64.apk' -o previous.apk
+          printf '%s  previous.apk\n' 'a8403b3688f7626d62f0e9e8af1f9db484a60c46cac5f0231d3d2eee97ba0104' | sha256sum --check
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs previous.apk > previous-signature.txt
+          "$APKSIGNER" verify --verbose --print-certs "apk/$APK_NAME" > signature.txt
+          grep 'certificate SHA-256 digest:' previous-signature.txt > previous-cert.txt
+          grep 'certificate SHA-256 digest:' signature.txt > current-cert.txt
+          diff -u previous-cert.txt current-cert.txt
+          "$AAPT" dump badging "apk/$APK_NAME" > badging.txt
+          grep "package: name='com.anerycoft.coursehelper'" badging.txt
+          CODE=$(sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" badging.txt | head -1)
+          test "$CODE" -gt 4097
+          printf 'VERSION_CODE=%s\n' "$CODE" >> "$GITHUB_ENV"
+          sha256sum "apk/$APK_NAME" > apk-sha256.txt
+          cat signature.txt badging.txt apk-sha256.txt
+
+      - name: Publish tested APK
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          - PDF 每页按幻灯片实际方向和比例生成，减少多余留白；JPEG 保留原图，其他图片采用无损嵌入。PNG 输出文件可能比之前更大。
+          - 同步上游：雨课堂开课和随机选人提醒、学习通选人活动、签到接口、填空与测验解析、全屏页码和未知活动识别修复。
+          - 保留 Miuix、PPT 缓存、离线课件、题目发现、答案草稿和自动答题。
+          - 完成 Flutter 静态检查，654 项自动化测试通过、7 项原有跳过；真机课堂、系统通知、地图及大课件内存尚需设备验收。
+
+          Android ARM64 测试包，签名与已发布 test97 对比一致，可覆盖安装。
+          NOTES
+          printf '\nversionCode：%s\n构建提交：%s\n构建来源：https://github.com/%s/actions/runs/%s\n\nSHA-256：\n' "$VERSION_CODE" "$SOURCE_SHA" "$GITHUB_REPOSITORY" "$SOURCE_RUN" >> release-notes.md
+          cat apk-sha256.txt >> release-notes.md
+          gh release create "$RELEASE_TAG" "apk/$APK_NAME" \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" \
+            --prerelease --title 'PDF 无损导出与上游同步测试包 1.2.3-test98' --notes-file release-notes.md
+
