@@ -73,7 +73,7 @@ void main() {
     expect(latin1.decode(retained.bytes!), contains(latin1.decode(original)));
   });
 
-  test('把多张图片合成 PDF（含 PNG → JPEG 转码）', () async {
+  test('把 PNG 与 JPEG 图片合成 PDF', () async {
     final paths = [
       _fakeSlide(dir, 0, png: true),
       _fakeSlide(dir, 1, png: false),

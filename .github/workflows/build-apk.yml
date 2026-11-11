@@ -73,7 +73,7 @@ jobs:
           keytool -list -v -keystore android/anerycoft.jks -storepass android 2>/dev/null | grep "SHA256:" | head -1
 
       - name: Get dependencies
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       # 先做静态检查：只有真正的编译错误才会让这一步失败
       - name: Analyze (errors only)
