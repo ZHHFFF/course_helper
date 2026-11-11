@@ -74,22 +74,24 @@ class _BaiduMapWidgetState extends State<BaiduMapWidget> {
   }
 
   Future<void> _initBaiduLocation() async {
-    _locationPlugin.singleLocationCallback(callback: (BaiduLocation result) {
-      if (_isDisposed) return;
+    _locationPlugin.singleLocationCallback(
+      callback: (BaiduLocation result) {
+        if (_isDisposed) return;
 
-      if (result.locType != null && result.locType! > 0) {
-        final coord = BMFCoordinate(result.latitude!, result.longitude!);
-        _handleLocationUpdate(coord, result);
-      } else {
-        if (mounted) {
-          setState(() {
-            _locationInfo = '定位失败，请重试';
-            _isLocating = false;
-            _isManualRelocate = false;
-          });
+        if (result.locType != null && result.locType! > 0) {
+          final coord = BMFCoordinate(result.latitude!, result.longitude!);
+          _handleLocationUpdate(coord, result);
+        } else {
+          if (mounted) {
+            setState(() {
+              _locationInfo = '定位失败，请重试';
+              _isLocating = false;
+              _isManualRelocate = false;
+            });
+          }
         }
-      }
-    });
+      },
+    );
 
     await _prepareHighAccuracyLocation();
   }
@@ -105,7 +107,7 @@ class _BaiduMapWidgetState extends State<BaiduMapWidget> {
         isNeedNewVersionRgc: true,
         isNeedLocationDescribe: false,
         openGps: true,
-        locationPurpose: BMFLocationPurpose.signIn
+        locationPurpose: BMFLocationPurpose.signIn,
       );
 
       final iosOptions = BaiduLocationIOSOption(
@@ -139,7 +141,7 @@ class _BaiduMapWidgetState extends State<BaiduMapWidget> {
       _currentPosition = coordinate;
       _isLocating = false;
       _locationInfo =
-      '地址：${location.address ?? ''}\n纬度：${coordinate.latitude.toStringAsFixed(6)}, 经度：${coordinate.longitude.toStringAsFixed(6)}';
+          '地址：${location.address ?? ''}\n纬度：${coordinate.latitude.toStringAsFixed(6)}, 经度：${coordinate.longitude.toStringAsFixed(6)}';
     });
 
     if (_mapController != null) {
@@ -148,7 +150,7 @@ class _BaiduMapWidgetState extends State<BaiduMapWidget> {
 
         // 只在首次定位 或 用户主动重新定位时移动地图，避免"左右横跳"
 
-if (!_hasMovedToLocation || _isManualRelocate) {
+        if (!_hasMovedToLocation || _isManualRelocate) {
           _moveToMarkerPosition();
           _hasMovedToLocation = true;
           _isManualRelocate = false;
@@ -220,9 +222,9 @@ if (!_hasMovedToLocation || _isManualRelocate) {
   }
 
   Future<String> _updateMarkerToPosition(
-      BMFCoordinate position, {
-        bool triggerCallback = false,
-      }) async {
+    BMFCoordinate position, {
+    bool triggerCallback = false,
+  }) async {
     if (_isDisposed || _mapController == null) return '';
 
     await _mapController!.cleanAllMarkers();
@@ -230,10 +232,11 @@ if (!_hasMovedToLocation || _isManualRelocate) {
 
     BMFMarker marker = BMFMarker.icon(
       position: position,
-      icon: 'images/placeholder.png',
+      icon: 'images/location_on_120dp.png',
       title: '当前位置',
-      scaleX: 0.3,
-      scaleY: 0.3
+      // 新资源已按图标尺寸绘制，不再缩小旧占位图。
+      scaleX: 1,
+      scaleY: 1,
     );
     await _mapController!.addMarker(marker);
     if (_isDisposed || _mapController == null) return '';
@@ -243,7 +246,8 @@ if (!_hasMovedToLocation || _isManualRelocate) {
 
     setState(() {
       _markerPosition = position;
-      _locationInfo = '地址：$address\n纬度：${position.latitude.toStringAsFixed(6)}, 经度：${position.longitude.toStringAsFixed(6)}';
+      _locationInfo =
+          '地址：$address\n纬度：${position.latitude.toStringAsFixed(6)}, 经度：${position.longitude.toStringAsFixed(6)}';
     });
 
     if (triggerCallback) {
@@ -262,36 +266,44 @@ if (!_hasMovedToLocation || _isManualRelocate) {
   }
 
   void _moveToMarkerPosition() {
-    if (_isDisposed || _mapController == null || _markerPosition == null) return;
-    _mapController!
-        .setCenterCoordinate(_markerPosition!, true, animateDurationMs: 1000);
+    if (_isDisposed || _mapController == null || _markerPosition == null)
+      return;
+    _mapController!.setCenterCoordinate(
+      _markerPosition!,
+      true,
+      animateDurationMs: 1000,
+    );
     _mapController!.setZoomTo(20.0, animateDurationMs: 1000);
   }
 
   Future<String> _getAddressFromCoordinate(BMFCoordinate coordinate) async {
     if (_isDisposed) return '未知位置';
     try {
-      BMFReverseGeoCodeSearchOption option =
-      BMFReverseGeoCodeSearchOption(location: coordinate);
+      BMFReverseGeoCodeSearchOption option = BMFReverseGeoCodeSearchOption(
+        location: coordinate,
+      );
       BMFReverseGeoCodeSearch search = BMFReverseGeoCodeSearch();
       Completer<String> completer = Completer<String>();
 
       search.onGetReverseGeoCodeSearchResult(
-          callback: (BMFReverseGeoCodeSearchResult? result,
-              BMFSearchErrorCode errorCode) {
-            if (completer.isCompleted) return;
-            String address = '';
-            if (result != null) {
-              address = result.address ?? '';
-              if (address.isEmpty &&
-                  result.poiList != null &&
-                  result.poiList!.isNotEmpty) {
-                address = result.poiList!.first.name ?? '';
+        callback:
+            (
+              BMFReverseGeoCodeSearchResult? result,
+              BMFSearchErrorCode errorCode,
+            ) {
+              if (completer.isCompleted) return;
+              String address = '';
+              if (result != null) {
+                address = result.address ?? '';
+                if (address.isEmpty &&
+                    result.poiList != null &&
+                    result.poiList!.isNotEmpty) {
+                  address = result.poiList!.first.name ?? '';
+                }
               }
-            }
-            completer.complete(address.isNotEmpty ? address : '未知位置');
-
-});
+              completer.complete(address.isNotEmpty ? address : '未知位置');
+            },
+      );
 
       await search.reverseGeoCodeSearch(option);
 
@@ -310,7 +322,11 @@ if (!_hasMovedToLocation || _isManualRelocate) {
     await _updateMarkerToPosition(coordinate, triggerCallback: true);
     if (_isDisposed || _mapController == null) return;
 
-    _mapController!.setCenterCoordinate(coordinate, true, animateDurationMs: 500);
+    _mapController!.setCenterCoordinate(
+      coordinate,
+      true,
+      animateDurationMs: 500,
+    );
     _mapController!.setZoomTo(20.0, animateDurationMs: 500);
   }
 
@@ -322,32 +338,33 @@ if (!_hasMovedToLocation || _isManualRelocate) {
           child: _isLoading
               ? const Center(child: CircularProgressIndicator())
               : BMFMapWidget(
-            onBMFMapCreated: (controller) {
-              if (_isDisposed) return;
-              _mapController = controller;
+                  onBMFMapCreated: (controller) {
+                    if (_isDisposed) return;
+                    _mapController = controller;
 
-              if (_currentPosition != null) {
-                _updateMarkerToPosition(_currentPosition!,
-                    triggerCallback: true)
-                    .then((_) {
-                  if (_isDisposed || !mounted) return;
-                  if (!_hasMovedToLocation) {
-                    _moveToMarkerPosition();
-                    _hasMovedToLocation = true;
-                  }
-                });
-              }
+                    if (_currentPosition != null) {
+                      _updateMarkerToPosition(
+                        _currentPosition!,
+                        triggerCallback: true,
+                      ).then((_) {
+                        if (_isDisposed || !mounted) return;
+                        if (!_hasMovedToLocation) {
+                          _moveToMarkerPosition();
+                          _hasMovedToLocation = true;
+                        }
+                      });
+                    }
 
-              _mapController!.setMapOnClickedMapBlankCallback(
-                callback: (coordinate) => _onMapTap(coordinate),
-              );
-            },
-            mapOptions: BMFMapOptions(
-              center: _currentPosition ?? BMFCoordinate(0.0, 0.0),
-              zoomLevel: 20,
-              mapType: BMFMapType.Standard,
-            ),
-          ),
+                    _mapController!.setMapOnClickedMapBlankCallback(
+                      callback: (coordinate) => _onMapTap(coordinate),
+                    );
+                  },
+                  mapOptions: BMFMapOptions(
+                    center: _currentPosition ?? BMFCoordinate(0.0, 0.0),
+                    zoomLevel: 20,
+                    mapType: BMFMapType.Standard,
+                  ),
+                ),
         ),
         if (widget.showCurrentLocationInfo)
           Container(
@@ -368,22 +385,26 @@ if (!_hasMovedToLocation || _isManualRelocate) {
               children: [
                 Text('位置信息', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
-                Text(_locationInfo,
-                    style: Theme.of(context).textTheme.bodyMedium),
+                Text(
+                  _locationInfo,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
                 const SizedBox(height: 12),
                 Row(
                   children: [
                     ElevatedButton.icon(
-                      onPressed: _isLocating ? null : () => _getCurrentLocation(manual: true),
+                      onPressed: _isLocating
+                          ? null
+                          : () => _getCurrentLocation(manual: true),
                       icon: _isLocating
                           ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
                           : const Icon(Icons.my_location, size: 18),
                       label: Text(_isLocating ? '定位中...' : '重新定位'),
                       style: ElevatedButton.styleFrom(
@@ -398,8 +419,9 @@ if (!_hasMovedToLocation || _isManualRelocate) {
                         icon: const Icon(Icons.center_focus_strong, size: 18),
                         label: const Text('回到中心'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor:
-                          Theme.of(context).colorScheme.secondary,
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.secondary,
                           foregroundColor: Colors.white,
                         ),
                       ),
@@ -420,4 +442,3 @@ if (!_hasMovedToLocation || _isManualRelocate) {
     super.dispose();
   }
 }
-

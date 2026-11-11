@@ -8,15 +8,20 @@ import 'package:pdf/widgets.dart' as pw;
 /// PPT 导出为 PDF
 ///
 /// 设计要点：
-/// 1. 图片统一转成 JPEG 再嵌入 —— `pdf` 的 `MemoryImage` 对 JPEG 支持最稳，
-///    遇到 PNG/WebP 先解码再编码，避免个别页整页丢失
+/// 1. JPEG 保留原始字节；其他图片无损转为 PNG，保留细小文字和线条。
 /// 2. 整份合成放在后台 isolate（`compute`）里做，页面不卡
 /// 3. 任一页失败时拒绝导出，避免分享缺页的课件
 class PptExporter {
   PptExporter._();
 
-  /// A4 横向（16:9 的 PPT 铺满宽度时留白最少）
-  static const PdfPageFormat defaultPageFormat = PdfPageFormat.a4;
+  /// 每页随图片比例变化；长边采用 A4 长边，避免额外留白或拉伸。
+  static PdfPageFormat pageFormatFor(int width, int height) {
+    if (width <= 0 || height <= 0) {
+      throw const FormatException('图片尺寸无效');
+    }
+    final scale = PdfPageFormat.a4.height / (width > height ? width : height);
+    return PdfPageFormat(width * scale, height * scale, marginAll: 0);
+  }
 
   /// 合成 PDF。入参是逐页的本地图片路径，重复路径仍代表不同页。
   ///
@@ -50,7 +55,8 @@ class PptPdfResult {
     this.error,
   });
 
-  bool get ok => bytes != null && written > 0 && written == total && skipped.isEmpty;
+  bool get ok =>
+      bytes != null && written > 0 && written == total && skipped.isEmpty;
 }
 
 Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
@@ -67,20 +73,21 @@ Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
   final doc = pw.Document();
   final skipped = <String>[];
   var written = 0;
+  // 重复幻灯片复用图片资源，PDF 页数和顺序仍按原始输入保留。
+  final images = <String, pw.MemoryImage>{};
 
   for (final path in imagePaths) {
     try {
-      final raw = await File(path).readAsBytes();
-      final jpeg = _normalizeToJpeg(raw);
-      final image = pw.MemoryImage(jpeg);
+      final image = images[path] ??= pw.MemoryImage(
+        _normalizeImage(await File(path).readAsBytes()),
+      );
 
       doc.addPage(
         pw.Page(
-          pageFormat: PptExporter.defaultPageFormat,
+          pageFormat: PptExporter.pageFormatFor(image.width!, image.height!),
           margin: pw.EdgeInsets.zero,
-          build: (context) => pw.Center(
-            child: pw.Image(image, fit: pw.BoxFit.contain),
-          ),
+          build: (context) =>
+              pw.Center(child: pw.Image(image, fit: pw.BoxFit.contain)),
         ),
       );
       written++;
@@ -119,8 +126,8 @@ Future<PptPdfResult> _buildInIsolate(List<String> imagePaths) async {
   }
 }
 
-/// 保证交给 `pw.MemoryImage` 的一定是 JPEG 字节
-Uint8List _normalizeToJpeg(Uint8List raw) {
+/// 保留 JPEG 原图，其他格式先完整解码，再以无损 PNG 嵌入。
+Uint8List _normalizeImage(Uint8List raw) {
   // PDF 库只读 JPEG 尺寸就会接受半文件；必须确认主图流完整结束。
   if (raw.length > 3 && raw[0] == 0xFF && raw[1] == 0xD8) {
     if (!_hasCompleteJpeg(raw)) throw const FormatException('JPEG 数据不完整');
@@ -131,7 +138,7 @@ Uint8List _normalizeToJpeg(Uint8List raw) {
   if (decoded == null) {
     throw const FormatException('无法解码图片');
   }
-  return Uint8List.fromList(img.encodeJpg(decoded, quality: 88));
+  return Uint8List.fromList(img.encodePng(decoded));
 }
 
 bool _hasCompleteJpeg(Uint8List raw) {
@@ -153,10 +160,12 @@ bool _hasCompleteJpeg(Uint8List raw) {
     final length = (raw[offset] << 8) | raw[offset + 1];
     if (length < 2 || offset + length > raw.length) return false;
     offset += length; // 跳过 APP/EXIF 等段，不能把缩略图 EOI 当作主图结束。
-    if (marker == 0xda) { // SOS：熵编码数据到下一个非转义、非重启标记为止。
+    if (marker == 0xda) {
+      // SOS：熵编码数据到下一个非转义、非重启标记为止。
       while (offset + 1 < raw.length) {
         final next = raw[offset + 1];
-        if (raw[offset] == 0xff && next != 0 &&
+        if (raw[offset] == 0xff &&
+            next != 0 &&
             !(next >= 0xd0 && next <= 0xd7)) {
           break;
         }

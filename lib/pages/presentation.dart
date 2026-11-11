@@ -17,6 +17,8 @@ import '../models/courseware_question_discovery.dart';
 import '../models/user.dart';
 import '../session/account.dart';
 import '../platform.dart';
+import '../push/notification.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 // [新增] 答案检索模块导入
 import '../api/answer_search.dart';
 import '../models/answer_result.dart';
@@ -181,6 +183,9 @@ class _PresentationPageState extends State<PresentationPage>
   /// [新增] 正在导出 PDF（防止重复点击）
   bool _isExporting = false;
 
+  /// WebSocket 重连重放同一选人事件时避免重复系统提醒。
+  final Set<String> _notifiedRandomPicks = {};
+
   // [新增] PPT 缓存 + 后台识题
   /// 整份 PPT 的识题结果（拿到 PPT 的那一刻就扫完了）
   SlideScanResult _scan = const SlideScanResult.empty();
@@ -257,9 +262,7 @@ class _PresentationPageState extends State<PresentationPage>
   void _syncAnswerControllers() {
     final text = _textAnswer ?? '';
     if (_textAnswerController.text != text) _textAnswerController.text = text;
-    final count = _currentProblem == null
-        ? 0
-        : AnswerFilling.blankCount(_currentProblem!.body);
+    final count = _currentProblem == null ? 0 : _currentProblem!.blankCount;
     while (_blankControllers.length < count) {
       _blankControllers.add(TextEditingController());
     }
@@ -275,9 +278,9 @@ class _PresentationPageState extends State<PresentationPage>
     if (_lessonFinished || problemId == null || presentationId == null) return;
     final draft = AnswerDraft(options: _answer, text: _textAnswer);
     _answerDrafts[AnswerDraftStore.key(presentationId, problemId)] = draft;
-    unawaited(AnswerDraftStore.save(
-      widget.lessonId, presentationId, problemId, draft,
-    ));
+    unawaited(
+      AnswerDraftStore.save(widget.lessonId, presentationId, problemId, draft),
+    );
   }
 
   /// 切题前保存旧题，按课件和题号恢复新题，避免不同课件的同名题串答案。
@@ -475,10 +478,14 @@ class _PresentationPageState extends State<PresentationPage>
 
     // 该写哪个字段由题型决定 —— 这段判断逻辑抽到了 AnswerFilling，
     // 那边有单测覆盖（写错字段的表现是「填了等于没填」，UI 上看不出来）
-    switch (AnswerFilling.fieldFor(problem.problemType, problem.body)) {
+    switch (AnswerFilling.fieldFor(
+      problem.problemType,
+      problem.body,
+      declaredBlankCount: problem.blanks.length,
+    )) {
       // ---- 填空题（多个空）：每空一项写进 _answer ----
       case AnswerField.fillBlanks:
-        final count = AnswerFilling.blankCount(problem.body);
+        final count = problem.blankCount;
         final list = AnswerFilling.splitBlanks(raw, count);
         if (list.isEmpty) return false;
         setState(() {
@@ -749,7 +756,10 @@ class _PresentationPageState extends State<PresentationPage>
         // ---- 第 3 步：填答案 ----
         if (!_isAnswerFilled()) {
           if (cached == null || !cached.usable || cached.results.isEmpty) {
-            AppLogger.w('自动答题', '等到超时仍没拿到可用答案（status=${cached?.status}），放弃自动提交');
+            AppLogger.w(
+              '自动答题',
+              '等到超时仍没拿到可用答案（status=${cached?.status}），放弃自动提交',
+            );
             return;
           }
           _fillAnswerSilently(scanned.question, cached.results.first);
@@ -1654,6 +1664,26 @@ class _PresentationPageState extends State<PresentationPage>
                   ),
                 );
               });
+              final uid = data['uid']?.toString() ?? '';
+              final eventKey = '$uid|$dt';
+              if (uid.isNotEmpty &&
+                  AccountManager.allAccounts.any((u) => u.uid == uid) &&
+                  _notifiedRandomPicks.add(eventKey)) {
+                if (_notifiedRandomPicks.length > 256) {
+                  _notifiedRandomPicks.remove(_notifiedRandomPicks.first);
+                }
+                unawaited(
+                  NotificationService().show(
+                    title: '随机点名',
+                    body: '你被选中了：${data['name'] ?? uid}',
+                    androidDetails: const AndroidNotificationDetails(
+                      'random_pick_channel',
+                      '随机点名',
+                      channelDescription: '雨课堂随机点名通知',
+                    ),
+                  ),
+                );
+              }
             }
           }
           break;
@@ -2235,6 +2265,19 @@ class _PresentationPageState extends State<PresentationPage>
     await _searchThroughQueue(question, hash, forceRefresh: true);
   }
 
+  /// 两种布局重新挂接 PageView 后恢复同一页，保留答案归属及跟随状态。
+  void _setFullScreen(bool value) {
+    final index = _currentSlideIndex;
+    setState(() => _isFullScreen = value);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted &&
+          _pageController.hasClients &&
+          index < _slideModels.length) {
+        _pageController.jumpToPage(index);
+      }
+    });
+  }
+
   Widget _buildFullScreenPPT() {
     return Stack(
       children: [
@@ -2290,9 +2333,7 @@ class _PresentationPageState extends State<PresentationPage>
                   if (result == 'save') {
                     await _saveImageToGallery(cover);
                   } else if (result == 'fullscreen') {
-                    setState(() {
-                      _isFullScreen = false;
-                    });
+                    _setFullScreen(false);
                   }
                 },
                 // 走本课程的磁盘图片缓存（预取过就是秒开，断网也能看）
@@ -2387,7 +2428,12 @@ class _PresentationPageState extends State<PresentationPage>
                     children: [
                       CircularProgressIndicator(),
                       SizedBox(height: 16),
-                      Text('加载 PPT 中...', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                      Text(
+                        '加载 PPT 中...',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
                     ],
                   ),
                 )
@@ -2398,7 +2444,12 @@ class _PresentationPageState extends State<PresentationPage>
                     children: [
                       CircularProgressIndicator(),
                       SizedBox(height: 16),
-                      Text('等待课堂数据...', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                      Text(
+                        '等待课堂数据...',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
                     ],
                   ),
                 )
@@ -2463,9 +2514,7 @@ class _PresentationPageState extends State<PresentationPage>
                                     if (result == 'save') {
                                       await _saveImageToGallery(cover);
                                     } else if (result == 'fullscreen') {
-                                      setState(() {
-                                        _isFullScreen = !_isFullScreen;
-                                      });
+                                      _setFullScreen(!_isFullScreen);
                                     }
                                   },
                                   // 走本课程的磁盘图片缓存
@@ -2485,7 +2534,9 @@ class _PresentationPageState extends State<PresentationPage>
                                         child: Icon(
                                           Icons.error_outline,
                                           size: 48,
-                                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.onSurfaceVariant,
                                         ),
                                       );
                                     },
@@ -3011,8 +3062,11 @@ class _PresentationPageState extends State<PresentationPage>
             snapshot.problemType,
             retry: snapshot.retry,
             time: snapshot.time,
-            options: snapshot.options,
-            content: snapshot.content,
+            options:
+                snapshot.problemType == 4 && (snapshot.options?.isEmpty ?? true)
+                ? [snapshot.content ?? '']
+                : snapshot.options,
+            content: snapshot.problemType == 4 ? null : snapshot.content,
             imageUrls: snapshot.imageUrls,
           );
           if (response == null) {
@@ -3266,16 +3320,10 @@ class _PresentationPageState extends State<PresentationPage>
   Widget _buildFillBlankInputs() {
     if (_currentProblem == null) return const SizedBox.shrink();
 
-    final body = _currentProblem!.body;
-    final blanks = <String>[];
-    final pattern = RegExp(r'\[填空\d*\]');
-    final matches = pattern.allMatches(body);
+    final problem = _currentProblem!;
+    final count = problem.blankCount;
 
-    for (var match in matches) {
-      blanks.add(match.group(0) ?? '');
-    }
-
-    if (blanks.isEmpty) {
+    if (count == 0) {
       return TextField(
         controller: _textAnswerController,
         decoration: const InputDecoration(
@@ -3291,14 +3339,15 @@ class _PresentationPageState extends State<PresentationPage>
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: List.generate(blanks.length, (index) {
+      children: List.generate(count, (index) {
         return Padding(
           padding: const EdgeInsets.only(bottom: 12),
           child: TextField(
             controller: _blankControllers[index],
             decoration: InputDecoration(
-              labelText: '填空${index + 1}',
-              hintText: '请输入第${index + 1}个空的答案',
+              labelText:
+                  '填空${problem.blanks.isNotEmpty ? problem.blanks[index].num : index + 1}',
+              hintText: '请输入答案',
               border: const OutlineInputBorder(),
             ),
             onChanged: (value) {

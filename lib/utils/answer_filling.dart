@@ -35,9 +35,13 @@ class AnswerFilling {
   ///
   /// 这里的 problemType 是雨课堂的原始值：
   /// 1 单选 / 2 多选 / 3 投票 / 4 填空 / 5 简答 / 6 判断
-  static AnswerField fieldFor(int problemType, String body) {
+  static AnswerField fieldFor(
+    int problemType,
+    String body, {
+    int declaredBlankCount = 0,
+  }) {
     if (problemType == 4) {
-      return blankCount(body) > 0
+      return declaredBlankCount > 0 || blankCount(body) > 0
           ? AnswerField.fillBlanks
           : AnswerField.fillSingle;
     }

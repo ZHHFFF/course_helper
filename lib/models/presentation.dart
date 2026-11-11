@@ -18,7 +18,7 @@ enum ProblemType {
   }
 
   int get id => index;
-  
+
   String get label {
     switch (this) {
       case single:
@@ -53,14 +53,23 @@ class Presentation {
   });
 
   static List<dynamic>? rawSlidesOf(Map<String, dynamic> json) {
-    final nested = json['presentation'] is Map ? json['presentation'] as Map : null;
-    final slides = json['slides'] ?? json['Slides'] ?? json['slide_list'] ??
-        json['slideList'] ?? nested?['slides'] ?? nested?['Slides'];
+    final nested = json['presentation'] is Map
+        ? json['presentation'] as Map
+        : null;
+    final slides =
+        json['slides'] ??
+        json['Slides'] ??
+        json['slide_list'] ??
+        json['slideList'] ??
+        nested?['slides'] ??
+        nested?['Slides'];
     return slides is List ? slides : null;
   }
 
   factory Presentation.fromJson(Map<String, dynamic> json) {
-    final presInfo = json['presentation'] is Map ? json['presentation'] as Map : null;
+    final presInfo = json['presentation'] is Map
+        ? json['presentation'] as Map
+        : null;
     final rawSlides = rawSlidesOf(json);
 
     List<PresentationSlide> slidesList = [];
@@ -68,13 +77,20 @@ class Presentation {
       for (final s in rawSlides) {
         if (s is Map) {
           try {
-            slidesList.add(PresentationSlide.fromJson(Map<String, dynamic>.from(s)));
+            slidesList.add(
+              PresentationSlide.fromJson(Map<String, dynamic>.from(s)),
+            );
           } catch (_) {}
         }
       }
     }
 
-    final rawTitle = json['title'] ?? json['name'] ?? presInfo?['title'] ?? presInfo?['name'] ?? '';
+    final rawTitle =
+        json['title'] ??
+        json['name'] ??
+        presInfo?['title'] ??
+        presInfo?['name'] ??
+        '';
     final rawWidth = json['width'] ?? presInfo?['width'] ?? 720;
     final rawHeight = json['height'] ?? presInfo?['height'] ?? 540;
     final rawVersion = json['version'] ?? presInfo?['version'] ?? '1.0';
@@ -113,7 +129,13 @@ class PresentationSlide {
   factory PresentationSlide.fromJson(Map<String, dynamic> json) {
     final rawId = json['id'] ?? json['slide_id'] ?? json['slideId'] ?? '';
     final rawIndex = json['index'] ?? json['Index'] ?? 0;
-    final rawCover = json['cover'] ?? json['Cover'] ?? json['cover_url'] ?? json['image'] ?? json['thumbnail'] ?? '';
+    final rawCover =
+        json['cover'] ??
+        json['Cover'] ??
+        json['cover_url'] ??
+        json['image'] ??
+        json['thumbnail'] ??
+        '';
     final rawCoverAlt = json['coverAlt'] ?? json['cover_alt'] ?? '';
     final rawThumb = json['thumbnail'] ?? json['thumbnail_url'] ?? rawCover;
 
@@ -123,13 +145,20 @@ class PresentationSlide {
       cover: rawCover.toString(),
       coverAlt: rawCoverAlt.toString(),
       thumbnail: rawThumb.toString(),
-      shapes: (json['shapes'] as List?)
-              ?.map((s) => s is Map ? Shape.fromJson(Map<String, dynamic>.from(s)) : null)
+      shapes:
+          (json['shapes'] as List?)
+              ?.map(
+                (s) => s is Map
+                    ? Shape.fromJson(Map<String, dynamic>.from(s))
+                    : null,
+              )
               .whereType<Shape>()
               .toList() ??
           [],
       note: (json['note'] ?? '').toString(),
-      problem: json['problem'] is Map ? Problem.fromJson(Map<String, dynamic>.from(json['problem'])) : null,
+      problem: json['problem'] is Map
+          ? Problem.fromJson(Map<String, dynamic>.from(json['problem']))
+          : null,
     );
   }
 }
@@ -232,6 +261,7 @@ class Problem {
   final List<ProblemOption>? options;
   final int? pollingCount;
   final int? dt;
+  final List<ProblemBlank> blanks;
 
   Problem({
     required this.problemId,
@@ -244,6 +274,7 @@ class Problem {
     this.options,
     this.pollingCount,
     this.dt,
+    this.blanks = const [],
   });
 
   factory Problem.fromJson(Map<String, dynamic> json) {
@@ -255,11 +286,23 @@ class Problem {
       remark: json['remark'] ?? '',
       answers: json['answers'] ?? [],
       hasRemark: json['hasRemark'] ?? false,
-      options: (json['options'] as List?)?.map((o) => ProblemOption.fromJson(o)).toList(),
+      options: (json['options'] as List?)
+          ?.map((o) => ProblemOption.fromJson(o))
+          .toList(),
       pollingCount: json['pollingCount'],
       dt: json['dt'],
+      blanks:
+          (json['blanks'] as List?)
+              ?.map((b) => ProblemBlank.fromJson(b))
+              .toList() ??
+          [],
     );
   }
+
+  /// 优先采用服务端空位数量，旧课件仍兼容题干标记。
+  int get blankCount => blanks.isNotEmpty
+      ? blanks.length
+      : RegExp(r'\[填空\d*\]').allMatches(body).length;
 
   Problem copyWith({int? dt}) {
     return Problem(
@@ -273,6 +316,34 @@ class Problem {
       options: options,
       pollingCount: pollingCount,
       dt: dt ?? this.dt,
+      blanks: blanks,
+    );
+  }
+}
+
+class ProblemBlank {
+  final int num;
+  final int score;
+  final List<String> answers;
+  final bool caseSensitive;
+  final bool fuzzyMatch;
+
+  ProblemBlank({
+    required this.num,
+    required this.score,
+    required this.answers,
+    required this.caseSensitive,
+    required this.fuzzyMatch,
+  });
+
+  factory ProblemBlank.fromJson(Map<String, dynamic> json) {
+    return ProblemBlank(
+      num: _parseInt(json['num'], 0),
+      score: _parseInt(json['score'], 0),
+      answers:
+          (json['answers'] as List?)?.map((a) => a.toString()).toList() ?? [],
+      caseSensitive: json['caseSensitive'] ?? false,
+      fuzzyMatch: json['fuzzyMatch'] ?? false,
     );
   }
 }
@@ -281,15 +352,9 @@ class ProblemOption {
   final String key;
   final String value;
 
-  ProblemOption({
-    required this.key,
-    required this.value,
-  });
+  ProblemOption({required this.key, required this.value});
 
   factory ProblemOption.fromJson(Map<String, dynamic> json) {
-    return ProblemOption(
-      key: json['key'] ?? '',
-      value: json['value'] ?? '',
-    );
+    return ProblemOption(key: json['key'] ?? '', value: json['value'] ?? '');
   }
 }

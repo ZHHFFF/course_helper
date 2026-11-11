@@ -16,8 +16,9 @@ String _fakeSlide(Directory dir, int index, {required bool png}) {
   return path;
 }
 
-int _pdfPageCount(List<int> bytes) =>
-    RegExp(r'/Type\s*/Page\b').allMatches(latin1.decode(bytes, allowInvalid: true)).length;
+int _pdfPageCount(List<int> bytes) => RegExp(
+  r'/Type\s*/Page\b',
+).allMatches(latin1.decode(bytes, allowInvalid: true)).length;
 
 void main() {
   late Directory dir;
@@ -28,6 +29,48 @@ void main() {
 
   tearDown(() {
     if (dir.existsSync()) dir.deleteSync(recursive: true);
+  });
+
+  test('横版、竖版和方形混合课件按每页原比例导出', () async {
+    final paths = <String>[];
+    for (final size in [(160, 90), (90, 160), (100, 100)]) {
+      final file = File('${dir.path}/${size.$1}_${size.$2}.png');
+      file.writeAsBytesSync(
+        img.encodePng(img.Image(width: size.$1, height: size.$2)),
+      );
+      paths.add(file.path);
+    }
+    final result = await PptExporter.build(paths);
+    expect(result.ok, isTrue, reason: result.error);
+    final pdf = latin1.decode(result.bytes!);
+    final boxes = RegExp(r'/MediaBox\s*\[([^\]]+)\]')
+        .allMatches(pdf)
+        .map(
+          (m) => m
+              .group(1)!
+              .trim()
+              .split(RegExp(r'\s+'))
+              .map(double.parse)
+              .toList(),
+        )
+        .toList();
+    expect(boxes, hasLength(3));
+    for (var i = 0; i < boxes.length; i++) {
+      final ratio = (boxes[i][2] - boxes[i][0]) / (boxes[i][3] - boxes[i][1]);
+      expect(ratio, closeTo([16 / 9, 9 / 16, 1.0][i], 0.0001));
+    }
+  });
+
+  test('PNG 细线图片采用无损嵌入，JPEG 原图字节不重新编码', () async {
+    final png = _fakeSlide(dir, 0, png: true);
+    final lossless = await PptExporter.build([png]);
+    expect(lossless.ok, isTrue, reason: lossless.error);
+    expect(latin1.decode(lossless.bytes!), isNot(contains('/DCTDecode')));
+    final jpeg = _fakeSlide(dir, 1, png: false);
+    final original = File(jpeg).readAsBytesSync();
+    final retained = await PptExporter.build([jpeg]);
+    expect(retained.ok, isTrue, reason: retained.error);
+    expect(latin1.decode(retained.bytes!), contains(latin1.decode(original)));
   });
 
   test('把多张图片合成 PDF（含 PNG → JPEG 转码）', () async {
@@ -104,8 +147,17 @@ void main() {
       jpeg.take(jpeg.length - 2).toList(),
       jpeg.take(jpeg.length ~/ 2).toList(),
       // APP 段里允许有缩略图 EOI；它不能掩盖主图缺失的结束块。
-      [...jpeg.take(2), 0xff, 0xe1, 0, 5, 0xff, 0xd9, 0,
-        ...jpeg.skip(2).take(jpeg.length - 4)],
+      [
+        ...jpeg.take(2),
+        0xff,
+        0xe1,
+        0,
+        5,
+        0xff,
+        0xd9,
+        0,
+        ...jpeg.skip(2).take(jpeg.length - 4),
+      ],
     ]) {
       final bad = File('${dir.path}/truncated.jpg');
       await bad.writeAsBytes(badBytes);

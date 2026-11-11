@@ -12,6 +12,7 @@ import '../models/active.dart';
 import '../platform.dart';
 import '../utils/app_logger.dart';
 import '../utils/time.dart';
+import 'notification.dart';
 
 /// 环信即时通讯
 class EasemobIM {
@@ -23,9 +24,6 @@ class EasemobIM {
 
   bool _isLoggedIn = false;
   bool get isLoggedIn => _isLoggedIn;
-
-  final FlutterLocalNotificationsPlugin _notificationsPlugin =
-      FlutterLocalNotificationsPlugin();
 
   Function(bool)? _onConnectionChanged;
 
@@ -49,21 +47,7 @@ class EasemobIM {
     Function(ChatMessage)? onMessageReceived,
   }) async {
     try {
-      // 初始化本地通知插件
-      const androidSettings = AndroidInitializationSettings(
-        '@mipmap/ic_launcher',
-      );
-      const iosSettings = DarwinInitializationSettings(
-        requestAlertPermission: false,
-        requestBadgePermission: false,
-        requestSoundPermission: false,
-      );
-      await _notificationsPlugin.initialize(
-        settings: const InitializationSettings(
-          android: androidSettings,
-          iOS: iosSettings,
-        ),
-      );
+      await NotificationService().initialize();
 
       final options = ChatOptions.withAppKey(_appKey, osType: 2);
       // 使用Linux登录 避免让移动设备掉线
@@ -199,18 +183,17 @@ class EasemobIM {
         channelDescription: '接收课程活动通知',
         importance: Importance.high,
         priority: Priority.high,
+        visibility: NotificationVisibility.public,
       );
-
-      final notificationDetails = NotificationDetails(android: androidDetails);
 
       final notificationId = message.msgId.hashCode & 0x7fffffff;
 
       try {
-        await _notificationsPlugin.show(
+        await NotificationService().show(
           id: notificationId,
           title: '课程活动',
           body: '收到来自$courseName的$activeTypeName活动',
-          notificationDetails: notificationDetails,
+          androidDetails: androidDetails,
           payload: '${active.id}|$courseId|$classId',
         );
       } catch (e) {
