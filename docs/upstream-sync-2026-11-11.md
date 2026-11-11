@@ -32,11 +32,13 @@
 | `3e43713`、`e6eb794`、`3865f06` | fork 当前仅维护 Android，不引入整套 iOS 宿主；共用通知服务含 Darwin 配置，未声称 iOS 可构建 |
 | `14a19fd`、版本提交 | 保留本 fork CONTRIBUTING、版本号和发布流程 |
 
-## 验证及发布状态
+## 验证与发布
 
-- Dart 格式解析与 `git diff --check` 已完成。
-- 不联网的独立 Dart 核心逻辑检查通过 13 项，覆盖空位元数据、旧题干兼容、答案拆分、嵌套 JSON、开课空基线/去重/新课节/账号切换。
-- 新增 Flutter 回归用例：未知活动分类、元数据保留、开课变化，以及实际 PDF 的混合页面比例、PNG 无 JPEG 有损编码、JPEG 原字节保留；现有缺页和截断图片测试继续保留。
-- 本地 Flutter 初始化因尝试访问云实例元数据地址被自动审批拒绝，未运行 Flutter analyze/完整测试/APK 构建。
-- 准备了 pull_request 验证工作流。推送分支被自动审批拒绝，尚未发布分支、创建 PR、运行 CI 或合入远端 master。
-- 后续需在获得推送授权后运行 CI，检查失败并修复，通过后再合入；真实课堂、系统通知、地图和大课件内存仍需设备联调。
+- Dart 格式解析与 `git diff --check` 已完成；独立 Dart 核心逻辑检查通过 13 项。
+- 新增 Flutter 回归用例覆盖未知活动分类、空位元数据保留、开课变化，以及实际 PDF 的混合页面比例、PNG 无 JPEG 有损编码、JPEG 原字节保留；继续保留缺页、重复页及截断图片用例。
+- GitHub CI 的静态检查和完整 Flutter 测试已通过：[验证运行](https://github.com/ZHHFFF/course_helper/actions/runs/43048795454)。
+- CI 使用官方 pub.dev 地址读取原有锁定版本，`pub get --enforce-lockfile` 防止悄悄升级依赖。初次 CI 曾因自动升级地图插件触发接口不兼容，已通过锁文件检查修正。
+- APK 沿用已发布 test97 的 `4000 + run_number` 版本号偏移，防止覆盖安装降级；发布时与 test97 实际 APK 对比签名，并检查 versionCode > 4097。
+- 合并入口：[PR #10](https://github.com/ZHHFFF/course_helper/pull/10)。安装包见仓库 Releases，构建来源、版本号与 SHA-256 写入各版本发布说明。
+- 本地 Flutter 初始化因尝试访问云实例元数据地址被自动审批拒绝，完整验证改在 GitHub CI 执行。
+- 真实课堂、系统通知、地图和大课件内存仍需设备联调，自动化测试不证明服务端和 OEM 行为。
