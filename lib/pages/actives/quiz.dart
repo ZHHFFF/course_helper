@@ -37,7 +37,7 @@ class QuizPage extends StatefulWidget {
     super.key,
     required this.active,
     required this.courseId,
-    required this.classId
+    required this.classId,
   });
 
   @override
@@ -113,10 +113,12 @@ class _QuizPageState extends State<QuizPage> {
   final Map<String, TextEditingController> _controllers = {};
 
   List<User> _selectedAccounts = [];
+  List<User>? _initialSelectedAccounts;
 
   // [新增] 自动答题相关状态
   /// 已经自动提交过，避免重复提交
   bool _autoSubmitted = false;
+
   /// 正在检索的题目索引，避免重复请求
   final Set<int> _preSearching = {};
 
@@ -189,11 +191,12 @@ class _QuizPageState extends State<QuizPage> {
       case 10:
         final blanks = personAnswer['blankAnswer'];
         if (blanks is! List || blanks.isEmpty) return false;
-        return blanks.every((b) =>
-            (b is Map ? (b['content'] ?? '') : '')
-                .toString()
-                .trim()
-                .isNotEmpty);
+        return blanks.every(
+          (b) => (b is Map ? (b['content'] ?? '') : '')
+              .toString()
+              .trim()
+              .isNotEmpty,
+        );
       case 4:
       case 5:
       case 6:
@@ -294,7 +297,8 @@ class _QuizPageState extends State<QuizPage> {
 
     // 没选账号就默认用全部账号
     if (_selectedAccounts.isEmpty) {
-      _selectedAccounts = AccountManager.allAccounts;
+      _selectedAccounts =
+          _initialSelectedAccounts ?? AccountManager.allAccounts;
     }
     if (_selectedAccounts.isEmpty) {
       AppLogger.w('自动答题', '没有可用账号，跳过自动提交');
@@ -312,44 +316,7 @@ class _QuizPageState extends State<QuizPage> {
     await _submitAnswersForAllAccounts();
   }
 
-  Future<void> _initialize() async {
-    try {
-      final response = await ApiService.sendRequest(widget.active.url, responseType: ResponseType.plain);
-      if (!mounted) return;
-      if (response == null) {
-        setState(() {
-          _errorMessage = '获取数据失败';
-          _isLoading = false;
-        });
-        return;
-      }
-      String htmlContent = response.data.toString();
-
-      RegExp activeStatusRegex = RegExp(r'activeStatus: (.+?),');
-      Match? statusMatch = activeStatusRegex.firstMatch(htmlContent);
-
-      if (statusMatch != null) {
-        String status = statusMatch.group(1)!;
-
-        if (status == 'undefined') {
-          await _loadQuizDataFromHtml(htmlContent);
-        } else {
-          setState(() {
-            _isLoading = false;
-            _errorMessage = '您已提交过本次测验';
-          });
-        }
-      } else {
-        await _loadQuizDataFromHtml(htmlContent);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _errorMessage = '检查活动状态失败: $e';
-        _isLoading = false;
-      });
-    }
-  }
+  Future<void> _initialize() => _loadQuizData();
 
   void _startCountdown() {
     final endTime = _activeData?['endTime'];
@@ -405,13 +372,28 @@ class _QuizPageState extends State<QuizPage> {
 
   Future<void> _loadQuizDataFromHtml(String htmlContent) async {
     try {
-      final quizListJson = extractQuizJson(htmlContent, 'quizList');
+      final quizListJson =
+          extractQuizJson(htmlContent, 'questionList') ??
+          extractQuizJson(htmlContent, 'quizList');
       final activeJson = extractQuizJson(htmlContent, 'active');
 
       if (quizListJson != null && activeJson != null) {
         List<dynamic> quizList = json.decode(quizListJson);
         Map<String, dynamic> activeData = json.decode(activeJson);
 
+        // 已提交账号仍可查看题目，但不能再被自动或默认勾选提交。
+        final answered = quizList.any(
+          (q) => q is Map && q['studentAnswer'] != null,
+        );
+        final currentUid = AccountManager.currentUser?.uid;
+        _initialSelectedAccounts = answered
+            ? AccountManager.allAccounts
+                  .where((u) => u.uid != currentUid)
+                  .toList()
+            : null;
+        _selectedAccounts =
+            _initialSelectedAccounts ?? AccountManager.allAccounts;
+        if (!mounted) return;
         setState(() {
           _quizList = quizList;
           _activeData = activeData;
@@ -480,7 +462,10 @@ class _QuizPageState extends State<QuizPage> {
 
   Future<void> _loadQuizData() async {
     try {
-      final response = await ApiService.sendRequest(widget.active.url, responseType: ResponseType.plain);
+      final response = await ApiService.sendRequest(
+        widget.active.url,
+        responseType: ResponseType.plain,
+      );
       if (!mounted) return;
       if (response == null) {
         setState(() {
@@ -490,73 +475,7 @@ class _QuizPageState extends State<QuizPage> {
         return;
       }
 
-      String htmlContent = response.data.toString();
-
-      final quizListJson = extractQuizJson(htmlContent, 'quizList');
-      final activeJson = extractQuizJson(htmlContent, 'active');
-
-      if (quizListJson != null && activeJson != null) {
-        List<dynamic> quizList = json.decode(quizListJson);
-        Map<String, dynamic> activeData = json.decode(activeJson);
-
-        setState(() {
-          _quizList = quizList;
-          _activeData = activeData;
-          _isLoading = false;
-
-          for (var quiz in _quizList) {
-            if (quiz['personAnswer'] == null) {
-              quiz['personAnswer'] = {};
-            }
-
-            switch (quiz['type']) {
-              case 0:
-              case 1:
-              case 3:
-              case 16:
-                quiz['personAnswer']['myoption'] = '';
-                break;
-              case 2:
-              case 9:
-              case 10:
-                if (quiz['personAnswer']['blankAnswer'] == null) {
-                  quiz['personAnswer']['blankAnswer'] = [];
-                  if (quiz['answer'] != null) {
-                    for (int i = 0; i < quiz['answer'].length; i++) {
-                      quiz['personAnswer']['blankAnswer'].add({'content': ''});
-                    }
-                  }
-                }
-                break;
-              case 4:
-              case 5:
-              case 6:
-              case 7:
-              case 18:
-                quiz['personAnswer']['content'] = '';
-                if (quiz['personAnswer']['recs'] == null) {
-                  quiz['personAnswer']['recs'] = [];
-                }
-                if (quiz['personAnswer']['imgs'] == null) {
-                  quiz['personAnswer']['imgs'] = [];
-                }
-                break;
-            }
-          }
-
-          if (_activeData != null) {
-            _startCountdown();
-          }
-        });
-
-        // [新增] 题目就绪：先把服务器没给答案的题用 AI 补上，再按设置决定是否自动提交
-        unawaited(_afterQuizLoaded());
-      } else {
-        setState(() {
-          _errorMessage = '解析测验数据失败';
-          _isLoading = false;
-        });
-      }
+      await _loadQuizDataFromHtml(response.data.toString());
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -569,19 +488,19 @@ class _QuizPageState extends State<QuizPage> {
   Future<void> _submitAnswersForAllAccounts() async {
     if (_selectedAccounts.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请选择至少一个账号')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请选择至少一个账号')));
       }
       return;
     }
 
     final status = await QuizApi.checkStatus(widget.classId, widget.active.id);
-    if (status != null && !status){
+    if (status != null && !status) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('活动已结束')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('活动已结束')));
         return;
       }
     }
@@ -605,7 +524,10 @@ class _QuizPageState extends State<QuizPage> {
           try {
             final api = QuizApi(user);
             return await api.submitAnswer(
-              widget.classId, widget.courseId, widget.active.id, submitData
+              widget.classId,
+              widget.courseId,
+              widget.active.id,
+              submitData,
             );
           } catch (e) {
             errorByUid[user.uid.toString()] = describeErrorShort(e);
@@ -624,7 +546,9 @@ class _QuizPageState extends State<QuizPage> {
             _networkFailCount++;
             _failedAccounts.add('${account.name}: [网络异常] $netError');
           } else {
-            _failedAccounts.add('${account.name}: ${result?['errorMsg'] ?? '提交失败'}');
+            _failedAccounts.add(
+              '${account.name}: ${result?['errorMsg'] ?? '提交失败'}',
+            );
           }
         }
       }
@@ -716,7 +640,8 @@ class _QuizPageState extends State<QuizPage> {
 
     final successCount = _totalCount - _failedAccounts.length;
 
-    final bool allNetworkFailed = successCount == 0 &&
+    final bool allNetworkFailed =
+        successCount == 0 &&
         _networkFailCount > 0 &&
         _networkFailCount == _failedAccounts.length;
 
@@ -734,7 +659,8 @@ class _QuizPageState extends State<QuizPage> {
     String message = '答案提交完成！\n成功: $successCount/$_totalCount';
     if (_networkFailCount > 0) {
       message += '\n网络异常: $_networkFailCount 个账号';
-      message += '\n\n提示：网络异常表示请求没有到达服务器，'
+      message +=
+          '\n\n提示：网络异常表示请求没有到达服务器，'
           '通常是断网、超时或接口无法访问。请检查手机网络后重新提交。';
     }
     if (_failedAccounts.isNotEmpty) {
@@ -783,7 +709,10 @@ class _QuizPageState extends State<QuizPage> {
                   ),
                   if (isMust)
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
                       margin: const EdgeInsets.only(right: 8),
                       decoration: BoxDecoration(
                         color: MiuixTheme.of(context).colors.error,
@@ -791,7 +720,10 @@ class _QuizPageState extends State<QuizPage> {
                       ),
                       child: Text(
                         '必答',
-                        style: TextStyle(color: MiuixTheme.of(context).colors.onError, fontSize: 12),
+                        style: TextStyle(
+                          color: MiuixTheme.of(context).colors.onError,
+                          fontSize: 12,
+                        ),
                       ),
                     ),
                   Expanded(
@@ -800,7 +732,10 @@ class _QuizPageState extends State<QuizPage> {
                       children: [
                         Text(
                           '[${_getQuizTypeName(quizType)}] ',
-                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                         SelectionArea(
                           child: Html(
@@ -808,16 +743,18 @@ class _QuizPageState extends State<QuizPage> {
                             extensions: [
                               ImageExtension(
                                 builder: (context) {
-                                  final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
+                                  final imageUrl = CXImageApi.toNewImageUrl(
+                                    context.attributes['src'] ?? '',
+                                  );
                                   return Image.network(
                                     imageUrl,
                                     headers: HeadersManager.chaoxingHeaders,
                                     width: 80,
-                                    alignment: Alignment.bottomCenter
+                                    alignment: Alignment.bottomCenter,
                                   );
-                                }
-                              )
-                            ]
+                                },
+                              ),
+                            ],
                           ),
                         ),
                       ],
@@ -826,7 +763,11 @@ class _QuizPageState extends State<QuizPage> {
                   // [新增] 搜索答案按钮
                   MiuixIconButton(
                     onPressed: () => _searchAnswer(quiz),
-                    child: Icon(Icons.search, size: 20, color: Theme.of(context).colorScheme.primary),
+                    child: Icon(
+                      Icons.search,
+                      size: 20,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                   ),
                   // [/新增]
                 ],
@@ -891,30 +832,33 @@ class _QuizPageState extends State<QuizPage> {
               extensions: [
                 ImageExtension(
                   builder: (context) {
-                    final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
+                    final imageUrl = CXImageApi.toNewImageUrl(
+                      context.attributes['src'] ?? '',
+                    );
                     return Image.network(
                       imageUrl,
                       headers: HeadersManager.chaoxingHeaders,
                       width: 60,
-                      alignment: Alignment.bottomCenter
+                      alignment: Alignment.bottomCenter,
                     );
-                  }
-                )
-              ]
+                  },
+                ),
+              ],
             ),
             secondary: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: isSelected ?
-                scheme.primary : scheme.inversePrimary,
+                color: isSelected ? scheme.primary : scheme.inversePrimary,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
                 optionLabel,
                 style: TextStyle(
-                  color: isSelected ?
-                  scheme.onPrimary : isAnswer ?
-                  scheme.primary : scheme.secondaryFixed,
+                  color: isSelected
+                      ? scheme.onPrimary
+                      : isAnswer
+                      ? scheme.primary
+                      : scheme.secondaryFixed,
                   fontWeight: isAnswer ? FontWeight.w900 : FontWeight.bold,
                   fontSize: 14,
                 ),
@@ -940,7 +884,8 @@ class _QuizPageState extends State<QuizPage> {
       children: answers.map((option) {
         final optionLabel = _getOptionLabel(option, quiz['type']);
         final isAnswer = option['isanswer'] == true;
-        final selectedOptions = (quiz['personAnswer']['myoption'] as String?)?.split('') ?? [];
+        final selectedOptions =
+            (quiz['personAnswer']['myoption'] as String?)?.split('') ?? [];
         final isSelected = selectedOptions.contains(option['name']);
         final scheme = Theme.of(context).colorScheme;
 
@@ -950,30 +895,33 @@ class _QuizPageState extends State<QuizPage> {
             extensions: [
               ImageExtension(
                 builder: (context) {
-                  final imageUrl = CXImageApi.toNewImageUrl(context.attributes['src'] ?? '');
+                  final imageUrl = CXImageApi.toNewImageUrl(
+                    context.attributes['src'] ?? '',
+                  );
                   return Image.network(
                     imageUrl,
                     headers: HeadersManager.chaoxingHeaders,
                     width: 60,
-                    alignment: Alignment.bottomCenter
+                    alignment: Alignment.bottomCenter,
                   );
-                }
-              )
-            ]
+                },
+              ),
+            ],
           ),
           secondary: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: isSelected ?
-              scheme.primary : scheme.inversePrimary,
+              color: isSelected ? scheme.primary : scheme.inversePrimary,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
               optionLabel,
               style: TextStyle(
-                color: isSelected ?
-                scheme.onPrimary : isAnswer ?
-                scheme.primary : scheme.secondaryFixed,
+                color: isSelected
+                    ? scheme.onPrimary
+                    : isAnswer
+                    ? scheme.primary
+                    : scheme.secondaryFixed,
                 fontWeight: isAnswer ? FontWeight.w900 : FontWeight.bold,
                 fontSize: 14,
               ),
@@ -1042,9 +990,9 @@ class _QuizPageState extends State<QuizPage> {
               child: Hero(
                 tag: heroTag,
                 child: Image.network(
-                    url,
-                    headers: HeadersManager.chaoxingHeaders,
-                    fit: BoxFit.contain
+                  url,
+                  headers: HeadersManager.chaoxingHeaders,
+                  fit: BoxFit.contain,
                 ),
               ),
             ),
@@ -1072,9 +1020,9 @@ class _QuizPageState extends State<QuizPage> {
             return null;
           } catch (e) {
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('图片上传失败：${image.path}')),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text('图片上传失败：${image.path}')));
             }
             return null;
           }
@@ -1095,7 +1043,7 @@ class _QuizPageState extends State<QuizPage> {
                   'suffix': xfile.path.split('.').last,
                   'type': '1',
                   "preview": "",
-                  "thumbnail": ""
+                  "thumbnail": "",
                 });
               }
             }
@@ -1104,9 +1052,9 @@ class _QuizPageState extends State<QuizPage> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('选择图片失败：$e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('选择图片失败：$e')));
       }
     }
   }
@@ -1128,24 +1076,35 @@ class _QuizPageState extends State<QuizPage> {
       children: blankAnswers.asMap().entries.map((entry) {
         final index = entry.key;
         final blank = entry.value;
-        final correctAnswer = correctAnswers != null && index < correctAnswers.length
+        final correctAnswer =
+            correctAnswers != null && index < correctAnswers.length
             ? correctAnswers[index]['content'] ?? ''
             : '';
 
-        final hintText = correctAnswer.isNotEmpty ?
-        _extractTextFromHtml(correctAnswer).split(';').first.trim() : '请输入答案';
-        final imageUrls = correctAnswer.isNotEmpty ? _extractImageUrls(correctAnswer) : <String>[];
+        final hintText = correctAnswer.isNotEmpty
+            ? _extractTextFromHtml(correctAnswer).split(';').first.trim()
+            : '请输入答案';
+        final imageUrls = correctAnswer.isNotEmpty
+            ? _extractImageUrls(correctAnswer)
+            : <String>[];
 
         final controllerKey = 'blank_${quizIndex}_$index';
-        final controller = _controllers.putIfAbsent(controllerKey,
-          () => TextEditingController(text: blank['content'] ?? ''));
+        final controller = _controllers.putIfAbsent(
+          controllerKey,
+          () => TextEditingController(text: blank['content'] ?? ''),
+        );
 
         return Padding(
           padding: const EdgeInsets.only(bottom: 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('第${index + 1}空：', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+              Text(
+                '第${index + 1}空：',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
               Stack(
                 children: [
                   TextField(
@@ -1154,8 +1113,9 @@ class _QuizPageState extends State<QuizPage> {
                     decoration: InputDecoration(
                       hintText: hintText,
                       border: const OutlineInputBorder(),
-                      contentPadding: imageUrls.isNotEmpty ?
-                      const EdgeInsets.fromLTRB(12, 12, 12, 60) : const EdgeInsets.all(12),
+                      contentPadding: imageUrls.isNotEmpty
+                          ? const EdgeInsets.fromLTRB(12, 12, 12, 60)
+                          : const EdgeInsets.all(12),
                     ),
                     controller: controller,
                     onChanged: (value) {
@@ -1181,9 +1141,13 @@ class _QuizPageState extends State<QuizPage> {
                               return Padding(
                                 padding: const EdgeInsets.only(right: 6),
                                 child: GestureDetector(
-                                  onTap: () => _showImageDialog(url, 'blank_image_${quizIndex}_${index}_$imgIndex'),
+                                  onTap: () => _showImageDialog(
+                                    url,
+                                    'blank_image_${quizIndex}_${index}_$imgIndex',
+                                  ),
                                   child: Hero(
-                                    tag: 'blank_image_${quizIndex}_${index}_$imgIndex',
+                                    tag:
+                                        'blank_image_${quizIndex}_${index}_$imgIndex',
                                     child: Image.network(
                                       url,
                                       headers: HeadersManager.chaoxingHeaders,
@@ -1215,11 +1179,17 @@ class _QuizPageState extends State<QuizPage> {
         : '';
 
     final controllerKey = 'short_$quizIndex';
-    final controller = _controllers.putIfAbsent(controllerKey,
-      () => TextEditingController(text: quiz['personAnswer']['content'] ?? ''));
+    final controller = _controllers.putIfAbsent(
+      controllerKey,
+      () => TextEditingController(text: quiz['personAnswer']['content'] ?? ''),
+    );
 
-    final hintText = correctAnswer.isNotEmpty ? _extractTextFromHtml(correctAnswer) : '请输入答案';
-    final imageUrls = correctAnswer.isNotEmpty ? _extractImageUrls(correctAnswer) : <String>[];
+    final hintText = correctAnswer.isNotEmpty
+        ? _extractTextFromHtml(correctAnswer)
+        : '请输入答案';
+    final imageUrls = correctAnswer.isNotEmpty
+        ? _extractImageUrls(correctAnswer)
+        : <String>[];
 
     final uploadedImages = quiz['personAnswer']['recs'] as List? ?? [];
 
@@ -1265,7 +1235,10 @@ class _QuizPageState extends State<QuizPage> {
                                 return Padding(
                                   padding: const EdgeInsets.only(right: 8),
                                   child: GestureDetector(
-                                    onTap: () => _showImageDialog(url, 'quiz_image_${quizIndex}_$index'),
+                                    onTap: () => _showImageDialog(
+                                      url,
+                                      'quiz_image_${quizIndex}_$index',
+                                    ),
                                     child: Hero(
                                       tag: 'quiz_image_${quizIndex}_$index',
                                       child: Image.network(
@@ -1273,7 +1246,7 @@ class _QuizPageState extends State<QuizPage> {
                                         headers: HeadersManager.chaoxingHeaders,
                                         width: 60,
                                         height: 60,
-                                        fit: BoxFit.cover
+                                        fit: BoxFit.cover,
                                       ),
                                     ),
                                   ),
@@ -1314,7 +1287,10 @@ class _QuizPageState extends State<QuizPage> {
                   child: Stack(
                     children: [
                       GestureDetector(
-                        onTap: () => _showImageDialog(imageUrl, 'short_answer_image_${quizIndex}_$index'),
+                        onTap: () => _showImageDialog(
+                          imageUrl,
+                          'short_answer_image_${quizIndex}_$index',
+                        ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
                           child: Hero(
@@ -1366,7 +1342,7 @@ class _QuizPageState extends State<QuizPage> {
       2: '填空题',
       3: '判断题',
       4: '简答题',
-      16: '判断题'
+      16: '判断题',
     };
     return typeNames[type] ?? '未知题型';
   }
@@ -1384,51 +1360,52 @@ class _QuizPageState extends State<QuizPage> {
     return Material(
       type: MaterialType.transparency,
       child: MiuixScaffold(
-      topBar: MiuixTopAppBar(
-        title: widget.active.name,
-        blurred: ThemeSetting.blurOf(context),
-        navigationIcon: MiuixIconButton(
-          onPressed: () => Navigator.of(context).maybePop(),
-          child: const Icon(Icons.arrow_back_ios_new, size: 20),
+        topBar: MiuixTopAppBar(
+          title: widget.active.name,
+          blurred: ThemeSetting.blurOf(context),
+          navigationIcon: MiuixIconButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+            child: const Icon(Icons.arrow_back_ios_new, size: 20),
+          ),
         ),
-      ),
-      content: (contentPadding) => Column(
-        children: [
-          SizedBox(height: contentPadding.top),
-          if (_activeData != null)
-            _CountdownDisplay(
-              timeNotifier: _remainingTimeNotifier,
-              isManualEnd: _isManualEnd,
-            ),
+        content: (contentPadding) => Column(
+          children: [
+            SizedBox(height: contentPadding.top),
+            if (_activeData != null)
+              _CountdownDisplay(
+                timeNotifier: _remainingTimeNotifier,
+                isManualEnd: _isManualEnd,
+              ),
 
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator()) // Using default or MiuixCircularProgressIndicator if available
-                : _errorMessage != null
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.error_outline,
-                        size: 48,
-                        color: MiuixTheme.of(context).colors.error,
+            Expanded(
+              child: _isLoading
+                  ? const Center(
+                      child: CircularProgressIndicator(),
+                    ) // Using default or MiuixCircularProgressIndicator if available
+                  : _errorMessage != null
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.error_outline,
+                            size: 48,
+                            color: MiuixTheme.of(context).colors.error,
+                          ),
+                          const SizedBox(height: 16),
+                          MiuixText(_errorMessage!, fontSize: 16),
+                          const SizedBox(height: 16),
+                          MiuixButton(
+                            onPressed: _loadQuizData,
+                            colors: MiuixButtonDefaults.buttonColorsPrimary(
+                              context,
+                            ),
+                            child: const MiuixText('重新加载', fontSize: 16),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 16),
-                      MiuixText(
-                        _errorMessage!,
-                        fontSize: 16,
-                      ),
-                      const SizedBox(height: 16),
-                      MiuixButton(
-                        onPressed: _loadQuizData,
-                        colors: MiuixButtonDefaults.buttonColorsPrimary(context),
-                        child: const MiuixText('重新加载', fontSize: 16),
-                      ),
-                    ],
-                  ),
-                )
-              : _quizList.isEmpty
+                    )
+                  : _quizList.isEmpty
                   ? const Center(child: Text('暂无题目'))
                   : Column(
                       children: [
@@ -1451,6 +1428,7 @@ class _QuizPageState extends State<QuizPage> {
                               });
                             },
                             initiallyExpanded: false,
+                            initialSelected: _initialSelectedAccounts,
                           ),
                         ),
 
@@ -1458,39 +1436,49 @@ class _QuizPageState extends State<QuizPage> {
 
                         Container(
                           padding: EdgeInsets.only(
-                            left: 16, 
-                            right: 16, 
-                            top: 16, 
-                            bottom: contentPadding.bottom > 0 ? contentPadding.bottom : 16
+                            left: 16,
+                            right: 16,
+                            top: 16,
+                            bottom: contentPadding.bottom > 0
+                                ? contentPadding.bottom
+                                : 16,
                           ),
                           child: MiuixButton(
-                            onPressed: _isSubmitting ? null : _submitAnswersForAllAccounts,
-                            colors: MiuixButtonDefaults.buttonColorsPrimary(context),
-                            child: _isSubmitting 
-                              ? const Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            onPressed: _isSubmitting
+                                ? null
+                                : _submitAnswersForAllAccounts,
+                            colors: MiuixButtonDefaults.buttonColorsPrimary(
+                              context,
+                            ),
+                            child: _isSubmitting
+                                ? const Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor:
+                                              AlwaysStoppedAnimation<Color>(
+                                                Colors.white,
+                                              ),
+                                        ),
                                       ),
-                                    ),
-                                    SizedBox(width: 12),
-                                    MiuixText('提交中...', fontSize: 16),
-                                  ],
-                                )
-                              : const MiuixText('提交', fontSize: 16),
+                                      SizedBox(width: 12),
+                                      MiuixText('提交中...', fontSize: 16),
+                                    ],
+                                  )
+                                : const MiuixText('提交', fontSize: 16),
                           ),
                         ),
                       ],
                     ),
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
-    ));
+    );
   }
 }

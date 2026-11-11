@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 enum ActiveType {
+  unknown(0, '未知'), // 任务的activeId是空字符串
   signIn(2, '签到'),
   answer(4, '抢答'),
   topicDiscuss(5, '主题讨论'),
@@ -40,20 +41,14 @@ enum ActiveType {
   }
 }
 
-enum SignType {
-  normal,
-  qrCode,
-  pattern,
-  location,
-  code
-}
+enum SignType { normal, qrCode, pattern, location, code }
 
 const Map<int, SignType> signTypeIndexMap = {
   0: SignType.normal,
   2: SignType.qrCode,
   3: SignType.pattern,
   4: SignType.location,
-  5: SignType.code
+  5: SignType.code,
 };
 
 SignType getSignTypeFromIndex(int index) {
@@ -83,12 +78,13 @@ class Active {
     required this.attendNum,
     required this.status,
     this.extras,
-    this.signType
-  }) : activeType = ActiveType.fromValue(type) ?? ActiveType.signIn;
+    this.signType,
+  }) : activeType = ActiveType.fromValue(type) ?? ActiveType.unknown;
 
   factory Active.fromJson(Map<String, dynamic> json) {
-    int activeType = json['activeType'] is int ?
-    json['activeType'] : int.tryParse(json['activeType']?.toString() ?? '0') ?? 0;
+    int activeType = json['activeType'] is int
+        ? json['activeType']
+        : int.tryParse(json['activeType']?.toString() ?? '0') ?? 0;
     // 接口不稳定
     return Active(
       type: activeType,
@@ -99,7 +95,7 @@ class Active {
       url: json['url'] ?? '',
       attendNum: json['attendNum'] ?? 0,
       status: json['status'] == 1,
-      extras: json['extraInfo']
+      extras: json['extraInfo'],
     );
   }
 
@@ -128,10 +124,9 @@ class Active {
       ActiveType.pptClass: Icons.slideshow,
     };
 
-    if (activeType == ActiveType.signIn || 
-        activeType == ActiveType.signOut || 
+    if (activeType == ActiveType.signIn ||
+        activeType == ActiveType.signOut ||
         activeType == ActiveType.scheduledSignIn) {
-      
       const Map<SignType, IconData> signIconMap = {
         SignType.normal: Icons.check_circle_outline,
         SignType.pattern: Icons.pattern,
@@ -139,7 +134,7 @@ class Active {
         SignType.qrCode: Icons.qr_code,
         SignType.code: Icons.pin,
       };
-      
+
       return signIconMap[signType] ?? Icons.check_circle_outline;
     }
 

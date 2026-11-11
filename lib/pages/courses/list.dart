@@ -22,6 +22,10 @@ import '../../utils/app_logger.dart';
 import '../actives/sign_in/sign_in.dart';
 import '../actives/topic_discuss.dart';
 import '../actives/quiz.dart';
+import '../actives/pick.dart';
+import '../../push/notification.dart';
+import '../../push/lesson_start_tracker.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../actives/evaluate.dart';
 import '../actives/vote.dart';
 import '../actives/questionnaire.dart';
@@ -31,18 +35,23 @@ import '../push/groups.dart';
 import '../../push/easemob.dart';
 import '../../setting/theme_setting.dart';
 
-
 class CoursesPage extends StatefulWidget {
   const CoursesPage({super.key});
 
   @override
   State<CoursesPage> createState() => _CoursesPageState();
 
-  static void navigateToActive(BuildContext context, Active active, String courseId, String classId, String cpi) {
+  static void navigateToActive(
+    BuildContext context,
+    Active active,
+    String courseId,
+    String classId,
+    String cpi,
+  ) {
     if (!active.status) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('该活动已结束')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('该活动已结束')));
       return;
     }
 
@@ -57,12 +66,19 @@ class CoursesPage extends StatefulWidget {
               active: active,
               courseId: courseId,
               classId: classId,
-              cpi: cpi
+              cpi: cpi,
             ),
           ),
         );
         break;
-      
+
+      case ActiveType.pick:
+        Navigator.push(
+          context,
+          MiuixPageRoute(builder: (_) => PickPage(active: active)),
+        );
+        break;
+
       case ActiveType.topicDiscuss:
         Navigator.push(
           context,
@@ -71,20 +87,17 @@ class CoursesPage extends StatefulWidget {
           ),
         );
         break;
-      
+
       case ActiveType.quiz:
         Navigator.push(
           context,
           MiuixPageRoute(
-            builder: (context) => QuizPage(
-              active: active,
-              courseId: courseId,
-              classId: classId
-            ),
+            builder: (context) =>
+                QuizPage(active: active, courseId: courseId, classId: classId),
           ),
         );
         break;
-      
+
       case ActiveType.evaluation:
         Navigator.push(
           context,
@@ -92,21 +105,18 @@ class CoursesPage extends StatefulWidget {
             builder: (context) => EvaluatePage(
               active: active,
               courseId: courseId,
-              classId: classId
+              classId: classId,
             ),
           ),
         );
         break;
-      
+
       case ActiveType.vote:
         Navigator.push(
           context,
           MiuixPageRoute(
-            builder: (context) => VotePage(
-              active: active,
-              courseId: courseId,
-              classId: classId
-            ),
+            builder: (context) =>
+                VotePage(active: active, courseId: courseId, classId: classId),
           ),
         );
         break;
@@ -118,18 +128,16 @@ class CoursesPage extends StatefulWidget {
             builder: (context) => QuestionnairePage(
               active: active,
               courseId: courseId,
-              classId: classId
+              classId: classId,
             ),
           ),
         );
         break;
-      
+
       default:
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('该活动类型暂不支持'),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('该活动类型暂不支持')));
     }
   }
 }
@@ -145,6 +153,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
   StreamSubscription? _messageStoreSubscription;
   Timer? _refreshTimer;
   List<dynamic> _lastOnLessonCourses = [];
+  final _lessonStarts = LessonStartTracker();
   bool _isVisible = false;
 
   /// 顶栏「滚动折叠」的行为对象。
@@ -202,15 +211,17 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     _messageStoreSubscription = ActivityMessageStore().changes.listen((_) {
       if (mounted) setState(() {});
     });
-    _accountChangeSubscription =
-        AccountChangeNotifier().accountChanges.listen((_) {
-          ActivityMessageStore().clearAll();
-          if (mounted) {
-            _lastOnLessonCourses = [];
-            _loadCourses();
-          }
-          _startPeriodicRefresh();
-        });
+    _accountChangeSubscription = AccountChangeNotifier().accountChanges.listen((
+      _,
+    ) {
+      ActivityMessageStore().clearAll();
+      if (mounted) {
+        _lastOnLessonCourses = [];
+        _lessonStarts.reset();
+        _loadCourses();
+      }
+      _startPeriodicRefresh();
+    });
   }
 
   @override
@@ -235,7 +246,8 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
 
       try {
         final onLessonCourses = await RCCourseApi.getOnLesson();
-        if (!mounted || loadGeneration != _loadGeneration ||
+        if (!mounted ||
+            loadGeneration != _loadGeneration ||
             pollGeneration != _pollGeneration ||
             uid != AccountManager.currentSessionId ||
             !PlatformManager().isRainClassroom ||
@@ -243,7 +255,34 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
           return;
         }
         if (onLessonCourses != null && mounted) {
-          if (!const DeepCollectionEquality().equals(_lastOnLessonCourses, onLessonCourses)) {
+          // 已通过账号/服务器/请求代次校验，通知只取此快照新出现的课节。
+          for (final lesson in _lessonStarts.update(
+            '$uid|$server',
+            onLessonCourses,
+          )) {
+            final courseId = lesson['courseId'].toString();
+            final course = _courses.firstWhereOrNull(
+              (c) => c.courseId == courseId,
+            );
+            unawaited(
+              NotificationService().show(
+                title: '课堂开始',
+                body: '${course?.name ?? '课程 $courseId'} 开始上课了',
+                androidDetails: const AndroidNotificationDetails(
+                  'lesson_start_channel',
+                  '课堂开始',
+                  channelDescription: '雨课堂开课通知',
+                  importance: Importance.high,
+                  priority: Priority.high,
+                  visibility: NotificationVisibility.public,
+                ),
+              ),
+            );
+          }
+          if (!const DeepCollectionEquality().equals(
+            _lastOnLessonCourses,
+            onLessonCourses,
+          )) {
             _lastOnLessonCourses = onLessonCourses;
             // 静默刷新：轮询不能把列表切回 loading，否则每 3 秒「重载」一次。
             _loadCourses(onLessonCourses: onLessonCourses, silent: true);
@@ -383,21 +422,21 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
       });
       return;
     }
-  
+
     if (result.startsWith('http')) {
       try {
         final uri = Uri.parse(result);
         final baseUrl = uri.origin + uri.path;
         final params = uri.queryParameters;
-  
+
         // 判断是否为签到 URL
         if (baseUrl == 'https://mobilelearn.chaoxing.com/widget/sign/e') {
           if (!PlatformManager().isChaoxing) {
             await PlatformManager().setPlatform(PlatformType.chaoxing);
             if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('自动切换平台为学习通')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('自动切换平台为学习通')));
           }
           if (!AccountManager.hasActiveSession()) {
             if (!mounted) return;
@@ -418,15 +457,19 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
             );
             return;
           }
-  
+
           final activeId = params['id'];
           if (activeId != null) {
-            final response = await ApiService.sendRequest(result, responseType: ResponseType.plain, allowRedirects: false);
+            final response = await ApiService.sendRequest(
+              result,
+              responseType: ResponseType.plain,
+              allowRedirects: false,
+            );
             if (response == null) {
               if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('请求失败')),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('请求失败')));
               return;
             }
             final locationUrl = response.headers['location']?.first;
@@ -448,37 +491,39 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
                 MiuixPageRoute(
                   builder: (context) => SignInPage(
                     active: Active(
-                        type: 2,
-                        id: activeId,
-                        name: '二维码签到',
-                        description: '',
-                        startTime: 0,
-                        url: '',
-                        attendNum: 0,
-                        status: true,
-                        signType: SignType.qrCode
+                      type: 2,
+                      id: activeId,
+                      name: '二维码签到',
+                      description: '',
+                      startTime: 0,
+                      url: '',
+                      attendNum: 0,
+                      status: true,
+                      signType: SignType.qrCode,
                     ),
                     courseId: '',
                     classId: classId,
                     cpi: '',
-                    enc: enc
+                    enc: enc,
                   ),
                 ),
               );
             } else {
               if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('未找到 enc 参数')),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('未找到 enc 参数')));
             }
           }
-        } else if (baseUrl.contains('.yuketang.cn/api/v3/lesson/check-in/dynamic-qr-code')){
+        } else if (baseUrl.contains(
+          '.yuketang.cn/api/v3/lesson/check-in/dynamic-qr-code',
+        )) {
           if (!PlatformManager().isRainClassroom) {
             await PlatformManager().setPlatform(PlatformType.rainClassroom);
             if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('自动切换平台为雨课堂')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('自动切换平台为雨课堂')));
           }
           if (!AccountManager.hasActiveSession()) {
             if (!mounted) return;
@@ -498,7 +543,7 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
             );
             return;
           }
-  
+
           await _multiScan(context, result);
         } else {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -521,15 +566,15 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         }
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('URL 解析失败：$e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('URL 解析失败：$e')));
       }
     } else {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('扫描结果：$result')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('扫描结果：$result')));
     }
   }
 
@@ -538,31 +583,28 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
     final allAccounts = AccountManager.allAccounts;
     if (allAccounts.isEmpty) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('没有可用的账号进行签到'))
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('没有可用的账号进行签到')));
       return;
     }
-  
+
     setState(() {
       _isLoading = true;
     });
-  
+
     int successCount = 0;
     final List<String> failedAccounts = [];
-  
-    final results = await ApiService.sendForEachUser(
-      allAccounts,
-      (user) async {
-        final api = RCCourseApi(user);
-        return await api.scan(qrCodeUrl);
-      },
-    );
+
+    final results = await ApiService.sendForEachUser(allAccounts, (user) async {
+      final api = RCCourseApi(user);
+      return await api.scan(qrCodeUrl);
+    });
 
     for (int i = 0; i < results.length; i++) {
       final status = results[i];
       final user = allAccounts[i];
-      
+
       if (status == 0) {
         successCount++;
       } else if (status == 51203) {
@@ -571,18 +613,27 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
         failedAccounts.add('${user.name} (错误码：$status)');
       }
     }
-    
-  
+
     if (!mounted || !context.mounted) return;
     setState(() {
       _isLoading = false;
     });
-  
-    _showMultiScanResult(context, successCount, allAccounts.length, failedAccounts);
+
+    _showMultiScanResult(
+      context,
+      successCount,
+      allAccounts.length,
+      failedAccounts,
+    );
   }
 
   /// 显示所有签到结果
-  void _showMultiScanResult(BuildContext context, int successCount, int totalCount, List<String> failedAccounts) {
+  void _showMultiScanResult(
+    BuildContext context,
+    int successCount,
+    int totalCount,
+    List<String> failedAccounts,
+  ) {
     String message = '签到完成！\n成功: $successCount/$totalCount';
     if (failedAccounts.isNotEmpty) {
       message += '\n\n失败账号:\n${failedAccounts.join('\n')}';
@@ -614,216 +665,237 @@ class _CoursesPageState extends State<CoursesPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final courses = PlatformManager().isChaoxing
         ? [
-            ..._courses.where((c) => ActivityMessageStore().countOf(c.courseId, c.classId) > 0),
-            ..._courses.where((c) => ActivityMessageStore().countOf(c.courseId, c.classId) == 0),
+            ..._courses.where(
+              (c) => ActivityMessageStore().countOf(c.courseId, c.classId) > 0,
+            ),
+            ..._courses.where(
+              (c) => ActivityMessageStore().countOf(c.courseId, c.classId) == 0,
+            ),
           ]
         : _courses;
     // 底栏已固定为「贴边 Miuix 标准样式」（2026-09-22 用户拍板取消悬浮），
     // 高度是常量，不再需要按设置重建整个脚手架。
     return MiuixScaffold(
-        // 顶栏换成 Miuix 玻璃顶栏。
-        //
-        // ⚠️ 模糊能看见的前提是「内容从顶栏底下滚过去」：`MiuixScaffold` 的
-        // body 铺满整屏、栏画在其上，滚动列表再自己吃掉顶部留白
-        // —— offset=0 时首项正好在栏下方，一往上滚就钻进栏底，
-        // 顶栏里的 `BackdropFilter` 才有东西可糊。
-        //
-        // 若改用 `Scaffold.appBar` 槽位，body 会被顶到栏下面，两者永不重叠
-        // → 糊了个寂寞（这正是之前一直没做顶栏模糊的原因）。
-        //
-        // `scrollBehavior` 让顶栏随滚动从「大标题 142dp」折到「小标题 92dp」。
-        topBar: MiuixTopAppBar(
-          title: '课程',
-          largeTitle: '课程',
-          blurred: ThemeSetting.blurOf(context),
-          scrollBehavior: _topBarBehavior,
-          actions: [
-            if (PlatformManager().isChaoxing)
-              MiuixIconButton(
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const GroupsPage()),
-                ),
-                child: const Icon(Icons.group),
-              ),
+      // 顶栏换成 Miuix 玻璃顶栏。
+      //
+      // ⚠️ 模糊能看见的前提是「内容从顶栏底下滚过去」：`MiuixScaffold` 的
+      // body 铺满整屏、栏画在其上，滚动列表再自己吃掉顶部留白
+      // —— offset=0 时首项正好在栏下方，一往上滚就钻进栏底，
+      // 顶栏里的 `BackdropFilter` 才有东西可糊。
+      //
+      // 若改用 `Scaffold.appBar` 槽位，body 会被顶到栏下面，两者永不重叠
+      // → 糊了个寂寞（这正是之前一直没做顶栏模糊的原因）。
+      //
+      // `scrollBehavior` 让顶栏随滚动从「大标题 142dp」折到「小标题 92dp」。
+      topBar: MiuixTopAppBar(
+        title: '课程',
+        largeTitle: '课程',
+        blurred: ThemeSetting.blurOf(context),
+        scrollBehavior: _topBarBehavior,
+        actions: [
+          if (PlatformManager().isChaoxing)
             MiuixIconButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MiuixPageRoute(
-                    builder: (context) => ScanPage(
-                      onScanResult: handleScanContent,
-                    ),
-                  ),
-                );
-              },
-              child: const Icon(Icons.qr_code_scanner),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const GroupsPage()),
+              ),
+              child: const Icon(Icons.group),
             ),
-          ],
-        ),
-        // 底栏是全局叠加的，不在本页脚手架里。用一块透明占位告诉脚手架
-        // 「底下有这么高的东西」，contentPadding 与 FAB 就会自动让开，
-        // 页面自己不用再算留白。
-        bottomBar: SizedBox(height: miuixNavBarOccupied(context)),
-        // 把顶栏折叠行为挂到滚动通知上（只认 depth==0 的竖向滚动体）
-        content: (contentPadding) {
-          // 只记最大高度，不跟随折叠回缩 —— 原因见 `_topBarInset` 的注释
-          if (contentPadding.top > _topBarInset) {
-            _topBarInset = contentPadding.top;
-          }
-          return MiuixScrollBehaviorListener(
-            behavior: _topBarBehavior,
-            child: RefreshIndicator(
-        onRefresh: _loadCourses,
-        child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : _courses.isEmpty
-            ? Center(
-                child: MiuixText(
-                  PlatformManager().isRainClassroom ? '暂无正在上课的课程' : '暂无内容',
-                  fontSize: 18,
-                  color: MiuixTheme.of(context).colors.onSurfaceVariantSummary,
+          MiuixIconButton(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MiuixPageRoute(
+                  builder: (context) =>
+                      ScanPage(onScanResult: handleScanContent),
                 ),
-              )
-            : ListView.builder(
-                itemCount: courses.length,
-                // 顶部留白吃掉顶栏高度 → 内容才会从顶栏底下滚过（玻璃顶栏的关键）。
-                // 底部留白由脚手架的 bottomBar 占位给出，再加 16dp 余量。
-                padding: EdgeInsets.only(
-                  top: _topBarInset,
-                  bottom: contentPadding.bottom + 16,
-                ),
-                itemBuilder: (context, index) {
-                  final course = courses[index];
-                  final colors = MiuixTheme.of(context).colors;
-                  return Padding(
-                    // MiuixCard 没有 margin 参数，外边距由外面这层 Padding 提供
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
+              );
+            },
+            child: const Icon(Icons.qr_code_scanner),
+          ),
+        ],
+      ),
+      // 底栏是全局叠加的，不在本页脚手架里。用一块透明占位告诉脚手架
+      // 「底下有这么高的东西」，contentPadding 与 FAB 就会自动让开，
+      // 页面自己不用再算留白。
+      bottomBar: SizedBox(height: miuixNavBarOccupied(context)),
+      // 把顶栏折叠行为挂到滚动通知上（只认 depth==0 的竖向滚动体）
+      content: (contentPadding) {
+        // 只记最大高度，不跟随折叠回缩 —— 原因见 `_topBarInset` 的注释
+        if (contentPadding.top > _topBarInset) {
+          _topBarInset = contentPadding.top;
+        }
+        return MiuixScrollBehaviorListener(
+          behavior: _topBarBehavior,
+          child: RefreshIndicator(
+            onRefresh: _loadCourses,
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _courses.isEmpty
+                ? Center(
+                    child: MiuixText(
+                      PlatformManager().isRainClassroom ? '暂无正在上课的课程' : '暂无内容',
+                      fontSize: 18,
+                      color: MiuixTheme.of(
+                        context,
+                      ).colors.onSurfaceVariantSummary,
                     ),
-                    child: MiuixCard(
-                      // 点击交给 MiuixCard（内部是 MiuixPressable，自带 Miuix
-                      // 的按压反馈），不再自己套 InkWell
-                      feedbackType: MiuixPressFeedbackType.sink,
-                      onPressed: () {
-                        if (PlatformManager().isChaoxing) {
-                          ActivityMessageStore().clear(course.courseId, course.classId);
-                        }
-                        Navigator.push(
-                          context,
-                          PlatformManager().isChaoxing ?
-                          MiuixPageRoute(
-                            builder: (context) => CourseContentPage(
-                              courseId: course.courseId,
-                              courseName: course.name,
-                              classId: course.classId,
-                              cpi: course.cpi!
-                            ),
-                          ) : MiuixPageRoute(
-                            builder: (context) => PresentationPage(
-                              lessonId: course.lessonId!,
-                              title: course.name,
-                              // 让进课堂时把「lessonId 属于哪门课」记进 meta.json，
-                              // 课件页才能把这节课的缓存归到课程名下
-                              courseId: course.courseId,
+                  )
+                : ListView.builder(
+                    itemCount: courses.length,
+                    // 顶部留白吃掉顶栏高度 → 内容才会从顶栏底下滚过（玻璃顶栏的关键）。
+                    // 底部留白由脚手架的 bottomBar 占位给出，再加 16dp 余量。
+                    padding: EdgeInsets.only(
+                      top: _topBarInset,
+                      bottom: contentPadding.bottom + 16,
+                    ),
+                    itemBuilder: (context, index) {
+                      final course = courses[index];
+                      final colors = MiuixTheme.of(context).colors;
+                      return Padding(
+                        // MiuixCard 没有 margin 参数，外边距由外面这层 Padding 提供
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        child: MiuixCard(
+                          // 点击交给 MiuixCard（内部是 MiuixPressable，自带 Miuix
+                          // 的按压反馈），不再自己套 InkWell
+                          feedbackType: MiuixPressFeedbackType.sink,
+                          onPressed: () {
+                            if (PlatformManager().isChaoxing) {
+                              ActivityMessageStore().clear(
+                                course.courseId,
+                                course.classId,
+                              );
+                            }
+                            Navigator.push(
+                              context,
+                              PlatformManager().isChaoxing
+                                  ? MiuixPageRoute(
+                                      builder: (context) => CourseContentPage(
+                                        courseId: course.courseId,
+                                        courseName: course.name,
+                                        classId: course.classId,
+                                        cpi: course.cpi!,
+                                      ),
+                                    )
+                                  : MiuixPageRoute(
+                                      builder: (context) => PresentationPage(
+                                        lessonId: course.lessonId!,
+                                        title: course.name,
+                                        // 让进课堂时把「lessonId 属于哪门课」记进 meta.json，
+                                        // 课件页才能把这节课的缓存归到课程名下
+                                        courseId: course.courseId,
+                                      ),
+                                    ),
+                            );
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Row(
+                              // 原来是 Stack + Positioned 把 chevron 垂直居中，
+                              // 改成 Row 居中对齐即可（头像也跟着与文字块居中）
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                Badge.count(
+                                  count: PlatformManager().isChaoxing
+                                      ? ActivityMessageStore().countOf(
+                                          course.courseId,
+                                          course.classId,
+                                        )
+                                      : 0,
+                                  isLabelVisible:
+                                      PlatformManager().isChaoxing &&
+                                      ActivityMessageStore().countOf(
+                                            course.courseId,
+                                            course.classId,
+                                          ) >
+                                          0,
+                                  child: course.image.isNotEmpty
+                                      ? AvatarWidget(
+                                          imageUrl: course.image,
+                                          size: 50,
+                                          borderRadius: 6,
+                                          iconSize: 25,
+                                        )
+                                      : Container(
+                                          width: 50,
+                                          height: 50,
+                                          decoration: BoxDecoration(
+                                            color: colors.secondaryContainer,
+                                            borderRadius: BorderRadius.circular(
+                                              6,
+                                            ),
+                                          ),
+                                          child: Center(
+                                            child: Icon(
+                                              Icons.school,
+                                              color:
+                                                  colors.onSecondaryContainer,
+                                              size: 25,
+                                            ),
+                                          ),
+                                        ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      MiuixText(
+                                        course.name,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      MiuixText(
+                                        course.teacher,
+                                        fontSize: 14,
+                                        color: colors.onSurfaceVariantSummary,
+                                      ),
+                                      const SizedBox(height: 5),
+                                      if (course.note != null)
+                                        MiuixText(
+                                          course.note!,
+                                          fontSize: 12,
+                                          color: colors.onSurfaceVariantSummary,
+                                        ),
+                                      if (course.schools != null)
+                                        MiuixText(
+                                          course.schools!,
+                                          fontSize: 12,
+                                          color: colors.onSurfaceVariantSummary,
+                                        ),
+                                      if (course.beginDate != null &&
+                                          course.endDate != null)
+                                        MiuixText(
+                                          '开课时间：${course.beginDate} 至 ${course.endDate}',
+                                          fontSize: 12,
+                                          color: colors.onSurfaceVariantSummary,
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                Icon(
+                                  Icons.chevron_right,
+                                  // 卡片内的「可点」提示色，用 Miuix 的 actions 色
+                                  color: colors.onSurfaceVariantActions,
+                                ),
+                              ],
                             ),
                           ),
-                        );
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Row(
-                          // 原来是 Stack + Positioned 把 chevron 垂直居中，
-                          // 改成 Row 居中对齐即可（头像也跟着与文字块居中）
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            Badge.count(
-                              count: PlatformManager().isChaoxing
-                                  ? ActivityMessageStore().countOf(course.courseId, course.classId)
-                                  : 0,
-                              isLabelVisible: PlatformManager().isChaoxing &&
-                                  ActivityMessageStore().countOf(course.courseId, course.classId) > 0,
-                              child: course.image.isNotEmpty
-                                  ? AvatarWidget(
-                                imageUrl: course.image,
-                                size: 50,
-                                borderRadius: 6,
-                                iconSize: 25,
-                              )
-                                  : Container(
-                                width: 50,
-                                height: 50,
-                                decoration: BoxDecoration(
-                                  color: colors.secondaryContainer,
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Center(
-                                  child: Icon(
-                                    Icons.school,
-                                    color: colors.onSecondaryContainer,
-                                    size: 25,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  MiuixText(
-                                    course.name,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const SizedBox(height: 4),
-                                  MiuixText(
-                                    course.teacher,
-                                    fontSize: 14,
-                                    color: colors.onSurfaceVariantSummary,
-                                  ),
-                                  const SizedBox(height: 5),
-                                  if (course.note != null)
-                                    MiuixText(
-                                      course.note!,
-                                      fontSize: 12,
-                                      color: colors.onSurfaceVariantSummary,
-                                    ),
-                                  if (course.schools != null)
-                                    MiuixText(
-                                      course.schools!,
-                                      fontSize: 12,
-                                      color: colors.onSurfaceVariantSummary,
-                                    ),
-                                  if (course.beginDate != null &&
-                                      course.endDate != null)
-                                    MiuixText(
-                                      '开课时间：${course.beginDate} 至 ${course.endDate}',
-                                      fontSize: 12,
-                                      color: colors.onSurfaceVariantSummary,
-                                    ),
-                                ],
-                              ),
-                            ),
-                            Icon(
-                              Icons.chevron_right,
-                              // 卡片内的「可点」提示色，用 Miuix 的 actions 色
-                              color: colors.onSurfaceVariantActions,
-                            ),
-                          ],
                         ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-      ),
-            );
-        },
-      );
+                      );
+                    },
+                  ),
+          ),
+        );
+      },
+    );
   }
 
   @override

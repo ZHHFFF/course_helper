@@ -8,7 +8,7 @@ on:
 
 env:
   JAVA_VERSION: "17"
-  # 构建显示序号；已发布 test88 的实际 versionCode 是 2088。
+  # 构建显示序号；已发布 test97 的实际 versionCode 是 4097。
   BUILD_NUMBER: ${{ github.run_number }}
 
 jobs:
@@ -19,9 +19,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # GitHub 表达式不支持加法，用 shell 保留已发布 APK 的 2000 偏移。
+      # 沿用已发布 test97 的 4000 偏移，确保覆盖安装不会发生版本降级。
       - name: Set APK version code
-        run: echo "VERSION_CODE=$((2000 + BUILD_NUMBER))" >> "$GITHUB_ENV"
+        run: echo "VERSION_CODE=$((4000 + BUILD_NUMBER))" >> "$GITHUB_ENV"
 
       # ⚠️ `cache: gradle` 必须开（2026-09-24 加）。
       #
@@ -73,7 +73,7 @@ jobs:
           keytool -list -v -keystore android/anerycoft.jks -storepass android 2>/dev/null | grep "SHA256:" | head -1
 
       - name: Get dependencies
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       # 先做静态检查：只有真正的编译错误才会让这一步失败
       - name: Analyze (errors only)
@@ -82,7 +82,7 @@ jobs:
       - name: Run unit tests
         run: flutter test
 
-      # versionCode 用 2000 + run_number；versionName 带上第几次构建，
+      # versionCode 用 4000 + run_number；versionName 带上第几次构建，
       # 这样在手机「应用信息」里也能看出装的是哪一版。
       - name: Build release APK (arm64-v8a only)
         run: |

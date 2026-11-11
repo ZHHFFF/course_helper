@@ -107,7 +107,10 @@ class SignInApi extends Api {
 
     final response = await ApiService.sendRequest(
       _signUrl,
-      params: params,
+      // 拍照签到按上游改为 POST 表单，普通签到保留 GET。
+      method: objectId != null ? 'POST' : 'GET',
+      params: objectId == null ? params : null,
+      body: objectId != null ? params : null,
       responseType: ResponseType.plain,
       userId: user?.uid,
     );
@@ -173,7 +176,9 @@ class SignInApi extends Api {
 
     final response = await ApiService.sendRequest(
       _signUrl,
-      params: params,
+      // 上游新接口要求以 POST 表单提交。
+      method: 'POST',
+      body: params,
       responseType: ResponseType.plain,
       userId: user?.uid,
     );
@@ -326,7 +331,9 @@ class SignInApi extends Api {
 
     final response = await ApiService.sendRequest(
       _signUrl,
-      params: params,
+      // 上游新接口要求以 POST 表单提交。
+      method: 'POST',
+      body: params,
       responseType: ResponseType.plain,
       userId: user?.uid,
     );
