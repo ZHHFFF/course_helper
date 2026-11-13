@@ -17,11 +17,9 @@ class AutoAnswerSetting {
   static const _keyAutoSearch = 'aa_auto_search';
   static const _keyAutoSelect = 'aa_auto_select';
   static const _keyAutoSubmit = 'aa_auto_submit';
-  // 延迟的键名带 _v2：旧版把 800/2000 存进过用户手机，
-  // 沿用旧键的话新默认值永远不生效（ensureLoaded 会读回旧值）。
-  // 延迟没有 UI，用户不可能手动改过，所以直接换键是安全的。
-  static const _keyDelayMin = 'aa_delay_min_ms_v2';
-  static const _keyDelayMax = 'aa_delay_max_ms_v2';
+
+  /// Fixed default also applies to upgrades with legacy delay values saved.
+  static const defaultSubmitDelayMs = 2000;
 
   /// 进课堂后自动检索整份 PPT 的题目
   ///
@@ -35,16 +33,16 @@ class AutoAnswerSetting {
 
   /// 老师发布题目后自动提交
   ///
-  /// 默认开。提交前有 [delayMinMs]~[delayMaxMs] 的随机延迟，
-  /// 避免「老师刚发就秒交」这种明显的脚本特征。
+  /// 默认开。答案准备好后等待固定 2 秒，再提交。
   static final ValueNotifier<bool> autoSubmit = ValueNotifier<bool>(true);
 
-  /// 拟人化延迟区间（毫秒）
-  ///
-  /// 用户明确要求「延迟要低」—— 老师发题到交卷之间只留 0.3~0.8 秒。
-  /// 再低就接近「零延迟秒交」了，那个特征反而更明显。
-  static final ValueNotifier<int> delayMinMs = ValueNotifier<int>(300);
-  static final ValueNotifier<int> delayMaxMs = ValueNotifier<int>(800);
+  /// 提交等待时间（毫秒）。上下限一致，默认固定为 2 秒。
+  static final ValueNotifier<int> delayMinMs = ValueNotifier<int>(
+    defaultSubmitDelayMs,
+  );
+  static final ValueNotifier<int> delayMaxMs = ValueNotifier<int>(
+    defaultSubmitDelayMs,
+  );
 
   static bool _loaded = false;
 
@@ -56,8 +54,10 @@ class AutoAnswerSetting {
       autoSearch.value = p.getBool(_keyAutoSearch) ?? true;
       autoSelect.value = p.getBool(_keyAutoSelect) ?? true;
       autoSubmit.value = p.getBool(_keyAutoSubmit) ?? true;
-      delayMinMs.value = p.getInt(_keyDelayMin) ?? 300;
-      delayMaxMs.value = p.getInt(_keyDelayMax) ?? 800;
+      // No delay editor exists. Ignore legacy persisted ranges so an existing
+      // installation also adopts the requested fixed two-second delay.
+      delayMinMs.value = defaultSubmitDelayMs;
+      delayMaxMs.value = defaultSubmitDelayMs;
       _loaded = true;
     } catch (e) {
       debugPrint('读取自动答题设置失败：$e');
@@ -79,7 +79,7 @@ class AutoAnswerSetting {
     await _safe(() => StorageManager.prefs.setBool(_keyAutoSubmit, v));
   }
 
-  /// 生成一个落在区间内的随机延迟
+  /// 生成设置范围内的延迟；默认上下限相同，固定返回 2 秒。
   static Duration randomDelay() {
     final lo = delayMinMs.value;
     final hi = delayMaxMs.value;

@@ -82,8 +82,8 @@ void main() {
   tearDown(() async {
     AccountManager.allAccounts.clear();
     RCCourseApi.debugClearTokens();
-    AutoAnswerSetting.delayMinMs.value = 300;
-    AutoAnswerSetting.delayMaxMs.value = 800;
+    AutoAnswerSetting.delayMinMs.value = AutoAnswerSetting.defaultSubmitDelayMs;
+    AutoAnswerSetting.delayMaxMs.value = AutoAnswerSetting.defaultSubmitDelayMs;
     await env.dispose();
   });
 
