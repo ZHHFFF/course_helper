@@ -1,0 +1,78 @@
+name: Publish verified test99 APK
+
+on:
+  push:
+    branches: [release/test99]
+  workflow_dispatch:
+
+# Publishing this verified build is explicitly authorized by the repository owner.
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ZHHFFF/course_helper
+      RELEASE_TAG: test-apk-rainclassroom-test99
+      APK_NAME: course-helper-1.2.3-test99-5b49a92-arm64.apk
+    steps:
+      - name: Download and verify the existing signed APK
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          gh run download 43398307889 --repo "$GH_REPO" \
+            --name "$APK_NAME" --dir artifact
+          # Verify the exact bytes already inspected for package, ABI and signature.
+          printf '%s  %s\n' \
+            '5b69dc678ce6b530e903708f15a8dea751c973606461447b3e2e0ef91956aa0d' \
+            "artifact/$APK_NAME" | sha256sum --check
+
+      - name: Prepare release notes
+        run: |
+          cat > release-notes.md <<'NOTES'
+          ## 更新内容
+
+          - 自动提交改为答案准备好后固定等待 2 秒；已有安装更新后同样生效。
+          - 修复时间轴残留和跨课件发布状态误判，提交前再次校验题目是否已发布。
+          - 按题目分别保存计时状态，修复补交使用旧题时间的问题。
+          - 根据实际课堂协议区分发题与翻页的页码，优先通过题目 ID 和 sid 定位。
+          - 修复 Miuix 页面拒绝提交时的提示异常。
+
+          ## 安装信息
+
+          - 版本：1.2.3-test99
+          - APK 实际 versionCode：6099
+          - 平台：Android arm64-v8a，Android 7.0 及以上
+          - 包名：com.anerycoft.coursehelper
+          - 使用与 test97/test98 一致的固定测试签名，可覆盖安装。
+          - Flutter 保持 3.47.9。
+
+          ## 验证
+
+          - 静态检查无编译错误；675 个测试通过、7 个跳过。
+          - 本附件与构建 #99 的已验证主 APK 完全一致；发布前核对 SHA-256。
+          - 源码提交：5b49a92866b5a95fdeb859cf643d5431ed62657c
+          - SHA-256：5b69dc678ce6b530e903708f15a8dea751c973606461447b3e2e0ef91956aa0d
+
+          这是测试版，尚未完成真机课堂验证。原日志不足以唯一确定截图中 -59 秒的原因；本次修复已确认的发布校验、页码和计时缺陷。
+          NOTES
+
+      - name: Upload verified APK to a draft release
+        run: |
+          set -euo pipefail
+          # Keep the release hidden until the verified APK upload is complete.
+          gh release create "$RELEASE_TAG" "artifact/$APK_NAME" \
+            --repo "$GH_REPO" \
+            --target 5b49a92866b5a95fdeb859cf643d5431ed62657c \
+            --title "雨课堂提交修复与 2 秒延迟测试包 1.2.3-test99" \
+            --notes-file release-notes.md --draft --prerelease
+
+      - name: Publish completed release
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" --repo "$GH_REPO" --draft=false --latest=false
+          gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json url,tagName,isDraft,isPrerelease,assets
