@@ -117,7 +117,15 @@ void main() {
   /// so a widget test never blocks the queue by awaiting the request directly.
   Future<void> submit(WidgetTester tester) async {
     final Future<void> pending = state(tester).debugSubmitAnswer();
-    await completeClassroomIo(tester, pending);
+    var completed = false;
+    final completion = pending.whenComplete(() => completed = true);
+    for (var i = 0; i < 200 && !completed; i++) {
+      // A null pump duration flushes microtasks but does not elapse zero timers.
+      await tester.pump(const Duration(milliseconds: 1));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
+    }
+    expect(completed, isTrue, reason: '提交请求应在推进虚拟时间后完成');
+    await completion;
   }
 
   Future<void> select(WidgetTester tester, String value) async {
