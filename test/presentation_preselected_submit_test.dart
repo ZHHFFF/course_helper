@@ -113,6 +113,13 @@ void main() {
         .debugStoreTokensForLesson('lesson', 'bearer', 'lesson-token');
   }
 
+  /// Dio schedules request work on the fake timer queue. Pump it while waiting
+  /// so a widget test never blocks the queue by awaiting the request directly.
+  Future<void> submit(WidgetTester tester) async {
+    final Future<void> pending = state(tester).debugSubmitAnswer();
+    await completeClassroomIo(tester, pending);
+  }
+
   Future<void> select(WidgetTester tester, String value) async {
     tester
         .widget<RadioGroup<String>>(find.byType(RadioGroup<String>))
@@ -292,7 +299,7 @@ void main() {
   testWidgets('提前翻到题目并预选，不发出请求且提交入口拒绝未发布题', (tester) async {
     await mount(tester);
     await select(tester, 'B');
-    await state(tester).debugSubmitAnswer();
+    await submit(tester);
     await flushClassroomTasks(tester);
     expect(submissions, isEmpty);
     expect(find.text('提交'), findsNothing);
@@ -325,7 +332,7 @@ void main() {
     await tester.pump();
     await select(tester, 'A');
     expect(find.text('提交'), findsNothing);
-    await state(tester).debugSubmitAnswer();
+    await submit(tester);
     await flushClassroomTasks(tester);
     expect(submissions, isEmpty);
     await finish(tester);
@@ -345,7 +352,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     await select(tester, 'B');
     expect(find.text('提交'), findsNothing);
-    await state(tester).debugSubmitAnswer();
+    await submit(tester);
     await flushClassroomTasks(tester);
     expect(submissions, isEmpty);
     await finish(tester);
@@ -380,7 +387,7 @@ void main() {
     });
     await flushClassroomTasks(tester);
     await select(tester, 'B');
-    await state(tester).debugSubmitAnswer();
+    await submit(tester);
     await flushClassroomTasks(tester);
     expect(submissions.single['problemId'], 'p1');
     expect(submissions.single['dt'], lessThan(publishedAt + 60000));
@@ -408,7 +415,7 @@ void main() {
     await flushClassroomTasks(tester);
     await message;
     await select(tester, 'B');
-    await state(tester).debugSubmitAnswer();
+    await submit(tester);
     await flushClassroomTasks(tester);
     expect(submissions, hasLength(1));
     expect(
