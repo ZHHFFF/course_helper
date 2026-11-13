@@ -242,7 +242,9 @@ class _PresentationPageState extends State<PresentationPage>
     _publications[key] = ProblemPublication(
       problemId: id,
       presentationId: pres,
-      slideIndex: si != null && si > 0 ? si - 1 : null,
+      // Live logs confirm problem.si is zero-based; slidenav.si is one-based.
+      slideIndex: si != null && si >= 0 ? si : null,
+      slideId: data['sid']?.toString(),
       publishedAtMs: dt,
       limitSeconds: data['limit'] is num
           ? (data['limit'] as num).toInt()
@@ -254,27 +256,28 @@ class _PresentationPageState extends State<PresentationPage>
     );
   }
 
-  /// Resolve the current PPT problem to server evidence. Aliased IDs require a
-  /// matching presentation and timeline page, never a stale clicked timeline ID.
+  /// Resolve IDs before consulting the zero-based problem-event coordinate.
+  int _indexOfPublication(ProblemPublication publication) =>
+      resolvePublishedProblemSlideIndex(
+        problemId: publication.problemId,
+        slideId: publication.slideId,
+        problemSlideIndex: publication.slideIndex,
+        problemIds: [
+          for (final slide in _slideModels) slide.problem?.problemId ?? '',
+        ],
+        slideIds: [for (final slide in _slideModels) slide.id],
+      );
+
+  /// An old timeline selection or another presentation cannot authorize this page.
   ProblemPublication? _publicationFor(String ownerId) {
     final pres = _currentPresentationId;
     if (pres == null) return null;
-    final direct = _publications[_publicationKey(pres, ownerId)];
-    if (direct != null) return direct;
-    for (final event in _timeline.reversed) {
-      if (event.type != 'problem' ||
-          event.presentationId != pres ||
-          event.problemId == null ||
-          event.slideIndex == null)
-        continue;
-      final index = event.slideIndex! - 1;
-      if (index < 0 ||
-          index >= _slideModels.length ||
-          _slideModels[index].problem?.problemId != ownerId)
-        continue;
-      final publication =
-          _publications[_publicationKey(pres, event.problemId!)];
-      if (publication != null) return publication;
+    for (final publication in _publications.values.toList().reversed) {
+      if (publication.presentationId != pres) continue;
+      final index = _indexOfPublication(publication);
+      if (index >= 0 && _slideModels[index].problem?.problemId == ownerId) {
+        return publication;
+      }
     }
     return null;
   }
@@ -1008,40 +1011,13 @@ class _PresentationPageState extends State<PresentationPage>
     return _suggested[hash];
   }
 
-  /// 题目在 PPT 里的页号（0-based），找不到返回 -1
-  ///
-  /// 两条路：
-  /// 1. 直接比 PPT 里题目的 `problemId`
-  /// 2. **兜底**：从时间轴找。时间轴事件的 `problemId` 和发题消息的 `prob`
-  ///    是同一个字段（都读 JSON 里的 `prob`），而且事件里带 `si`（1-based
-  ///    页码，和 `_toSlide` / `showpresentation` 同源）——
-  ///    万一 `prob` 和 PPT 里的 `problemId` 不是同一个值，靠这条也能定位。
+  /// Locate the exact server publication in this presentation. A problem event
+  /// carries zero-based si; stable problemId/sid are preferred over that fallback.
   int _indexOfProblem(String problemId) {
-    for (var i = 0; i < _slideModels.length; i++) {
-      if (_slideModels[i].problem?.problemId == problemId) return i;
-    }
-
-    for (final e in _timeline) {
-      if (e.problemId != problemId) continue;
-      // 不同一份 PPT 的页码不能混用
-      if (e.presentationId != null &&
-          _currentPresentationId != null &&
-          e.presentationId != _currentPresentationId) {
-        continue;
-      }
-      final si = e.slideIndex;
-      if (si == null || si <= 0) continue;
-      final idx = si - 1;
-      if (idx >= 0 && idx < _slideModels.length) {
-        AppLogger.i(
-          '自动答题',
-          'PPT 里没匹配到 problemId=$problemId，改用时间轴的 si 定位到第 ${idx + 1} 页',
-        );
-        return idx;
-      }
-    }
-
-    return -1;
+    final pres = _currentPresentationId;
+    if (pres == null) return -1;
+    final publication = _publications[_publicationKey(pres, problemId)];
+    return publication == null ? -1 : _indexOfPublication(publication);
   }
 
   /// 等 PPT 加载完再找题目所在页
@@ -1829,7 +1805,10 @@ class _PresentationPageState extends State<PresentationPage>
               type: eventType,
               code: code,
               title: eventTitle,
-              slideIndex: si,
+              // UI timeline coordinates stay one-based, unlike wire problem.si.
+              slideIndex: eventType == 'problem' && si is num
+                  ? si.toInt() + 1
+                  : si,
               total: total,
               limit: limit,
               timestamp: DateTime.fromMillisecondsSinceEpoch(dt),
@@ -3003,13 +2982,8 @@ class _PresentationPageState extends State<PresentationPage>
     }
     if (!mounted) return;
 
-    final slideIndex = event.slideIndex;
-    if (slideIndex != null && slideIndex > 0) {
-      // 时间轴里的 si 是 1-based 页码（和 _toSlide / showpresentation 同一个来源），
-      // 之前这里少减了 1，会导致点开时间轴的题之后页面比老师那页多出一页，
-      // 右上角立刻冒出「回到当前页」按钮
-      final targetIndex = slideIndex - 1;
-
+    final targetIndex = _indexOfProblem(event.problemId!);
+    if (targetIndex >= 0) {
       if (_pageController.hasClients) {
         _pageController.animateToPage(
           targetIndex,

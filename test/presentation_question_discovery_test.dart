@@ -84,9 +84,8 @@ void main() {
     int page, {
     String op = 'showpresentation',
   }) async {
-    final Future<void> pending = state(
-      tester,
-    ).debugHandleMessage({'op': op, 'presentation': id, 'slideindex': page});
+    final Future<void> pending = state(tester)
+        .debugHandleMessage({'op': op, 'presentation': id, 'slideindex': page});
     await flushClassroomTasks(tester);
     await pending;
     await tester.pump(const Duration(milliseconds: 400));
@@ -241,9 +240,8 @@ void main() {
     ApiService.debugSetHttpClientAdapter(
       JsonHttpAdapter((_) => teacherPpt.future),
     );
-    final Future<void> first = state(
-      tester,
-    ).debugHandleMessage({'op': 'slide', 'slideindex': 2});
+    final Future<void> first = state(tester)
+        .debugHandleMessage({'op': 'slide', 'slideindex': 2});
     await flushClassroomTasks(tester);
     final Future<void> last = state(tester).debugHandleMessage({
       'op': 'slidenav',
@@ -432,7 +430,7 @@ void main() {
           'type': 'problem',
           'prob': 'published-A',
           'pres': 'A',
-          'si': 3,
+          'si': 2,
           'dt': DateTime.now().millisecondsSinceEpoch,
         },
       ],

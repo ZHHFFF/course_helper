@@ -31,7 +31,9 @@ void main() {
           if (coverAlt != null && coverAlt.trim().isNotEmpty) coverAlt,
         ]) {
           final file = await SlideImageStore.fileFor('lesson', url);
-          await file.writeAsBytes(img.encodePng(img.Image(width: 2, height: 2)));
+          await file.writeAsBytes(
+            img.encodePng(img.Image(width: 2, height: 2)),
+          );
         }
       });
       ApiService.debugSetHttpClientAdapter(
@@ -114,7 +116,7 @@ void main() {
             'type': 'problem',
             'prob': 'old-problem',
             'pres': 'A',
-            'si': 1,
+            'si': 0,
             'dt': DateTime.now().millisecondsSinceEpoch,
           },
         ],

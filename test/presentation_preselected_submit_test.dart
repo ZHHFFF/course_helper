@@ -122,7 +122,9 @@ void main() {
     for (var i = 0; i < 200 && !completed; i++) {
       // A null pump duration flushes microtasks but does not elapse zero timers.
       await tester.pump(const Duration(milliseconds: 1));
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 5)),
+      );
     }
     expect(completed, isTrue, reason: '提交请求应在推进虚拟时间后完成');
     await completion;
@@ -325,7 +327,7 @@ void main() {
           'type': 'problem',
           'prob': 'p1',
           'pres': 'ppt',
-          'si': 1,
+          'si': 0,
           'dt': DateTime.now().millisecondsSinceEpoch,
           'limit': 60,
         },
@@ -414,7 +416,7 @@ void main() {
           'type': 'problem',
           'prob': 'p1',
           'pres': 'ppt',
-          'si': 1,
+          'si': 0,
           'dt': publishedAt,
           'limit': 60,
         },
@@ -431,6 +433,26 @@ void main() {
       greaterThanOrEqualTo(publishedAt + 120000),
     );
     expect(submissions.single.containsKey('retry_times'), isTrue);
+    await finish(tester);
+  }, timeout: const Timeout(Duration(seconds: 20)));
+  testWidgets('真实协议：si=0 且 prob 为别名时，按 sid 提交第一页题', (tester) async {
+    slide['id'] = 'slide-p1';
+    await mount(tester);
+    await select(tester, 'B');
+    await state(tester).debugHandleMessage({
+      'op': 'unlockproblem',
+      'problem': {
+        'prob': 'wire-p1',
+        'pres': 'ppt',
+        'sid': 'slide-p1',
+        'si': 0,
+        'limit': 30,
+      },
+    });
+    await flushClassroomTasks(tester);
+    expect(submissions, hasLength(1));
+    expect(submissions.single['problemId'], 'wire-p1');
+    expect(submissions.single['result'], ['B']);
     await finish(tester);
   }, timeout: const Timeout(Duration(seconds: 20)));
 }

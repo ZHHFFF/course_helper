@@ -16,15 +16,14 @@ import 'package:course_helper/utils/problem_publish.dart';
 /// 造一条 timeline 的 problem 事件
 Map<String, dynamic> problemEvent({
   required String prob,
-  required int si,
+  required int page,
   required DateTime at,
-}) =>
-    {
-      'type': 'problem',
-      'prob': prob,
-      'si': si,
-      'dt': at.millisecondsSinceEpoch,
-    };
+}) => {
+  'type': 'problem',
+  'prob': prob,
+  'si': page - 1,
+  'dt': at.millisecondsSinceEpoch,
+};
 
 void main() {
   final now = DateTime(2026, 9, 23, 14, 0, 0);
@@ -34,20 +33,42 @@ void main() {
       final d = pickResyncProblemId(
         timeline: [
           {'type': 'slide', 'pres': 'p1', 'si': 1},
-          problemEvent(prob: 'q1', si: 5, at: now.subtract(const Duration(seconds: 20))),
+          problemEvent(
+            prob: 'q1',
+            page: 5,
+            at: now.subtract(const Duration(seconds: 20)),
+          ),
         ],
         now: now,
-        currentLessonSlideIndex: 4, // 0-based → 对应 si=5
+        currentLessonSlideIndex: 4, // 0-based → 对应 wire si=4
         alreadySubmitted: {},
       );
       expect(d.problemId, 'q1');
     });
 
+    test('真实协议：第一页 problem.si=0 可补查，不误当成无页码', () {
+      final d = pickResyncProblemId(
+        timeline: [problemEvent(prob: 'first', page: 1, at: now)],
+        now: now,
+        currentLessonSlideIndex: 0,
+        alreadySubmitted: {},
+      );
+      expect(d.problemId, 'first');
+    });
+
     test('取最新那条，不看旧的', () {
       final d = pickResyncProblemId(
         timeline: [
-          problemEvent(prob: 'old', si: 5, at: now.subtract(const Duration(seconds: 90))),
-          problemEvent(prob: 'new', si: 5, at: now.subtract(const Duration(seconds: 10))),
+          problemEvent(
+            prob: 'old',
+            page: 5,
+            at: now.subtract(const Duration(seconds: 90)),
+          ),
+          problemEvent(
+            prob: 'new',
+            page: 5,
+            at: now.subtract(const Duration(seconds: 10)),
+          ),
         ],
         now: now,
         currentLessonSlideIndex: 4,
@@ -60,7 +81,11 @@ void main() {
       test('超出窗口的历史题不补', () {
         final d = pickResyncProblemId(
           timeline: [
-            problemEvent(prob: 'q1', si: 5, at: now.subtract(const Duration(minutes: 30))),
+            problemEvent(
+              prob: 'q1',
+              page: 5,
+              at: now.subtract(const Duration(minutes: 30)),
+            ),
           ],
           now: now,
           currentLessonSlideIndex: 4,
@@ -73,7 +98,11 @@ void main() {
       test('正好在窗口边界内 → 补', () {
         final d = pickResyncProblemId(
           timeline: [
-            problemEvent(prob: 'q1', si: 5, at: now.subtract(const Duration(minutes: 2, seconds: 59))),
+            problemEvent(
+              prob: 'q1',
+              page: 5,
+              at: now.subtract(const Duration(minutes: 2, seconds: 59)),
+            ),
           ],
           now: now,
           currentLessonSlideIndex: 4,
@@ -85,7 +114,11 @@ void main() {
       test('dt 在未来（时钟偏差）也不补，避免误判', () {
         final d = pickResyncProblemId(
           timeline: [
-            problemEvent(prob: 'q1', si: 5, at: now.add(const Duration(minutes: 10))),
+            problemEvent(
+              prob: 'q1',
+              page: 5,
+              at: now.add(const Duration(minutes: 10)),
+            ),
           ],
           now: now,
           currentLessonSlideIndex: 4,
@@ -97,7 +130,7 @@ void main() {
       test('没有 dt 时不卡这条闸门（只靠位置闸门兜）', () {
         final d = pickResyncProblemId(
           timeline: [
-            {'type': 'problem', 'prob': 'q1', 'si': 5},
+            {'type': 'problem', 'prob': 'q1', 'si': 4},
           ],
           now: now,
           currentLessonSlideIndex: 4,
@@ -111,7 +144,11 @@ void main() {
       test('最新题不在老师当前页 → 不补', () {
         final d = pickResyncProblemId(
           timeline: [
-            problemEvent(prob: 'q1', si: 9, at: now.subtract(const Duration(seconds: 10))),
+            problemEvent(
+              prob: 'q1',
+              page: 9,
+              at: now.subtract(const Duration(seconds: 10)),
+            ),
           ],
           now: now,
           currentLessonSlideIndex: 4, // 老师在第 5 页
@@ -124,7 +161,11 @@ void main() {
       test('拿不到老师当前页时，不卡这条闸门', () {
         final d = pickResyncProblemId(
           timeline: [
-            problemEvent(prob: 'q1', si: 9, at: now.subtract(const Duration(seconds: 10))),
+            problemEvent(
+              prob: 'q1',
+              page: 9,
+              at: now.subtract(const Duration(seconds: 10)),
+            ),
           ],
           now: now,
           currentLessonSlideIndex: null,
@@ -138,7 +179,11 @@ void main() {
       test('已提交过的不重复补', () {
         final d = pickResyncProblemId(
           timeline: [
-            problemEvent(prob: 'q1', si: 5, at: now.subtract(const Duration(seconds: 10))),
+            problemEvent(
+              prob: 'q1',
+              page: 5,
+              at: now.subtract(const Duration(seconds: 10)),
+            ),
           ],
           now: now,
           currentLessonSlideIndex: 4,
@@ -173,7 +218,12 @@ void main() {
       test('prob 为空 → null', () {
         final d = pickResyncProblemId(
           timeline: [
-            {'type': 'problem', 'prob': '', 'si': 5, 'dt': now.millisecondsSinceEpoch},
+            {
+              'type': 'problem',
+              'prob': '',
+              'si': 4,
+              'dt': now.millisecondsSinceEpoch,
+            },
           ],
           now: now,
           currentLessonSlideIndex: 4,
@@ -185,7 +235,12 @@ void main() {
       test('prob 是数字也能取到（服务器有时给 int）', () {
         final d = pickResyncProblemId(
           timeline: [
-            {'type': 'problem', 'prob': 12345, 'si': 5, 'dt': now.millisecondsSinceEpoch},
+            {
+              'type': 'problem',
+              'prob': 12345,
+              'si': 4,
+              'dt': now.millisecondsSinceEpoch,
+            },
           ],
           now: now,
           currentLessonSlideIndex: 4,

@@ -31,6 +31,7 @@ class ProblemPublication {
     required int receivedAtMs,
     required bool live,
     this.slideIndex,
+    this.slideId,
     this.publishedAtMs,
     this.limitSeconds,
     int Function()? elapsedMilliseconds,
@@ -44,6 +45,7 @@ class ProblemPublication {
   final String problemId;
   final String presentationId;
   final int? slideIndex;
+  final String? slideId;
   final int? publishedAtMs;
   int? limitSeconds;
   final int _receivedAtMs;
