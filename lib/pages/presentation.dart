@@ -5,6 +5,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show WebSocket, File;
@@ -18,7 +19,9 @@ import '../models/user.dart';
 import '../session/account.dart';
 import '../platform.dart';
 import '../push/notification.dart';
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
 // [新增] 答案检索模块导入
 import '../api/answer_search.dart';
 import '../models/answer_result.dart';
@@ -38,6 +41,7 @@ import '../utils/app_logger.dart';
 import '../utils/keep_alive_service.dart';
 import '../utils/network_error.dart';
 import '../utils/problem_publish.dart';
+import '../utils/rc_problem_timing.dart';
 import '../utils/ppt_exporter.dart';
 import 'widget/answer_search_dialog.dart';
 import 'widget/suggested_answer_card.dart';
@@ -55,8 +59,7 @@ class _SubmitSnapshot {
   final List<String>? options;
   final String? content;
   final List<String> imageUrls;
-  final bool retry;
-  final int? time;
+  final ProblemPublication publication;
 
   _SubmitSnapshot({
     required this.problemId,
@@ -64,8 +67,7 @@ class _SubmitSnapshot {
     required List<String>? options,
     required this.content,
     required List<String> imageUrls,
-    required this.retry,
-    required this.time,
+    required this.publication,
   }) : options = options == null ? null : List<String>.unmodifiable(options),
        imageUrls = List<String>.unmodifiable(imageUrls);
 }
@@ -165,7 +167,6 @@ class _PresentationPageState extends State<PresentationPage>
   final List<_TimelineEvent> _timeline = [];
 
   Problem? _currentProblem;
-  String? _timelineProblemId;
   List<String>? _answer;
   String? _textAnswer;
   bool _isProblemExpanded = true;
@@ -215,19 +216,80 @@ class _PresentationPageState extends State<PresentationPage>
   bool _autoSubmitProcessing = false;
   String? _autoSubmitActiveId;
 
-  // ============ 已发布题目的「单一事实来源」 ============
-  //
-  // 背景：发题消息（unlockproblem）给的是 `prob`，而 PPT 里题目的字段叫
-  // `problemId` —— **两套 ID 命名空间**。原来的代码拿一边的值去
-  // `contains` 另一边的集合（比如「提交」按钮的条件），
-  // 万一两个值不一样，按钮就永远不出现、自动提交也找不到题目。
-  //
-  // 修法：在**边界处归一化一次** —— 收到发题消息就把 `prob` 解析成
-  // 「PPT 里的页号」，记在这里。之后所有判断都读这个映射，
-  // 不再到处做 ID 字符串比对。
+  // Publication evidence is scoped by presentation and server problem ID.
+  final Map<String, ProblemPublication> _publications = {};
 
-  /// 已发布的题目：PPT 页号（0-based） → 服务器给的 prob
-  final Map<int, String> _publishedSlideOf = {};
+  // MiuixScaffold owns feedback; no Material Scaffold exists on this page.
+  final MiuixSnackbarHostState _snackbarHost = MiuixSnackbarHostState();
+
+  String _publicationKey(String presentationId, String problemId) =>
+      '$presentationId|$problemId';
+
+  /// Record only server publication events. Browsing/scanning a PPT never calls
+  /// this method, and publications from another presentation cannot authorize it.
+  void _recordPublication(Map data, {required bool live}) {
+    final id = data['prob']?.toString();
+    final pres =
+        data['pres']?.toString() ??
+        (live ? _currentLessonPresentationId ?? _currentPresentationId : null);
+    if (id == null || id.isEmpty || pres == null || pres.isEmpty) return;
+    final key = _publicationKey(pres, id);
+    final dt = data['dt'] is num ? (data['dt'] as num).toInt() : null;
+    final previous = _publications[key];
+    // Replayed history must not restart the clock of a live publication.
+    if (previous != null && (!live || previous.publishedAtMs == dt)) return;
+    final si = data['si'] is num ? (data['si'] as num).toInt() : null;
+    _publications[key] = ProblemPublication(
+      problemId: id,
+      presentationId: pres,
+      // Live logs confirm problem.si is zero-based; slidenav.si is one-based.
+      slideIndex: si != null && si >= 0 ? si : null,
+      slideId: data['sid']?.toString(),
+      publishedAtMs: dt,
+      limitSeconds: data['limit'] is num
+          ? (data['limit'] as num).toInt()
+          : null,
+      receivedAtMs:
+          ApiService.rainClassroomServerNowMs ??
+          DateTime.now().millisecondsSinceEpoch,
+      live: live,
+    );
+  }
+
+  /// Resolve IDs before consulting the zero-based problem-event coordinate.
+  int _indexOfPublication(ProblemPublication publication) =>
+      resolvePublishedProblemSlideIndex(
+        problemId: publication.problemId,
+        slideId: publication.slideId,
+        problemSlideIndex: publication.slideIndex,
+        problemIds: [
+          for (final slide in _slideModels) slide.problem?.problemId ?? '',
+        ],
+        slideIds: [for (final slide in _slideModels) slide.id],
+      );
+
+  /// An old timeline selection or another presentation cannot authorize this page.
+  ProblemPublication? _publicationFor(String ownerId) {
+    final pres = _currentPresentationId;
+    if (pres == null) return null;
+    for (final publication in _publications.values.toList().reversed) {
+      if (publication.presentationId != pres) continue;
+      final index = _indexOfPublication(publication);
+      if (index >= 0 && _slideModels[index].problem?.problemId == ownerId) {
+        return publication;
+      }
+    }
+    return null;
+  }
+
+  void _refreshCountdown() {
+    final id = _currentProblem?.problemId;
+    _countdownSeconds = id == null
+        ? null
+        : _publicationFor(
+            id,
+          )?.remainingSeconds(serverNowMs: ApiService.rainClassroomServerNowMs);
+  }
 
   /// 老师发题后，最多等多久让 AI 把答案搜出来
   ///
@@ -347,6 +409,7 @@ class _PresentationPageState extends State<PresentationPage>
 
   @override
   void dispose() {
+    _snackbarHost.dispose();
     _saveCurrentDraft();
     WidgetsBinding.instance.removeObserver(this);
     _answerSub?.cancel();
@@ -556,13 +619,12 @@ class _PresentationPageState extends State<PresentationPage>
             '预选=${AutoAnswerSetting.autoSelect.value}｜PPT ${_slideModels.length} 页',
       );
 
-      // 不管自动提交开没开，都要先把 prob 解析成 PPT 页号并记下来 ——
-      // 「提交」按钮的显示依赖这个映射（见 _publishedSlideOf 的说明）。
-      // 这是「边界处归一化一次」，比让各处去 contains 比对可靠。
+      // Locate the published problem for navigation only. Authorization still
+      // comes from the presentation-scoped server publication record.
       final index = await _waitForProblemSlide(problemId);
       if (!mounted) return;
       if (index >= 0) {
-        setState(() => _publishedSlideOf[index] = problemId);
+        setState(_refreshCountdown);
         AppLogger.i('自动答题', '已记录发布位置：第 ${index + 1} 页 ← $problemId');
       } else {
         AppLogger.w('自动答题', '解析不出 $problemId 对应哪一页，「提交」按钮可能不会出现');
@@ -622,6 +684,12 @@ class _PresentationPageState extends State<PresentationPage>
   /// 只由 [_maybeAutoSubmit] 的队列循环调用，保证同一时刻只有一道题在跑。
   Future<void> _doAutoSubmit(String problemId) async {
     if (_lessonFinished || _autoSubmitted.contains(problemId)) return;
+    final pres = _currentPresentationId;
+    if (pres == null ||
+        !_publications.containsKey(_publicationKey(pres, problemId))) {
+      AppLogger.w('自动答题', '拒绝未发布题目 $problemId');
+      return;
+    }
 
     try {
       // ---- 第 1 步：先定位并切到题目页 ----
@@ -657,6 +725,7 @@ class _PresentationPageState extends State<PresentationPage>
       }
       if (_answerOwnerProblemId != targetProblemId) {
         _syncAnswerOwner();
+        _refreshCountdown();
       }
 
       // 把当前页题目的 problemId 也补进「已解锁」。
@@ -776,15 +845,15 @@ class _PresentationPageState extends State<PresentationPage>
 
       // 在随机延迟前复制真正送给 API 的内容；之后不再读取当前页的作答状态。
       final currentProblem = _currentProblem!;
-      final isTimeout = _countdownSeconds != null && _countdownSeconds! <= 0;
+      final publication = _publicationFor(targetProblemId);
+      if (publication == null || publication.problemId != problemId) return;
       final snapshot = _SubmitSnapshot(
         problemId: problemId,
         problemType: currentProblem.problemType,
         options: _answer,
         content: _textAnswer,
         imageUrls: _uploadedImageUrls,
-        retry: isTimeout,
-        time: isTimeout ? currentProblem.dt : null,
+        publication: publication,
       );
 
       // ---- 第 4 步：拟人化延迟后提交 ----
@@ -882,7 +951,6 @@ class _PresentationPageState extends State<PresentationPage>
           _currentProblem?.problemId == ownerProblemId &&
           _currentHash == hash) {
         setState(() {
-          _countdownSeconds = 0;
           _selectedImages.clear();
           _uploadedImageUrls.clear();
         });
@@ -943,40 +1011,13 @@ class _PresentationPageState extends State<PresentationPage>
     return _suggested[hash];
   }
 
-  /// 题目在 PPT 里的页号（0-based），找不到返回 -1
-  ///
-  /// 两条路：
-  /// 1. 直接比 PPT 里题目的 `problemId`
-  /// 2. **兜底**：从时间轴找。时间轴事件的 `problemId` 和发题消息的 `prob`
-  ///    是同一个字段（都读 JSON 里的 `prob`），而且事件里带 `si`（1-based
-  ///    页码，和 `_toSlide` / `showpresentation` 同源）——
-  ///    万一 `prob` 和 PPT 里的 `problemId` 不是同一个值，靠这条也能定位。
+  /// Locate the exact server publication in this presentation. A problem event
+  /// carries zero-based si; stable problemId/sid are preferred over that fallback.
   int _indexOfProblem(String problemId) {
-    for (var i = 0; i < _slideModels.length; i++) {
-      if (_slideModels[i].problem?.problemId == problemId) return i;
-    }
-
-    for (final e in _timeline) {
-      if (e.problemId != problemId) continue;
-      // 不同一份 PPT 的页码不能混用
-      if (e.presentationId != null &&
-          _currentPresentationId != null &&
-          e.presentationId != _currentPresentationId) {
-        continue;
-      }
-      final si = e.slideIndex;
-      if (si == null || si <= 0) continue;
-      final idx = si - 1;
-      if (idx >= 0 && idx < _slideModels.length) {
-        AppLogger.i(
-          '自动答题',
-          'PPT 里没匹配到 problemId=$problemId，改用时间轴的 si 定位到第 ${idx + 1} 页',
-        );
-        return idx;
-      }
-    }
-
-    return -1;
+    final pres = _currentPresentationId;
+    if (pres == null) return -1;
+    final publication = _publications[_publicationKey(pres, problemId)];
+    return publication == null ? -1 : _indexOfPublication(publication);
   }
 
   /// 等 PPT 加载完再找题目所在页
@@ -1021,15 +1062,11 @@ class _PresentationPageState extends State<PresentationPage>
 
   /// 当前页的题是不是老师已经发布的 —— 决定「提交」按钮出不出现
   ///
-  /// 具体判据在纯函数 [isCurrentProblemPublished] 里（有单测覆盖）。
-  /// 这里只负责把页面状态喂进去。
-  bool _isCurrentProblemPublished() => isCurrentProblemPublished(
-    currentSlideIndex: _currentSlideIndex,
-    publishedSlideOf: _publishedSlideOf,
-    currentProblemId: _currentProblem?.problemId,
-    publishedProbs: _unlockedProblemIds.toSet(),
-    timelineProblemId: _timelineProblemId,
-  );
+  /// UI and network submission share the same presentation-scoped evidence.
+  bool _isCurrentProblemPublished() {
+    final id = _currentProblem?.problemId;
+    return id != null && _publicationFor(id) != null;
+  }
 
   /// 当前页的答案是否已经填好
   bool _isAnswerFilled() {
@@ -1417,7 +1454,10 @@ class _PresentationPageState extends State<PresentationPage>
   void _resyncProblemFromTimeline(List timeline) {
     final decision = pickResyncProblemId(
       timeline: timeline,
-      now: DateTime.now(),
+      now: DateTime.fromMillisecondsSinceEpoch(
+        ApiService.rainClassroomServerNowMs ??
+            DateTime.now().millisecondsSinceEpoch,
+      ),
       currentLessonSlideIndex: _currentLessonSlideIndex,
       alreadySubmitted: _autoSubmitted,
     );
@@ -1442,6 +1482,7 @@ class _PresentationPageState extends State<PresentationPage>
         _currentProblem = _slideModels[targetIndex].problem;
       }
       _syncAnswerOwner();
+      _refreshCountdown();
       _refreshCurrentHash();
     });
 
@@ -1459,6 +1500,9 @@ class _PresentationPageState extends State<PresentationPage>
       }
     });
   }
+
+  @visibleForTesting
+  Future<void> debugSubmitAnswer() => _submitAnswer();
 
   @visibleForTesting
   Future<void> debugHandleMessage(Map<String, dynamic> message) =>
@@ -1485,9 +1529,8 @@ class _PresentationPageState extends State<PresentationPage>
             await _finishLessonDrafts();
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) {
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(const SnackBar(content: Text('课堂已结束')));
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(const SnackBar(content: Text('课堂已结束')));
               }
             });
             return;
@@ -1546,34 +1589,18 @@ class _PresentationPageState extends State<PresentationPage>
           final problemData = data['problem'];
           if (problemData != null) {
             final problemId = problemData['prob'];
-            final limit = problemData['limit'];
-            final dt = problemData['dt'];
 
             // 诊断：把发题消息的原样打出来。
             // 关键是确认 `prob` 和 PPT 里的 `problemId` 是不是同一个值 ——
             // 不是的话「提交」按钮和自动提交都找不到题目。
             AppLogger.i('自动答题', '收到 unlockproblem 原始数据：$problemData');
 
-            if (limit != null && limit > 0) {
-              setState(() {
-                _countdownSeconds = limit;
-                if (problemId != null &&
-                    !_unlockedProblemIds.contains(problemId)) {
-                  _unlockedProblemIds.add(problemId);
-                }
-                if (_currentProblem != null && dt != null) {
-                  _currentProblem = _currentProblem!.copyWith(dt: dt);
-                }
-              });
-              _startCountdown(limit);
-            } else if (problemId != null) {
-              // 不限时的题：没有倒计时，但一样要记进「已解锁」
-              setState(() {
-                if (!_unlockedProblemIds.contains(problemId)) {
-                  _unlockedProblemIds.add(problemId);
-                }
-              });
+            _recordPublication(problemData, live: true);
+            if (problemId != null && !_unlockedProblemIds.contains(problemId)) {
+              _unlockedProblemIds.add(problemId);
             }
+            setState(_refreshCountdown);
+            _startCountdown();
 
             // [新增] 老师发布了题目 → 按设置尝试自动提交
             //
@@ -1638,12 +1665,18 @@ class _PresentationPageState extends State<PresentationPage>
           final problemData = data['problem'];
           if (problemData != null) {
             final extend = problemData['extend'];
-            if (extend != null && extend > 0) {
-              setState(() {
-                if (_countdownSeconds != null) {
-                  _countdownSeconds = (_countdownSeconds! + extend).toInt();
-                }
-              });
+            final id = problemData['prob']?.toString();
+            final pres = _currentLessonPresentationId;
+            final publication = id == null || pres == null
+                ? null
+                : _publications[_publicationKey(pres, id)];
+            if (extend is num &&
+                extend > 0 &&
+                publication?.limitSeconds != null) {
+              publication!.limitSeconds =
+                  publication.limitSeconds! + extend.toInt();
+              setState(_refreshCountdown);
+              _startCountdown();
             }
           }
           break;
@@ -1741,6 +1774,7 @@ class _PresentationPageState extends State<PresentationPage>
   void _addTimelineEvents(List timeline) {
     for (var event in timeline) {
       final type = event['type'];
+      if (type == 'problem') _recordPublication(event, live: false);
       final code = event['code'];
       final title = event['title'];
       final dt = event['dt'];
@@ -1771,13 +1805,15 @@ class _PresentationPageState extends State<PresentationPage>
               type: eventType,
               code: code,
               title: eventTitle,
-              slideIndex: si,
+              // UI timeline coordinates stay one-based, unlike wire problem.si.
+              slideIndex: eventType == 'problem' && si is num
+                  ? si.toInt() + 1
+                  : si,
               total: total,
               limit: limit,
               timestamp: DateTime.fromMillisecondsSinceEpoch(dt),
               problemId: prob,
               presentationId: pres,
-              problemDt: dt,
             ),
           );
 
@@ -1841,13 +1877,13 @@ class _PresentationPageState extends State<PresentationPage>
       setState(() {
         _isLoading = false;
       });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('PPT 加载失败，可稍后重试')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('PPT 加载失败，可稍后重试')));
       return false;
     }
 
     final slides = presentation.slides;
+    _startCountdown();
     setState(() {
       _slideModels = slides;
       _currentPresentationId = presentationId;
@@ -1858,6 +1894,7 @@ class _PresentationPageState extends State<PresentationPage>
           ? null
           : slides[_currentSlideIndex].problem;
       _syncAnswerOwner();
+      _refreshCountdown();
       _isLoading = false;
       _isInitialized = true;
     });
@@ -2015,6 +2052,7 @@ class _PresentationPageState extends State<PresentationPage>
       _currentSlideIndex = index;
       _currentProblem = _slideModels[index].problem;
       _syncAnswerOwner();
+      _refreshCountdown();
       _refreshCurrentHash();
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2090,21 +2128,25 @@ class _PresentationPageState extends State<PresentationPage>
     }
   }
 
-  void _startCountdown(int seconds) {
+  /// Keep ticking while any published problem has a running deadline. Merely
+  /// loading an unpublished PPT must not start a permanent rebuild timer.
+  bool get _hasRunningDeadline => _publications.values.any((publication) {
+    final remaining = publication.remainingSeconds(
+      serverNowMs: ApiService.rainClassroomServerNowMs,
+    );
+    return remaining != null && remaining > 0;
+  });
+
+  void _startCountdown() {
     _countdownTimer?.cancel();
+    if (!_hasRunningDeadline) return;
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) {
+      if (!mounted || _lessonFinished) {
         timer.cancel();
         return;
       }
-
-      setState(() {
-        if (_countdownSeconds != null && _countdownSeconds! > 0) {
-          _countdownSeconds = _countdownSeconds! - 1;
-        } else {
-          timer.cancel();
-        }
-      });
+      setState(_refreshCountdown);
+      if (!_hasRunningDeadline) timer.cancel();
     });
   }
 
@@ -2289,6 +2331,7 @@ class _PresentationPageState extends State<PresentationPage>
               _currentSlideIndex = index;
               _currentProblem = _slideModels[index].problem;
               _syncAnswerOwner();
+              _refreshCountdown();
               // 注意：这里**不**动 _currentLessonSlideIndex ——
               // 用户手动翻页就表示脱离了老师那页，按钮才会出现
               _refreshCurrentHash();
@@ -2370,6 +2413,7 @@ class _PresentationPageState extends State<PresentationPage>
     return Material(
       type: MaterialType.transparency,
       child: MiuixScaffold(
+        snackbarHost: MiuixSnackbarHost(state: _snackbarHost),
         topBar: _isFullScreen
             ? null
             : MiuixTopAppBar(
@@ -2469,6 +2513,7 @@ class _PresentationPageState extends State<PresentationPage>
                                 _currentSlideIndex = index;
                                 _currentProblem = _slideModels[index].problem;
                                 _syncAnswerOwner();
+                                _refreshCountdown();
                                 // 同全屏视图：手动翻页不改变老师所在页
                                 _refreshCurrentHash();
                               });
@@ -2485,9 +2530,8 @@ class _PresentationPageState extends State<PresentationPage>
                                   },
                                   onLongPress: () async {
                                     final RenderBox? overlay =
-                                        Overlay.of(
-                                              context,
-                                            ).context.findRenderObject()
+                                        Overlay.of(context).context
+                                                .findRenderObject()
                                             as RenderBox?;
                                     if (overlay == null) return;
 
@@ -2534,9 +2578,9 @@ class _PresentationPageState extends State<PresentationPage>
                                         child: Icon(
                                           Icons.error_outline,
                                           size: 48,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.onSurfaceVariant,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onSurfaceVariant,
                                         ),
                                       );
                                     },
@@ -2564,15 +2608,15 @@ class _PresentationPageState extends State<PresentationPage>
                                   color: Theme.of(context).colorScheme.surface,
                                   border: Border(
                                     top: BorderSide(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.outlineVariant,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .outlineVariant,
                                       width: 1,
                                     ),
                                     bottom: BorderSide(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.outlineVariant,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .outlineVariant,
                                       width: 1,
                                     ),
                                   ),
@@ -2596,9 +2640,9 @@ class _PresentationPageState extends State<PresentationPage>
                                               vertical: 4,
                                             ),
                                             decoration: BoxDecoration(
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.primary,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .primary,
                                               borderRadius:
                                                   BorderRadius.circular(4),
                                             ),
@@ -2607,9 +2651,9 @@ class _PresentationPageState extends State<PresentationPage>
                                                 _currentProblem!.problemType,
                                               ),
                                               style: TextStyle(
-                                                color: Theme.of(
-                                                  context,
-                                                ).colorScheme.onPrimary,
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .onPrimary,
                                                 fontSize: 12,
                                                 fontWeight: FontWeight.bold,
                                               ),
@@ -2625,9 +2669,9 @@ class _PresentationPageState extends State<PresentationPage>
                                             Text(
                                               '（最多${_currentProblem!.pollingCount}项）',
                                               style: TextStyle(
-                                                color: Theme.of(
-                                                  context,
-                                                ).colorScheme.onSurfaceVariant,
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .onSurfaceVariant,
                                                 fontSize: 12,
                                               ),
                                             ),
@@ -2636,9 +2680,9 @@ class _PresentationPageState extends State<PresentationPage>
                                             Text(
                                               '(${(_currentProblem!.score / 100).toStringAsFixed(0)}分)',
                                               style: TextStyle(
-                                                color: Theme.of(
-                                                  context,
-                                                ).colorScheme.onSurfaceVariant,
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .onSurfaceVariant,
                                                 fontSize: 12,
                                               ),
                                             ),
@@ -2653,9 +2697,9 @@ class _PresentationPageState extends State<PresentationPage>
                                                     vertical: 6,
                                                   ),
                                               decoration: BoxDecoration(
-                                                color: Theme.of(
-                                                  context,
-                                                ).colorScheme.errorContainer,
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .errorContainer,
                                                 borderRadius:
                                                     BorderRadius.circular(8),
                                               ),
@@ -2690,9 +2734,9 @@ class _PresentationPageState extends State<PresentationPage>
                                                 ? Icons.keyboard_arrow_up
                                                 : Icons.keyboard_arrow_down,
                                             size: 20,
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.onSurfaceVariant,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .onSurfaceVariant,
                                           ),
                                         ],
                                       ),
@@ -2725,9 +2769,9 @@ class _PresentationPageState extends State<PresentationPage>
                                           ),
                                           label: const Text('搜索答案'),
                                           style: TextButton.styleFrom(
-                                            foregroundColor: Theme.of(
-                                              context,
-                                            ).colorScheme.primary,
+                                            foregroundColor: Theme.of(context)
+                                                .colorScheme
+                                                .primary,
                                           ),
                                         ),
                                       ),
@@ -2938,13 +2982,8 @@ class _PresentationPageState extends State<PresentationPage>
     }
     if (!mounted) return;
 
-    final slideIndex = event.slideIndex;
-    if (slideIndex != null && slideIndex > 0) {
-      // 时间轴里的 si 是 1-based 页码（和 _toSlide / showpresentation 同一个来源），
-      // 之前这里少减了 1，会导致点开时间轴的题之后页面比老师那页多出一页，
-      // 右上角立刻冒出「回到当前页」按钮
-      final targetIndex = slideIndex - 1;
-
+    final targetIndex = _indexOfProblem(event.problemId!);
+    if (targetIndex >= 0) {
       if (_pageController.hasClients) {
         _pageController.animateToPage(
           targetIndex,
@@ -2957,16 +2996,12 @@ class _PresentationPageState extends State<PresentationPage>
         _currentSlideIndex = targetIndex;
         if (targetIndex >= 0 && targetIndex < _slideModels.length) {
           _currentProblem = _slideModels[targetIndex].problem;
-          if (_currentProblem != null && event.problemDt != null) {
-            _currentProblem = _currentProblem!.copyWith(dt: event.problemDt);
-          }
         }
-        _timelineProblemId = event.problemId;
         if (event.problemId != null &&
             !_unlockedProblemIds.contains(event.problemId!)) {
           _unlockedProblemIds.add(event.problemId!);
         }
-        _countdownSeconds = 0;
+        _refreshCountdown();
         _refreshCurrentHash();
       });
     }
@@ -2975,14 +3010,18 @@ class _PresentationPageState extends State<PresentationPage>
   /// 手动提交仍取当前作答区；自动提交只走预先冻结的 _SubmitSnapshot。
   Future<void> _submitAnswer() async {
     if (_lessonFinished) return;
-    final problemId = _currentProblem?.problemId ?? _timelineProblemId;
-    if (problemId == null) return;
+    final ownerId = _currentProblem?.problemId;
+    final publication = ownerId == null ? null : _publicationFor(ownerId);
+    if (publication == null) {
+      _toast('老师尚未发布这道题，无法提交');
+      return;
+    }
+    final problemId = publication.problemId;
 
     if (_answer == null && _textAnswer == null && _uploadedImageUrls.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('请先选择或填写答案')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('请先选择或填写答案')));
       }
       return;
     }
@@ -2990,22 +3029,19 @@ class _PresentationPageState extends State<PresentationPage>
     final accounts = List<User>.of(AccountManager.allAccounts);
     if (accounts.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('没有可用的账号')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('没有可用的账号')));
       }
       return;
     }
 
-    final isTimeout = _countdownSeconds != null && _countdownSeconds! <= 0;
     final snapshot = _SubmitSnapshot(
       problemId: problemId,
       problemType: _currentProblem?.problemType ?? 0,
       options: _answer,
       content: _textAnswer,
       imageUrls: _uploadedImageUrls,
-      retry: isTimeout,
-      time: isTimeout ? _currentProblem?.dt : null,
+      publication: publication,
     );
     final result = await _submitForAccounts(snapshot, accounts);
     final succeeded = _autoSucceededByProblem.putIfAbsent(
@@ -3034,7 +3070,7 @@ class _PresentationPageState extends State<PresentationPage>
       networkFailCount: result.transportFailureCount,
     );
     setState(() {
-      _countdownSeconds = 0;
+      _refreshCountdown();
       _selectedImages.clear();
       _uploadedImageUrls.clear();
     });
@@ -3057,11 +3093,38 @@ class _PresentationPageState extends State<PresentationPage>
               '缺少课堂凭证',
             );
           }
+          // Recheck after delay/retry, at the actual network boundary. A new
+          // publication of the same ID invalidates a queued old snapshot.
+          final publication = snapshot.publication;
+          if (_lessonFinished ||
+              !identical(
+                _publications[_publicationKey(
+                  publication.presentationId,
+                  snapshot.problemId,
+                )],
+                publication,
+              )) {
+            return _AccountSubmitResult(
+              user,
+              _SubmitOutcome.rejected,
+              '题目发布状态已变化',
+            );
+          }
+          final serverNow = ApiService.rainClassroomServerNowMs;
+          final timestamp = publication.submissionTimeMs(
+            serverNowMs: serverNow,
+          );
+          AppLogger.i(
+            '答题计时',
+            '题目 ${snapshot.problemId}｜课件 ${publication.presentationId}'
+                '｜发布 ${publication.publishedAtMs}｜提交 $timestamp'
+                '｜补交 ${publication.isExpired(serverNowMs: serverNow)}',
+          );
           final response = await api.answer(
             snapshot.problemId,
             snapshot.problemType,
-            retry: snapshot.retry,
-            time: snapshot.time,
+            retry: publication.isExpired(serverNowMs: serverNow),
+            time: timestamp,
             options:
                 snapshot.problemType == 4 && (snapshot.options?.isEmpty ?? true)
                 ? [snapshot.content ?? '']
@@ -3223,9 +3286,8 @@ class _PresentationPageState extends State<PresentationPage>
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('选择图片失败：$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('选择图片失败：$e')));
       }
     }
   }
@@ -3442,15 +3504,13 @@ class _PresentationPageState extends State<PresentationPage>
       );
 
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('保存失败: $e')));
       }
     }
   }
@@ -3483,9 +3543,7 @@ class _PresentationPageState extends State<PresentationPage>
 
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
-    );
+    _snackbarHost.showSnackbar(msg);
   }
 
   /// 重新拉一遍没缓存完的页（AppBar 上那个刷新按钮）
@@ -3593,9 +3651,8 @@ class _PresentationPageState extends State<PresentationPage>
     } catch (e) {
       AppLogger.e('导出PDF', '$e');
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('导出失败：$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('导出失败：$e')));
       }
     } finally {
       if (mounted) setState(() => _isExporting = false);
@@ -3613,7 +3670,6 @@ class _TimelineEvent {
   final DateTime timestamp;
   final String? problemId;
   final String? presentationId;
-  final int? problemDt;
   final CoursewareQuestionBatch? discoveredQuestions;
 
   _TimelineEvent({
@@ -3626,7 +3682,6 @@ class _TimelineEvent {
     required this.timestamp,
     this.problemId,
     this.presentationId,
-    this.problemDt,
     this.discoveredQuestions,
   });
 }

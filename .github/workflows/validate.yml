@@ -7,12 +7,15 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
+          # Match the SDK used to generate and validate pubspec.lock.
+          flutter-version: '3.47.9'
           channel: stable
           cache: true
       - run: flutter pub get --enforce-lockfile
       - run: flutter analyze --no-fatal-infos --no-fatal-warnings
-      - run: flutter test
+      - run: flutter test --timeout 60s --reporter expanded

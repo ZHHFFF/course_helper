@@ -66,7 +66,7 @@ void main() {
   });
 
   group('判据 3：时间轴点开的那道题', () {
-    test('timelineProblemId 命中', () {
+    test('时间轴旧 ID 不授权空页', () {
       expect(
         isCurrentProblemPublished(
           currentSlideIndex: 0,
@@ -75,7 +75,20 @@ void main() {
           publishedProbs: {'tl-id'},
           timelineProblemId: 'tl-id',
         ),
-        isTrue,
+        isFalse,
+      );
+    });
+
+    test('时间轴 A 的旧 ID 不授权未发布的 B 题', () {
+      expect(
+        isCurrentProblemPublished(
+          currentSlideIndex: 1,
+          publishedSlideOf: const {},
+          currentProblemId: 'B',
+          publishedProbs: {'A'},
+          timelineProblemId: 'A',
+        ),
+        isFalse,
       );
     });
 
@@ -189,6 +202,30 @@ void main() {
         ),
         isFalse,
       );
+    });
+  });
+  group('真实协议的题目定位：problem.si 从 0 开始', () {
+    int locate({String id = 'wire-id', String? sid, int? si}) =>
+        resolvePublishedProblemSlideIndex(
+          problemId: id,
+          slideId: sid,
+          problemSlideIndex: si,
+          problemIds: ['owner-A', 'owner-B'],
+          slideIds: ['slide-A', 'slide-B'],
+        );
+    test('第一页 si=0 不丢失', () => expect(locate(si: 0), 0));
+    test('第二页 si=1 不减成第一页', () => expect(locate(si: 1), 1));
+    test('sid 优先于坐标，别名不会授权相邻题', () {
+      expect(locate(sid: 'slide-B', si: 0), 1);
+    });
+    test('已知题目 ID 优先于坐标，不能因 si 授权另一题', () {
+      expect(locate(id: 'owner-A', si: 1), 0);
+    });
+    test('两个已知稳定 ID 互相冲突时拒绝定位', () {
+      expect(locate(id: 'owner-A', sid: 'slide-B', si: 0), -1);
+    });
+    test('显式 sid 不存在时拒绝用页号猜题', () {
+      expect(locate(sid: 'unknown-slide', si: 0), -1);
     });
   });
 }

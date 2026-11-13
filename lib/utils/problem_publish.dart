@@ -19,8 +19,7 @@ library;
 ///    不依赖任何 ID 字符串比对
 /// 2. 当前页题目的 [currentProblemId] 直接在 [publishedProbs] 里
 ///    —— 对应 `prob == problemId` 的情况
-/// 3. [timelineProblemId] 在 [publishedProbs] 里
-///    —— 用户从时间轴点进来的场景
+/// 时间轴 ID 必须属于当前题目；点击过的旧题不能授权另一页。
 bool isCurrentProblemPublished({
   required int currentSlideIndex,
   required Map<int, String> publishedSlideOf,
@@ -38,14 +37,47 @@ bool isCurrentProblemPublished({
     return true;
   }
 
-  // 判据 3：时间轴点开的那道题已发布
-  if (timelineProblemId != null &&
-      timelineProblemId.isNotEmpty &&
+  // A retained timeline ID cannot authorize a different or empty page.
+  if (currentProblemId != null &&
+      currentProblemId.isNotEmpty &&
+      timelineProblemId == currentProblemId &&
       publishedProbs.contains(timelineProblemId)) {
     return true;
   }
 
   return false;
+}
+
+/// Resolve a server publication without confusing problem-event si (zero-based)
+/// with slide-navigation si (one-based). Stable problem/slide IDs take priority;
+/// conflicting known IDs or an unknown explicit sid must never authorize a neighbor.
+int resolvePublishedProblemSlideIndex({
+  required String problemId,
+  required List<String> problemIds,
+  required List<String> slideIds,
+  String? slideId,
+  int? problemSlideIndex,
+}) {
+  final byProblem = problemIds.indexOf(problemId);
+  final bySlide = slideId == null || slideId.isEmpty
+      ? -1
+      : slideIds.indexOf(slideId);
+  if (byProblem >= 0 && bySlide >= 0 && byProblem != bySlide) return -1;
+  if (byProblem >= 0) return byProblem;
+  if (slideId != null && slideId.isNotEmpty) {
+    return bySlide >= 0 &&
+            bySlide < problemIds.length &&
+            problemIds[bySlide].isNotEmpty
+        ? bySlide
+        : -1;
+  }
+  final index = problemSlideIndex;
+  return index != null &&
+          index >= 0 &&
+          index < problemIds.length &&
+          problemIds[index].isNotEmpty
+      ? index
+      : -1;
 }
 
 /// 重连补查的结果
@@ -61,7 +93,7 @@ typedef ResyncDecision = ({String? problemId, String reason});
 /// 三道闸门，**宁可漏补也不能交错**：
 /// 1. 只看 `problem` 事件里的**最新一条**
 /// 2. `dt` 距今必须在 [window] 内 —— 太久远的是历史题，不能复活
-/// 3. `si` 必须等于老师**当前**所在页（1-based）—— 说明这就是「现在这道」
+/// 3. `si` 必须等于老师**当前**所在页（两者均为 0-based）—— 说明这就是「现在这道」
 ///
 /// [reason] 是给人看的原因，直接写进日志，方便真机排查。
 /// `problemId == null` 表示不用补。
@@ -99,7 +131,8 @@ ResyncDecision pickResyncProblemId({
     if (age.isNegative || age > window) {
       return (
         problemId: null,
-        reason: '题目 $problemId 发布于 ${age.inMinutes} 分钟前，超出补交窗口'
+        reason:
+            '题目 $problemId 发布于 ${age.inMinutes} 分钟前，超出补交窗口'
             '（${window.inMinutes} 分钟），跳过',
       );
     }
@@ -107,11 +140,12 @@ ResyncDecision pickResyncProblemId({
 
   // 闸门 3：位置
   final si = latest['si'];
-  if (si is num && si.toInt() > 0 && currentLessonSlideIndex != null) {
-    if (si.toInt() - 1 != currentLessonSlideIndex) {
+  if (si is num && si.toInt() >= 0 && currentLessonSlideIndex != null) {
+    if (si.toInt() != currentLessonSlideIndex) {
       return (
         problemId: null,
-        reason: '题目 $problemId 在第 ${si.toInt()} 页，老师当前在第 '
+        reason:
+            '题目 $problemId 在第 ${si.toInt() + 1} 页，老师当前在第 '
             '${currentLessonSlideIndex + 1} 页，不是当前题，跳过',
       );
     }
