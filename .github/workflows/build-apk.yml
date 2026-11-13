@@ -2,8 +2,8 @@ name: Build Release APK
 
 on:
   push:
-    # 加上开发分支，这样往分支推代码会自动出包，不用每次手动点 workflow_dispatch
-    branches: [ master, main, makisekurisu ]
+    # Include the validated fix branch so it can produce an APK before merging.
+    branches: [ master, main, makisekurisu, fix/rainclassroom-publication-timing ]
   workflow_dispatch:
 
 env:
