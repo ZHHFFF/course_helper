@@ -304,7 +304,7 @@ void main() {
     expect(submissions, isEmpty);
     expect(find.text('提交'), findsNothing);
     await finish(tester);
-  });
+  }, timeout: const Timeout(Duration(seconds: 20)));
 
   testWidgets('时间轴 A 的发布状态不能授权翻页后的 B', (tester) async {
     await mount(tester);
@@ -336,7 +336,7 @@ void main() {
     await flushClassroomTasks(tester);
     expect(submissions, isEmpty);
     await finish(tester);
-  });
+  }, timeout: const Timeout(Duration(seconds: 20)));
 
   testWidgets('同页号切换课件，不继承上一课件的发布记录', (tester) async {
     await mount(tester);
@@ -356,7 +356,7 @@ void main() {
     await flushClassroomTasks(tester);
     expect(submissions, isEmpty);
     await finish(tester);
-  });
+  }, timeout: const Timeout(Duration(seconds: 20)));
 
   testWidgets('手机时间落后发题一分钟时，请求 dt 不早于该题发题时间', (tester) async {
     await mount(tester);
@@ -370,7 +370,7 @@ void main() {
     expect(submissions, hasLength(1));
     expect(submissions.single['dt'], greaterThanOrEqualTo(publishedAt));
     await finish(tester);
-  });
+  }, timeout: const Timeout(Duration(seconds: 20)));
 
   testWidgets('发布另一题后切回原题，保留原题倒计时和发题时间', (tester) async {
     await mount(tester);
@@ -392,7 +392,7 @@ void main() {
     expect(submissions.single['problemId'], 'p1');
     expect(submissions.single['dt'], lessThan(publishedAt + 60000));
     await finish(tester);
-  });
+  }, timeout: const Timeout(Duration(seconds: 20)));
 
   testWidgets('已过期历史题补交使用当前时间，不回填发题 dt', (tester) async {
     await mount(tester);
@@ -424,5 +424,5 @@ void main() {
     );
     expect(submissions.single.containsKey('retry_times'), isTrue);
     await finish(tester);
-  });
+  }, timeout: const Timeout(Duration(seconds: 20)));
 }
