@@ -41,8 +41,16 @@ void main() {
     };
     ApiService.debugSetHttpClientAdapter(
       JsonHttpAdapter((options) async {
-        if (options.path.contains('/problem/answer')) {
-          submissions.add(Map<String, dynamic>.from(options.data as Map));
+        if (options.path.contains('/problem/answer') ||
+            options.path.contains('/problem/retry')) {
+          final body = Map<String, dynamic>.from(options.data as Map);
+          submissions.add(
+            body['problems'] is List
+                ? Map<String, dynamic>.from(
+                    (body['problems'] as List).single as Map,
+                  )
+                : body,
+          );
           return {'code': 0};
         }
         if (options.uri.queryParameters.containsKey('presentation_id')) {
@@ -101,9 +109,8 @@ void main() {
       'platform': 'rainClassroom',
     });
     AccountManager.allAccounts.add(user);
-    RCCourseApi(
-      user,
-    ).debugStoreTokensForLesson('lesson', 'bearer', 'lesson-token');
+    RCCourseApi(user)
+        .debugStoreTokensForLesson('lesson', 'bearer', 'lesson-token');
   }
 
   Future<void> select(WidgetTester tester, String value) async {
@@ -206,9 +213,8 @@ void main() {
   testWidgets('服务端确认下课才清理草稿，退出重进不会写回旧答案', (tester) async {
     await mount(tester);
     await select(tester, 'B');
-    final Future<void> ending = state(
-      tester,
-    ).debugHandleMessage({'op': 'hello', 'message': 'lesson finished'});
+    final Future<void> ending = state(tester)
+        .debugHandleMessage({'op': 'hello', 'message': 'lesson finished'});
     await flushClassroomTasks(tester);
     await completeClassroomIo(tester, ending);
     final saved = await tester.runAsync(
@@ -281,6 +287,135 @@ void main() {
     await AutoAnswerSetting.setAutoSubmit(false);
     await publish(tester);
     expect(submissions, isEmpty);
+    await finish(tester);
+  });
+  testWidgets('提前翻到题目并预选，不发出请求且提交入口拒绝未发布题', (tester) async {
+    await mount(tester);
+    await select(tester, 'B');
+    await state(tester).debugSubmitAnswer();
+    await flushClassroomTasks(tester);
+    expect(submissions, isEmpty);
+    expect(find.text('提交'), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('时间轴 A 的发布状态不能授权翻页后的 B', (tester) async {
+    await mount(tester);
+    final Future<void> message = state(tester).debugHandleMessage({
+      'op': 'showpresentation',
+      'presentation': 'ppt',
+      'slideindex': 1,
+      'timeline': [
+        {
+          'type': 'problem',
+          'prob': 'p1',
+          'pres': 'ppt',
+          'si': 1,
+          'dt': DateTime.now().millisecondsSinceEpoch,
+          'limit': 60,
+        },
+      ],
+    });
+    await flushClassroomTasks(tester);
+    await message;
+    await tester.tap(find.textContaining('题目发布（作答时间：60秒）'));
+    await tester.pump(const Duration(milliseconds: 400));
+    // Use the real PageView callback: this used to retain A's timeline ID.
+    tester.widget<PageView>(find.byType(PageView).first).onPageChanged!(1);
+    await tester.pump();
+    await select(tester, 'A');
+    expect(find.text('提交'), findsNothing);
+    await state(tester).debugSubmitAnswer();
+    await flushClassroomTasks(tester);
+    expect(submissions, isEmpty);
+    await finish(tester);
+  });
+
+  testWidgets('同页号切换课件，不继承上一课件的发布记录', (tester) async {
+    await mount(tester);
+    await AutoAnswerSetting.setAutoSubmit(false);
+    await publish(tester);
+    final Future<void> message = state(tester).debugHandleMessage({
+      'op': 'showpresentation',
+      'presentation': 'another-ppt',
+      'slideindex': 1,
+    });
+    await flushClassroomTasks(tester);
+    await message;
+    await tester.pump(const Duration(milliseconds: 400));
+    await select(tester, 'B');
+    expect(find.text('提交'), findsNothing);
+    await state(tester).debugSubmitAnswer();
+    await flushClassroomTasks(tester);
+    expect(submissions, isEmpty);
+    await finish(tester);
+  });
+
+  testWidgets('手机时间落后发题一分钟时，请求 dt 不早于该题发题时间', (tester) async {
+    await mount(tester);
+    await select(tester, 'B');
+    final publishedAt = DateTime.now().millisecondsSinceEpoch + 60000;
+    await state(tester).debugHandleMessage({
+      'op': 'unlockproblem',
+      'problem': {'prob': 'p1', 'limit': 60, 'dt': publishedAt},
+    });
+    await flushClassroomTasks(tester);
+    expect(submissions, hasLength(1));
+    expect(submissions.single['dt'], greaterThanOrEqualTo(publishedAt));
+    await finish(tester);
+  });
+
+  testWidgets('发布另一题后切回原题，保留原题倒计时和发题时间', (tester) async {
+    await mount(tester);
+    await AutoAnswerSetting.setAutoSubmit(false);
+    final publishedAt = DateTime.now().millisecondsSinceEpoch;
+    await state(tester).debugHandleMessage({
+      'op': 'unlockproblem',
+      'problem': {'prob': 'p1', 'limit': 60, 'dt': publishedAt},
+    });
+    await flushClassroomTasks(tester);
+    await state(tester).debugHandleMessage({
+      'op': 'unlockproblem',
+      'problem': {'prob': 'p2', 'limit': 0, 'dt': publishedAt + 60000},
+    });
+    await flushClassroomTasks(tester);
+    await select(tester, 'B');
+    await state(tester).debugSubmitAnswer();
+    await flushClassroomTasks(tester);
+    expect(submissions.single['problemId'], 'p1');
+    expect(submissions.single['dt'], lessThan(publishedAt + 60000));
+    await finish(tester);
+  });
+
+  testWidgets('已过期历史题补交使用当前时间，不回填发题 dt', (tester) async {
+    await mount(tester);
+    final publishedAt = DateTime.now().millisecondsSinceEpoch - 120000;
+    final Future<void> message = state(tester).debugHandleMessage({
+      'op': 'showpresentation',
+      'presentation': 'ppt',
+      'slideindex': 1,
+      'timeline': [
+        {
+          'type': 'problem',
+          'prob': 'p1',
+          'pres': 'ppt',
+          'si': 1,
+          'dt': publishedAt,
+          'limit': 60,
+        },
+      ],
+    });
+    await flushClassroomTasks(tester);
+    await message;
+    await select(tester, 'B');
+    await state(tester).debugSubmitAnswer();
+    await flushClassroomTasks(tester);
+    expect(submissions, hasLength(1));
+    expect(
+      submissions.single['dt'],
+      greaterThanOrEqualTo(publishedAt + 120000),
+    );
+    expect(submissions.single.containsKey('retry_times'), isTrue);
     await finish(tester);
   });
 }

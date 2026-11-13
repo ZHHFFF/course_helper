@@ -19,8 +19,7 @@ library;
 ///    不依赖任何 ID 字符串比对
 /// 2. 当前页题目的 [currentProblemId] 直接在 [publishedProbs] 里
 ///    —— 对应 `prob == problemId` 的情况
-/// 3. [timelineProblemId] 在 [publishedProbs] 里
-///    —— 用户从时间轴点进来的场景
+/// 时间轴 ID 必须属于当前题目；点击过的旧题不能授权另一页。
 bool isCurrentProblemPublished({
   required int currentSlideIndex,
   required Map<int, String> publishedSlideOf,
@@ -38,9 +37,10 @@ bool isCurrentProblemPublished({
     return true;
   }
 
-  // 判据 3：时间轴点开的那道题已发布
-  if (timelineProblemId != null &&
-      timelineProblemId.isNotEmpty &&
+  // A retained timeline ID cannot authorize a different or empty page.
+  if (currentProblemId != null &&
+      currentProblemId.isNotEmpty &&
+      timelineProblemId == currentProblemId &&
       publishedProbs.contains(timelineProblemId)) {
     return true;
   }
@@ -99,7 +99,8 @@ ResyncDecision pickResyncProblemId({
     if (age.isNegative || age > window) {
       return (
         problemId: null,
-        reason: '题目 $problemId 发布于 ${age.inMinutes} 分钟前，超出补交窗口'
+        reason:
+            '题目 $problemId 发布于 ${age.inMinutes} 分钟前，超出补交窗口'
             '（${window.inMinutes} 分钟），跳过',
       );
     }
@@ -111,7 +112,8 @@ ResyncDecision pickResyncProblemId({
     if (si.toInt() - 1 != currentLessonSlideIndex) {
       return (
         problemId: null,
-        reason: '题目 $problemId 在第 ${si.toInt()} 页，老师当前在第 '
+        reason:
+            '题目 $problemId 在第 ${si.toInt()} 页，老师当前在第 '
             '${currentLessonSlideIndex + 1} 页，不是当前题，跳过',
       );
     }

@@ -66,7 +66,7 @@ void main() {
   });
 
   group('判据 3：时间轴点开的那道题', () {
-    test('timelineProblemId 命中', () {
+    test('时间轴旧 ID 不授权空页', () {
       expect(
         isCurrentProblemPublished(
           currentSlideIndex: 0,
@@ -75,7 +75,20 @@ void main() {
           publishedProbs: {'tl-id'},
           timelineProblemId: 'tl-id',
         ),
-        isTrue,
+        isFalse,
+      );
+    });
+
+    test('时间轴 A 的旧 ID 不授权未发布的 B 题', () {
+      expect(
+        isCurrentProblemPublished(
+          currentSlideIndex: 1,
+          publishedSlideOf: const {},
+          currentProblemId: 'B',
+          publishedProbs: {'A'},
+          timelineProblemId: 'A',
+        ),
+        isFalse,
       );
     });
 
