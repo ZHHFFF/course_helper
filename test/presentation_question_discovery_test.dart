@@ -451,7 +451,8 @@ void main() {
     await flushClassroomTasks(tester);
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('提交'), findsOneWidget);
-    expect(find.text('0:00'), findsOneWidget);
+    // No limit was published: a history click must not invent an expired timer.
+    expect(find.text('0:00'), findsNothing);
     expect(visiblePage(tester), 2);
     await finish(tester);
   });

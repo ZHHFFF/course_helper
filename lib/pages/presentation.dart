@@ -219,6 +219,9 @@ class _PresentationPageState extends State<PresentationPage>
   // Publication evidence is scoped by presentation and server problem ID.
   final Map<String, ProblemPublication> _publications = {};
 
+  // MiuixScaffold owns feedback; no Material Scaffold exists on this page.
+  final MiuixSnackbarHostState _snackbarHost = MiuixSnackbarHostState();
+
   String _publicationKey(String presentationId, String problemId) =>
       '$presentationId|$problemId';
 
@@ -403,6 +406,7 @@ class _PresentationPageState extends State<PresentationPage>
 
   @override
   void dispose() {
+    _snackbarHost.dispose();
     _saveCurrentDraft();
     WidgetsBinding.instance.removeObserver(this);
     _answerSub?.cancel();
@@ -2430,6 +2434,7 @@ class _PresentationPageState extends State<PresentationPage>
     return Material(
       type: MaterialType.transparency,
       child: MiuixScaffold(
+        snackbarHost: MiuixSnackbarHost(state: _snackbarHost),
         topBar: _isFullScreen
             ? null
             : MiuixTopAppBar(
@@ -3564,9 +3569,7 @@ class _PresentationPageState extends State<PresentationPage>
 
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
-    );
+    _snackbarHost.showSnackbar(msg);
   }
 
   /// 重新拉一遍没缓存完的页（AppBar 上那个刷新按钮）
