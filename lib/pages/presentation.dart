@@ -2942,7 +2942,11 @@ class _PresentationPageState extends State<PresentationPage>
     }
     if (!mounted) return;
 
-    final targetIndex = _indexOfProblem(event.problemId!);
+    final publication =
+        _publications[_publicationKey(event.presentationId!, event.problemId!)];
+    final targetIndex = publication == null
+        ? -1
+        : _indexOfPublication(publication);
     if (targetIndex >= 0) {
       if (_pageController.hasClients) {
         _pageController.animateToPage(
