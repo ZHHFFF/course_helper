@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:course_helper/api/api_service.dart';
 import 'package:course_helper/api/course.dart';
 import 'package:course_helper/cache/answer_draft_store.dart';
@@ -8,14 +12,29 @@ import 'package:course_helper/session/account.dart';
 import 'package:course_helper/setting/auto_answer_setting.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+// ignore: depend_on_referenced_packages
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 
 import 'support/classroom_test_env.dart';
 import 'support/json_http_adapter.dart';
+
+class _TestImagePicker extends ImagePickerPlatform {
+  var selection = Completer<List<XFile>>();
+
+  @override
+  Future<List<XFile>> getMultiImageWithOptions({
+    MultiImagePickerOptions options = const MultiImagePickerOptions(),
+  }) => selection.future;
+}
 
 void main() {
   late ClassroomTestEnv env;
   late List<Map<String, dynamic>> submissions;
   late Map<String, dynamic> slide;
+  late bool rejectSubmission;
+  Completer<void>? uploadStarted;
+  Completer<void>? allowUpload;
+  Completer<void>? allowSubmission;
 
   setUp(() async {
     env = await ClassroomTestEnv.create();
@@ -27,6 +46,10 @@ void main() {
     AutoAnswerSetting.delayMinMs.value = 0;
     AutoAnswerSetting.delayMaxMs.value = 0;
     submissions = [];
+    rejectSubmission = false;
+    uploadStarted = null;
+    allowUpload = null;
+    allowSubmission = null;
     slide = {
       'index': 1,
       'problem': {
@@ -51,7 +74,19 @@ void main() {
                   )
                 : body,
           );
-          return {'code': 0};
+          await allowSubmission?.future;
+          return {'code': rejectSubmission ? 1 : 0};
+        }
+        if (options.path.contains('generate_qiniu_token')) {
+          return {
+            'success': true,
+            'data': {'token': 'test-token'},
+          };
+        }
+        if (options.uri.host == 'upload.qiniup.com') {
+          uploadStarted?.complete();
+          await allowUpload?.future;
+          return {'success': true, 'key': 'answer.png'};
         }
         if (options.uri.queryParameters.containsKey('presentation_id')) {
           return {
@@ -109,14 +144,14 @@ void main() {
       'platform': 'rainClassroom',
     });
     AccountManager.allAccounts.add(user);
-    RCCourseApi(user)
-        .debugStoreTokensForLesson('lesson', 'bearer', 'lesson-token');
+    RCCourseApi(
+      user,
+    ).debugStoreTokensForLesson('lesson', 'bearer', 'lesson-token');
   }
 
   /// Dio schedules request work on the fake timer queue. Pump it while waiting
   /// so a widget test never blocks the queue by awaiting the request directly.
-  Future<void> submit(WidgetTester tester) async {
-    final Future<void> pending = state(tester).debugSubmitAnswer();
+  Future<void> waitForRequest(WidgetTester tester, Future<void> pending) async {
     var completed = false;
     final completion = pending.whenComplete(() => completed = true);
     for (var i = 0; i < 200 && !completed; i++) {
@@ -126,9 +161,12 @@ void main() {
         () => Future<void>.delayed(const Duration(milliseconds: 5)),
       );
     }
-    expect(completed, isTrue, reason: '提交请求应在推进虚拟时间后完成');
+    expect(completed, isTrue, reason: '请求应在推进虚拟时间后完成');
     await completion;
   }
+
+  Future<void> submit(WidgetTester tester) =>
+      waitForRequest(tester, state(tester).debugSubmitAnswer() as Future<void>);
 
   Future<void> select(WidgetTester tester, String value) async {
     tester
@@ -177,6 +215,119 @@ void main() {
     expect(submissions.single['result'], ['B']);
     await finish(tester);
   });
+
+  testWidgets('同一次发布重放不重复提交，更新发布时间后可以提交', (tester) async {
+    await mount(tester);
+    await select(tester, 'B');
+    final publishedAt = DateTime.now().millisecondsSinceEpoch;
+    Future<void> publishAt(int dt) async {
+      await state(tester).debugHandleMessage({
+        'op': 'unlockproblem',
+        'problem': {'prob': 'p1', 'limit': 60, 'dt': dt},
+      });
+      await flushClassroomTasks(tester);
+    }
+
+    await publishAt(publishedAt);
+    await publishAt(publishedAt);
+    expect(submissions, hasLength(1));
+
+    await select(tester, 'A');
+    await publishAt(publishedAt + 1000);
+    await publishAt(publishedAt);
+    expect(submissions, hasLength(2));
+    expect(submissions.last['result'], ['A']);
+    await finish(tester);
+  });
+
+  testWidgets('选图和上传期间翻页均归原题，失败保留附件，成功只清理本次提交', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await AutoAnswerSetting.setAutoSubmit(false);
+    (slide['problem'] as Map)['problemType'] = 5;
+    final picker = _TestImagePicker();
+    final previousPicker = ImagePickerPlatform.instance;
+    ImagePickerPlatform.instance = picker;
+    addTearDown(() => ImagePickerPlatform.instance = previousPicker);
+
+    final temp = Directory.systemTemp.createTempSync();
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final image = File('${temp.path}/answer.png')
+      ..writeAsBytesSync(
+        base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+        ),
+      );
+
+    await mount(tester);
+    await publish(tester);
+    Future<void> pickImage() async {
+      final button = find.byWidgetPredicate(
+        (widget) => widget is IconButton && widget.tooltip == '添加图片（最多 9 张）',
+      );
+      await tester.ensureVisible(button);
+      await tester.pump();
+      await tester.tap(button);
+    }
+
+    await pickImage();
+    await tester.pump();
+    await state(tester).debugHandleMessage({'op': 'slide', 'slideindex': 2});
+    await tester.pumpAndSettle();
+    picker.selection.complete([XFile(image.path)]);
+    await flushClassroomTasks(tester);
+
+    Finder attachmentFor(File file) => find.byWidgetPredicate(
+      (widget) =>
+          widget is Image &&
+          widget.image is FileImage &&
+          (widget.image as FileImage).file.path == file.path,
+    );
+    final attachment = attachmentFor(image);
+    expect(attachment, findsNothing);
+    await state(tester).debugHandleMessage({'op': 'slide', 'slideindex': 1});
+    await tester.pumpAndSettle();
+    expect(attachment, findsOneWidget);
+
+    rejectSubmission = true;
+    await submit(tester);
+    expect(attachment, findsOneWidget);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+
+    rejectSubmission = false;
+    allowSubmission = Completer<void>();
+    final Future<void> retry = state(tester).debugSubmitAnswer();
+    await flushClassroomTasks(tester);
+    expect(submissions, hasLength(2));
+    expect(submissions.last['result'], submissions.first['result']);
+    expect((submissions.last['result'] as Map)['pics'], hasLength(1));
+
+    final addedImage = image.copySync('${temp.path}/new-answer.png');
+    picker.selection = Completer<List<XFile>>();
+    uploadStarted = Completer<void>();
+    allowUpload = Completer<void>();
+    await pickImage();
+    picker.selection.complete([XFile(addedImage.path)]);
+    await waitForRequest(tester, uploadStarted!.future);
+    await state(tester).debugHandleMessage({'op': 'slide', 'slideindex': 2});
+    await tester.pumpAndSettle();
+    allowUpload!.complete();
+    await flushClassroomTasks(tester);
+    expect(attachment, findsNothing);
+    expect(attachmentFor(addedImage), findsNothing);
+    await state(tester).debugHandleMessage({'op': 'slide', 'slideindex': 1});
+    await tester.pumpAndSettle();
+    expect(attachment, findsOneWidget);
+    expect(attachmentFor(addedImage), findsOneWidget);
+
+    allowSubmission!.complete();
+    await waitForRequest(tester, retry);
+    expect(attachment, findsNothing);
+    expect(attachmentFor(addedImage), findsOneWidget);
+    await finish(tester);
+  }, timeout: const Timeout(Duration(seconds: 20)));
 
   testWidgets('取消预选后退出重进，旧选项不能重新出现', (tester) async {
     await mount(tester);
@@ -230,8 +381,9 @@ void main() {
   testWidgets('服务端确认下课才清理草稿，退出重进不会写回旧答案', (tester) async {
     await mount(tester);
     await select(tester, 'B');
-    final Future<void> ending = state(tester)
-        .debugHandleMessage({'op': 'hello', 'message': 'lesson finished'});
+    final Future<void> ending = state(
+      tester,
+    ).debugHandleMessage({'op': 'hello', 'message': 'lesson finished'});
     await flushClassroomTasks(tester);
     await completeClassroomIo(tester, ending);
     final saved = await tester.runAsync(
