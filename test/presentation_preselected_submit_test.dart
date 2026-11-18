@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:course_helper/api/api_service.dart';
 import 'package:course_helper/api/course.dart';
 import 'package:course_helper/cache/answer_draft_store.dart';
@@ -8,14 +12,26 @@ import 'package:course_helper/session/account.dart';
 import 'package:course_helper/setting/auto_answer_setting.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+// ignore: depend_on_referenced_packages
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 
 import 'support/classroom_test_env.dart';
 import 'support/json_http_adapter.dart';
+
+class _TestImagePicker extends ImagePickerPlatform {
+  final selection = Completer<List<XFile>>();
+
+  @override
+  Future<List<XFile>> getMultiImageWithOptions({
+    MultiImagePickerOptions options = const MultiImagePickerOptions(),
+  }) => selection.future;
+}
 
 void main() {
   late ClassroomTestEnv env;
   late List<Map<String, dynamic>> submissions;
   late Map<String, dynamic> slide;
+  late bool rejectSubmission;
 
   setUp(() async {
     env = await ClassroomTestEnv.create();
@@ -27,6 +43,7 @@ void main() {
     AutoAnswerSetting.delayMinMs.value = 0;
     AutoAnswerSetting.delayMaxMs.value = 0;
     submissions = [];
+    rejectSubmission = false;
     slide = {
       'index': 1,
       'problem': {
@@ -51,7 +68,16 @@ void main() {
                   )
                 : body,
           );
-          return {'code': 0};
+          return {'code': rejectSubmission ? 1 : 0};
+        }
+        if (options.path.contains('generate_qiniu_token')) {
+          return {
+            'success': true,
+            'data': {'token': 'test-token'},
+          };
+        }
+        if (options.uri.host == 'upload.qiniup.com') {
+          return {'success': true, 'key': 'answer.png'};
         }
         if (options.uri.queryParameters.containsKey('presentation_id')) {
           return {
@@ -177,6 +203,79 @@ void main() {
     expect(submissions.single['result'], ['B']);
     await finish(tester);
   });
+
+  testWidgets('同一次发布重放不重复提交，更新发布时间后可以提交', (tester) async {
+    await mount(tester);
+    await select(tester, 'B');
+    final publishedAt = DateTime.now().millisecondsSinceEpoch;
+    Future<void> publishAt(int dt) async {
+      await state(tester).debugHandleMessage({
+        'op': 'unlockproblem',
+        'problem': {'prob': 'p1', 'limit': 60, 'dt': dt},
+      });
+      await flushClassroomTasks(tester);
+    }
+
+    await publishAt(publishedAt);
+    await publishAt(publishedAt);
+    expect(submissions, hasLength(1));
+
+    await select(tester, 'A');
+    await publishAt(publishedAt + 1000);
+    await publishAt(publishedAt);
+    expect(submissions, hasLength(2));
+    expect(submissions.last['result'], ['A']);
+    await finish(tester);
+  });
+
+  testWidgets('选图期间翻页仍保留原题附件，提交失败后可重试', (tester) async {
+    await AutoAnswerSetting.setAutoSubmit(false);
+    (slide['problem'] as Map)['problemType'] = 5;
+    final picker = _TestImagePicker();
+    final previousPicker = ImagePickerPlatform.instance;
+    ImagePickerPlatform.instance = picker;
+    addTearDown(() => ImagePickerPlatform.instance = previousPicker);
+
+    final temp = Directory.systemTemp.createTempSync();
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final image = File('${temp.path}/answer.png')
+      ..writeAsBytesSync(
+        base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=',
+        ),
+      );
+
+    await mount(tester);
+    await publish(tester);
+    tester.widget<IconButton>(find.byTooltip('添加图片（最多 9 张）')).onPressed!();
+    await tester.pump();
+    await state(tester).debugHandleMessage({'op': 'slide', 'slideindex': 2});
+    await tester.pump(const Duration(milliseconds: 400));
+    picker.selection.complete([XFile(image.path)]);
+    await flushClassroomTasks(tester);
+
+    final attachment = find.byWidgetPredicate(
+      (widget) =>
+          widget is Image &&
+          widget.image is FileImage &&
+          (widget.image as FileImage).file.path == image.path,
+    );
+    expect(attachment, findsNothing);
+    await state(tester).debugHandleMessage({'op': 'slide', 'slideindex': 1});
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(attachment, findsOneWidget);
+
+    rejectSubmission = true;
+    await submit(tester);
+    expect(attachment, findsOneWidget);
+    rejectSubmission = false;
+    await submit(tester);
+    expect(submissions, hasLength(2));
+    expect(submissions.last['result'], submissions.first['result']);
+    expect((submissions.last['result'] as Map)['pics'], hasLength(1));
+    expect(attachment, findsNothing);
+    await finish(tester);
+  }, timeout: const Timeout(Duration(seconds: 20)));
 
   testWidgets('取消预选后退出重进，旧选项不能重新出现', (tester) async {
     await mount(tester);

@@ -53,12 +53,23 @@ import '../setting/theme_setting.dart';
 
 enum _SubmitOutcome { success, transportFailure, rejected }
 
+typedef _AnswerOwner = ({String presentationId, String problemId});
+
+class _AnswerImage {
+  const _AnswerImage(this.file, this.url);
+
+  final XFile file;
+  final String url;
+}
+
 class _SubmitSnapshot {
   final String problemId;
   final int problemType;
   final List<String>? options;
   final String? content;
-  final List<String> imageUrls;
+  final List<_AnswerImage> images;
+  final _AnswerOwner? answerOwner;
+  List<String> get imageUrls => images.map((image) => image.url).toList();
   final ProblemPublication publication;
 
   _SubmitSnapshot({
@@ -66,10 +77,11 @@ class _SubmitSnapshot {
     required this.problemType,
     required List<String>? options,
     required this.content,
-    required List<String> imageUrls,
+    required List<_AnswerImage> images,
+    required this.answerOwner,
     required this.publication,
   }) : options = options == null ? null : List<String>.unmodifiable(options),
-       imageUrls = List<String>.unmodifiable(imageUrls);
+       images = List<_AnswerImage>.unmodifiable(images);
 }
 
 class _AccountSubmitResult {
@@ -171,9 +183,19 @@ class _PresentationPageState extends State<PresentationPage>
   String? _textAnswer;
   bool _isProblemExpanded = true;
 
-  final List<XFile> _selectedImages = [];
   static const int _maxImageCount = 9;
-  final List<String> _uploadedImageUrls = [];
+  final Map<_AnswerOwner, List<_AnswerImage>> _answerImages = {};
+  bool _pickingImages = false;
+
+  _AnswerOwner? get _imageOwner {
+    final presentationId = _answerOwnerPresentationId;
+    final problemId = _answerOwnerProblemId;
+    if (presentationId == null || problemId == null) return null;
+    return (presentationId: presentationId, problemId: problemId);
+  }
+
+  List<_AnswerImage> get _selectedImages =>
+      _answerImages[_imageOwner] ?? const [];
 
   int? _countdownSeconds;
   Timer? _countdownTimer;
@@ -205,16 +227,11 @@ class _PresentationPageState extends State<PresentationPage>
 
   // ============ [新增] 自动答题 ============
 
-  /// 所有目标账号均已确认成功的发题 ID（供重连补查去重）
-  final Set<String> _autoSubmitted = {};
+  /// 每次发布分别记录成功账号。重连重放同一发布时复用这份记录。
+  final Map<ProblemPublication, Set<String>> _succeededByPublication = {};
 
-  /// 部分成功时保留已成功账号，下一次只补交尚未成功的账号
-  final Map<String, Set<String>> _autoSucceededByProblem = {};
-
-  /// 待自动提交的题目队列（串行处理，避免连发两题时丢掉后一道）
-  final List<String> _autoSubmitQueue = [];
-  bool _autoSubmitProcessing = false;
-  String? _autoSubmitActiveId;
+  final List<ProblemPublication> _autoSubmitQueue = [];
+  ProblemPublication? _activePublication;
 
   // Publication evidence is scoped by presentation and server problem ID.
   final Map<String, ProblemPublication> _publications = {};
@@ -227,19 +244,22 @@ class _PresentationPageState extends State<PresentationPage>
 
   /// Record only server publication events. Browsing/scanning a PPT never calls
   /// this method, and publications from another presentation cannot authorize it.
-  void _recordPublication(Map data, {required bool live}) {
+  ProblemPublication? _recordPublication(Map data, {required bool live}) {
     final id = data['prob']?.toString();
     final pres =
         data['pres']?.toString() ??
         (live ? _currentLessonPresentationId ?? _currentPresentationId : null);
-    if (id == null || id.isEmpty || pres == null || pres.isEmpty) return;
+    if (id == null || id.isEmpty || pres == null || pres.isEmpty) return null;
     final key = _publicationKey(pres, id);
     final dt = data['dt'] is num ? (data['dt'] as num).toInt() : null;
     final previous = _publications[key];
-    // Replayed history must not restart the clock of a live publication.
-    if (previous != null && (!live || previous.publishedAtMs == dt)) return;
+    if (previous != null) {
+      final oldTime = previous.publishedAtMs;
+      if (oldTime == dt || dt == null) return previous;
+      if (oldTime != null && dt < oldTime) return null;
+    }
     final si = data['si'] is num ? (data['si'] as num).toInt() : null;
-    _publications[key] = ProblemPublication(
+    final publication = ProblemPublication(
       problemId: id,
       presentationId: pres,
       // Live logs confirm problem.si is zero-based; slidenav.si is one-based.
@@ -254,7 +274,18 @@ class _PresentationPageState extends State<PresentationPage>
           DateTime.now().millisecondsSinceEpoch,
       live: live,
     );
+    _publications.remove(key);
+    _publications[key] = publication;
+    return publication;
   }
+
+  bool _isLatestPublication(ProblemPublication publication) => identical(
+    _publications[_publicationKey(
+      publication.presentationId,
+      publication.problemId,
+    )],
+    publication,
+  );
 
   /// Resolve IDs before consulting the zero-based problem-event coordinate.
   int _indexOfPublication(ProblemPublication publication) =>
@@ -362,7 +393,6 @@ class _PresentationPageState extends State<PresentationPage>
     _answer = draft?.options?.toList();
     _textAnswer = draft?.text;
     _syncAnswerControllers();
-    if (newId == null) _uploadedImageUrls.clear();
   }
 
   Future<void> _finishLessonDrafts() async {
@@ -373,8 +403,7 @@ class _PresentationPageState extends State<PresentationPage>
       _answerDrafts.clear();
       _answer = null;
       _textAnswer = null;
-      _uploadedImageUrls.clear();
-      _selectedImages.clear();
+      _answerImages.clear();
       _syncAnswerControllers();
     });
     await AnswerDraftStore.finishLesson(widget.lessonId);
@@ -609,95 +638,52 @@ class _PresentationPageState extends State<PresentationPage>
   /// 原来用一个 `_autoSubmitting` 布尔标记挡，结果是后来的那道题
   /// 走到提交那一步发现「有人正在提交」就**直接丢掉**了。
   /// 现在改成排队，前一道处理完接着处理下一道。
-  Future<void> _maybeAutoSubmit(String problemId) async {
+  Future<void> _maybeAutoSubmit(ProblemPublication publication) async {
     if (_lessonFinished) return;
-    try {
-      await AutoAnswerSetting.ensureLoaded();
-      AppLogger.i(
-        '自动答题',
-        '收到发题 $problemId｜开关：自动提交=${AutoAnswerSetting.autoSubmit.value} '
-            '预选=${AutoAnswerSetting.autoSelect.value}｜PPT ${_slideModels.length} 页',
-      );
+    await AutoAnswerSetting.ensureLoaded();
+    if (!mounted || _lessonFinished || !_isLatestPublication(publication))
+      return;
+    if (!AutoAnswerSetting.autoSubmit.value) return;
 
-      // Locate the published problem for navigation only. Authorization still
-      // comes from the presentation-scoped server publication record.
-      final index = await _waitForProblemSlide(problemId);
-      if (!mounted) return;
-      if (index >= 0) {
-        setState(_refreshCountdown);
-        AppLogger.i('自动答题', '已记录发布位置：第 ${index + 1} 页 ← $problemId');
-      } else {
-        AppLogger.w('自动答题', '解析不出 $problemId 对应哪一页，「提交」按钮可能不会出现');
-      }
-
-      if (!AutoAnswerSetting.autoSubmit.value) {
-        AppLogger.i('自动答题', '「自动提交」开关是关的，只记录发布位置');
-        return;
-      }
-      final succeeded = _autoSucceededByProblem[problemId];
-      if (_autoSubmitted.contains(problemId) &&
-          AccountManager.allAccounts.isNotEmpty &&
-          AccountManager.allAccounts.every(
-            (user) => succeeded?.contains(user.uid) ?? false,
-          )) {
-        AppLogger.i('自动答题', '题目 $problemId 已经提交过，跳过');
-        return;
-      }
-      _autoSubmitted.remove(problemId);
-      if (_autoSubmitActiveId == problemId ||
-          _autoSubmitQueue.contains(problemId)) {
-        return;
-      }
-
-      _autoSubmitQueue.add(problemId);
-      unawaited(_drainAutoSubmitQueue());
-    } catch (e, st) {
-      AppLogger.e('自动答题', '自动提交调度出错：$e\n$st');
+    final succeeded = _succeededByPublication[publication];
+    final accounts = AccountManager.allAccounts;
+    if (accounts.isNotEmpty &&
+        accounts.every((user) => succeeded?.contains(user.uid) ?? false)) {
+      return;
     }
+    if (_activePublication == publication ||
+        _autoSubmitQueue.contains(publication)) {
+      return;
+    }
+
+    _autoSubmitQueue.add(publication);
+    unawaited(_drainAutoSubmitQueue());
   }
 
   Future<void> _drainAutoSubmitQueue() async {
-    if (_autoSubmitProcessing) return;
-    _autoSubmitProcessing = true;
-    try {
-      while (mounted && _autoSubmitQueue.isNotEmpty) {
-        final id = _autoSubmitQueue.removeAt(0);
-        _autoSubmitActiveId = id;
-        try {
-          await _doAutoSubmit(id);
-        } catch (e, st) {
-          AppLogger.e('自动答题', '处理题目 $id 失败：$e\n$st');
-        } finally {
-          _autoSubmitActiveId = null;
-        }
-      }
-    } finally {
-      _autoSubmitProcessing = false;
-      if (mounted && _autoSubmitQueue.isNotEmpty) {
-        unawaited(_drainAutoSubmitQueue());
+    if (_activePublication != null) return;
+    while (mounted && _autoSubmitQueue.isNotEmpty) {
+      final publication = _autoSubmitQueue.removeAt(0);
+      _activePublication = publication;
+      try {
+        await _doAutoSubmit(publication);
+      } finally {
+        _activePublication = null;
       }
     }
   }
 
-  /// 真正干活的：定位题目 → 切页 → 等答案 → 填 → 延迟 → 提交
-  ///
-  /// 只由 [_maybeAutoSubmit] 的队列循环调用，保证同一时刻只有一道题在跑。
-  Future<void> _doAutoSubmit(String problemId) async {
-    if (_lessonFinished || _autoSubmitted.contains(problemId)) return;
-    final pres = _currentPresentationId;
-    if (pres == null ||
-        !_publications.containsKey(_publicationKey(pres, problemId))) {
-      AppLogger.w('自动答题', '拒绝未发布题目 $problemId');
-      return;
-    }
+  Future<void> _doAutoSubmit(ProblemPublication publication) async {
+    if (_lessonFinished || !_isLatestPublication(publication)) return;
+    final problemId = publication.problemId;
 
     try {
       // ---- 第 1 步：先定位并切到题目页 ----
       //
       // 这一步必须**排在等答案前面**：切过去之后「提交」按钮会立刻出现，
       // 就算答案还没搜好、用户等不及了，他也能自己点提交，不至于干瞪眼。
-      final index = await _waitForProblemSlide(problemId);
-      if (!mounted) return;
+      final index = await _waitForProblemSlide(publication);
+      if (!mounted || !_isLatestPublication(publication)) return;
       if (index < 0) {
         AppLogger.w(
           '自动答题',
@@ -748,6 +734,7 @@ class _PresentationPageState extends State<PresentationPage>
       bool isCurrentTarget() =>
           mounted &&
           !_lessonFinished &&
+          _isLatestPublication(publication) &&
           _currentPresentationId == targetPresentationId &&
           _currentSlideIndex == index &&
           _currentProblem?.problemId == targetProblemId &&
@@ -798,10 +785,12 @@ class _PresentationPageState extends State<PresentationPage>
           cached = await _waitForAnswer(
             hash,
             timeout: budget,
-            stopWaiting: () => isCurrentTarget() && _isAnswerFilled(),
+            stopWaiting: () =>
+                !_isLatestPublication(publication) ||
+                (isCurrentTarget() && _isAnswerFilled()),
           );
         }
-        if (!mounted) return;
+        if (!mounted || !_isLatestPublication(publication)) return;
 
         // ---- 第 2.5 步：确认还停在题目所在的页 ----
         //
@@ -845,14 +834,14 @@ class _PresentationPageState extends State<PresentationPage>
 
       // 在随机延迟前复制真正送给 API 的内容；之后不再读取当前页的作答状态。
       final currentProblem = _currentProblem!;
-      final publication = _publicationFor(targetProblemId);
-      if (publication == null || publication.problemId != problemId) return;
+      if (!identical(_publicationFor(targetProblemId), publication)) return;
       final snapshot = _SubmitSnapshot(
         problemId: problemId,
         problemType: currentProblem.problemType,
         options: _answer,
         content: _textAnswer,
-        imageUrls: _uploadedImageUrls,
+        images: _selectedImages,
+        answerOwner: _imageOwner,
         publication: publication,
       );
 
@@ -869,41 +858,29 @@ class _PresentationPageState extends State<PresentationPage>
         return;
       }
 
-      await _submitAutoSnapshot(
-        snapshot,
-        targetProblemId,
-        hash,
-        targetPresentationId,
-      );
+      if (_isLatestPublication(publication))
+        await _submitAutoSnapshot(snapshot);
     } catch (e, st) {
       // unawaited() 会把异常吞掉，日志里什么都看不到 —— 必须自己兜住
       AppLogger.e('自动答题', '自动提交题目 $problemId 时出错：$e\n$st');
     }
   }
 
-  Future<void> _submitAutoSnapshot(
-    _SubmitSnapshot snapshot,
-    String ownerProblemId,
-    String? hash,
-    String? presentationId,
-  ) async {
+  Future<void> _submitAutoSnapshot(_SubmitSnapshot snapshot) async {
     final accounts = List<User>.of(AccountManager.allAccounts);
     if (accounts.isEmpty) {
       _toast('自动提交失败：没有可用的账号');
       return;
     }
 
-    final succeeded = _autoSucceededByProblem.putIfAbsent(
-      snapshot.problemId,
+    final succeeded = _succeededByPublication.putIfAbsent(
+      snapshot.publication,
       () => <String>{},
     );
     var pending = accounts
         .where((user) => !succeeded.contains(user.uid))
         .toList();
-    if (pending.isEmpty) {
-      _autoSubmitted.add(snapshot.problemId);
-      return;
-    }
+    if (pending.isEmpty) return;
     final latest = <String, _AccountSubmitResult>{};
     var retries = 0;
 
@@ -919,7 +896,7 @@ class _PresentationPageState extends State<PresentationPage>
       // 仅补发未确认结果的账号；超时也可能已到服务器，重试最多两次。
       // 成功账号和明确拒绝的账号都不重试。
       pending = batch.transportFailedUsers;
-      if (pending.isEmpty || retries >= 2 || snapshot.imageUrls.isNotEmpty) {
+      if (pending.isEmpty || retries >= 2 || snapshot.images.isNotEmpty) {
         break;
       }
       retries++;
@@ -942,19 +919,7 @@ class _PresentationPageState extends State<PresentationPage>
               ),
     ];
     if (failures.isEmpty) {
-      if (AccountManager.allAccounts.every(
-        (user) => succeeded.contains(user.uid),
-      )) {
-        _autoSubmitted.add(snapshot.problemId);
-      }
-      if (_currentPresentationId == presentationId &&
-          _currentProblem?.problemId == ownerProblemId &&
-          _currentHash == hash) {
-        setState(() {
-          _selectedImages.clear();
-          _uploadedImageUrls.clear();
-        });
-      }
+      setState(() => _clearSubmittedImages(snapshot));
       AppLogger.i(
         '自动答题',
         '题目 ${snapshot.problemId} 已确认全部提交成功（${accounts.length}/${accounts.length}）',
@@ -963,7 +928,6 @@ class _PresentationPageState extends State<PresentationPage>
       return;
     }
 
-    _autoSubmitted.remove(snapshot.problemId);
     final transportCount = failures
         .where((result) => result.outcome == _SubmitOutcome.transportFailure)
         .length;
@@ -1011,28 +975,21 @@ class _PresentationPageState extends State<PresentationPage>
     return _suggested[hash];
   }
 
-  /// Locate the exact server publication in this presentation. A problem event
-  /// carries zero-based si; stable problemId/sid are preferred over that fallback.
-  int _indexOfProblem(String problemId) {
-    final pres = _currentPresentationId;
-    if (pres == null) return -1;
-    final publication = _publications[_publicationKey(pres, problemId)];
-    return publication == null ? -1 : _indexOfPublication(publication);
-  }
-
   /// 等 PPT 加载完再找题目所在页
   ///
   /// 老师有可能在 PPT 还没到的时候就发题（尤其是刚上课那一下），
   /// 这时候直接返回 -1 会白白错过一次自动提交。
   Future<int> _waitForProblemSlide(
-    String problemId, {
+    ProblemPublication publication, {
     int tries = 6,
     Duration interval = const Duration(milliseconds: 500),
   }) async {
     for (var i = 0; i < tries; i++) {
-      final index = _indexOfProblem(problemId);
-      if (index >= 0) return index;
-      if (!mounted) return -1;
+      if (!mounted || !_isLatestPublication(publication)) return -1;
+      if (_currentPresentationId == publication.presentationId) {
+        final index = _indexOfPublication(publication);
+        if (index >= 0) return index;
+      }
       if (i < tries - 1) await Future<void>.delayed(interval);
     }
 
@@ -1053,7 +1010,7 @@ class _PresentationPageState extends State<PresentationPage>
         .toList();
     AppLogger.w(
       '自动答题',
-      '找不到题目 $problemId\n'
+      '找不到题目 ${publication.problemId}\n'
           '  PPT（${_slideModels.length} 页）里的题目=[${slides.isEmpty ? "无" : slides.join("，")}]\n'
           '  时间轴里的题目=[${timeline.isEmpty ? "无" : timeline.join("，")}]',
     );
@@ -1076,7 +1033,8 @@ class _PresentationPageState extends State<PresentationPage>
     final keys = _answer;
     if (keys != null && keys.any((k) => k.trim().isNotEmpty)) return true;
     final text = _textAnswer;
-    return text != null && text.trim().isNotEmpty;
+    return (text != null && text.trim().isNotEmpty) ||
+        _selectedImages.isNotEmpty;
   }
 
   // [新增] 搜索答案 - 从当前题目提取题干和选项，调用检索模块
@@ -1459,14 +1417,16 @@ class _PresentationPageState extends State<PresentationPage>
             DateTime.now().millisecondsSinceEpoch,
       ),
       currentLessonSlideIndex: _currentLessonSlideIndex,
-      alreadySubmitted: _autoSubmitted,
+      currentLessonPresentationId: _currentLessonPresentationId,
     );
 
     AppLogger.i('自动答题', '重连补查：${decision.reason}');
 
     final problemId = decision.problemId;
-    if (problemId == null) return;
-    unawaited(_maybeAutoSubmit(problemId));
+    final pres = _currentLessonPresentationId;
+    if (problemId == null || pres == null) return;
+    final publication = _publications[_publicationKey(pres, problemId)];
+    if (publication != null) unawaited(_maybeAutoSubmit(publication));
   }
 
   void _toSlide(int slideIndex, {bool animate = true}) {
@@ -1595,7 +1555,7 @@ class _PresentationPageState extends State<PresentationPage>
             // 不是的话「提交」按钮和自动提交都找不到题目。
             AppLogger.i('自动答题', '收到 unlockproblem 原始数据：$problemData');
 
-            _recordPublication(problemData, live: true);
+            final publication = _recordPublication(problemData, live: true);
             if (problemId != null && !_unlockedProblemIds.contains(problemId)) {
               _unlockedProblemIds.add(problemId);
             }
@@ -1606,8 +1566,8 @@ class _PresentationPageState extends State<PresentationPage>
             //
             // 注意这行**必须在 limit 判断之外**：不限时的题（limit 为 null/0）
             // 也要能自动提交，否则那类题永远不会触发。
-            if (problemId != null) {
-              unawaited(_maybeAutoSubmit(problemId.toString()));
+            if (publication != null) {
+              unawaited(_maybeAutoSubmit(publication));
             }
           }
           break;
@@ -3018,7 +2978,7 @@ class _PresentationPageState extends State<PresentationPage>
     }
     final problemId = publication.problemId;
 
-    if (_answer == null && _textAnswer == null && _uploadedImageUrls.isEmpty) {
+    if (_answer == null && _textAnswer == null && _selectedImages.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('请先选择或填写答案')));
@@ -3040,26 +3000,19 @@ class _PresentationPageState extends State<PresentationPage>
       problemType: _currentProblem?.problemType ?? 0,
       options: _answer,
       content: _textAnswer,
-      imageUrls: _uploadedImageUrls,
+      images: _selectedImages,
+      answerOwner: _imageOwner,
       publication: publication,
     );
     final result = await _submitForAccounts(snapshot, accounts);
-    final succeeded = _autoSucceededByProblem.putIfAbsent(
-      snapshot.problemId,
+    final succeeded = _succeededByPublication.putIfAbsent(
+      snapshot.publication,
       () => <String>{},
     );
     for (final account in result.accounts) {
       if (account.outcome == _SubmitOutcome.success) {
         succeeded.add(account.user.uid);
       }
-    }
-    if (AccountManager.allAccounts.isNotEmpty &&
-        AccountManager.allAccounts.every(
-          (user) => succeeded.contains(user.uid),
-        )) {
-      _autoSubmitted.add(snapshot.problemId);
-    } else {
-      _autoSubmitted.remove(snapshot.problemId);
     }
     if (!mounted) return;
 
@@ -3071,9 +3024,18 @@ class _PresentationPageState extends State<PresentationPage>
     );
     setState(() {
       _refreshCountdown();
-      _selectedImages.clear();
-      _uploadedImageUrls.clear();
+      if (result.successCount == accounts.length)
+        _clearSubmittedImages(snapshot);
     });
+  }
+
+  void _clearSubmittedImages(_SubmitSnapshot snapshot) {
+    final owner = snapshot.answerOwner;
+    if (owner == null || !_isLatestPublication(snapshot.publication)) return;
+    final images = _answerImages[owner];
+    if (images == null) return;
+    images.removeWhere(snapshot.images.contains);
+    if (images.isEmpty) _answerImages.remove(owner);
   }
 
   /// 唯一的答题 API 出口；逐账号保留成功、网络/HTTP 失败和业务拒绝。
@@ -3096,14 +3058,7 @@ class _PresentationPageState extends State<PresentationPage>
           // Recheck after delay/retry, at the actual network boundary. A new
           // publication of the same ID invalidates a queued old snapshot.
           final publication = snapshot.publication;
-          if (_lessonFinished ||
-              !identical(
-                _publications[_publicationKey(
-                  publication.presentationId,
-                  snapshot.problemId,
-                )],
-                publication,
-              )) {
+          if (_lessonFinished || !_isLatestPublication(publication)) {
             return _AccountSubmitResult(
               user,
               _SubmitOutcome.rejected,
@@ -3245,61 +3200,51 @@ class _PresentationPageState extends State<PresentationPage>
   }
 
   Future<void> _pickImages() async {
+    final owner = _imageOwner;
+    if (owner == null || _pickingImages || _lessonFinished) return;
+    final remaining = _maxImageCount - _selectedImages.length;
+    if (remaining <= 0) return;
+    _pickingImages = true;
     try {
-      final ImagePicker picker = ImagePicker();
-
-      final remainingCount = _maxImageCount - _selectedImages.length;
-
-      final List<XFile> images = await picker.pickMultiImage(
-        limit: remainingCount,
+      final images = await ImagePicker().pickMultiImage(
+        limit: remaining,
         imageQuality: 80,
       );
+      if (!mounted || _lessonFinished || images.isEmpty) return;
 
-      if (images.isNotEmpty) {
-        final uploadFutures = images.map((image) async {
+      final results = await Future.wait(
+        images.take(remaining).map((image) async {
           try {
-            final file = File(image.path);
-            final imageUrl = await RCImageApi.uploadImage(file);
-            return {'image': image, 'url': imageUrl};
+            final url = await RCImageApi.uploadImage(File(image.path));
+            if (url != null) return _AnswerImage(image, url);
+            _toast('图片上传失败：${image.name}');
+            return null;
           } catch (e) {
-            if (mounted) {
-              ScaffoldMessenger.of(
-                context,
-              ).showSnackBar(SnackBar(content: Text('图片上传失败：${image.path}')));
-            }
+            _toast('图片上传失败：${image.name}');
             return null;
           }
-        }).toList();
-
-        final results = await Future.wait(uploadFutures);
-
-        if (mounted) {
-          setState(() {
-            for (final result in results) {
-              if (result != null && result['url'] != null) {
-                _selectedImages.add(result['image'] as XFile);
-                _uploadedImageUrls.add(result['url'] as String);
-              }
-            }
-          });
-        }
-      }
+        }),
+      );
+      if (!mounted || _lessonFinished) return;
+      setState(() {
+        _answerImages
+            .putIfAbsent(owner, () => [])
+            .addAll(results.whereType<_AnswerImage>());
+      });
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('选择图片失败：$e')));
-      }
+      _toast('选择图片失败：$e');
+    } finally {
+      _pickingImages = false;
     }
   }
 
-  void _removeImage(int index) {
-    setState(() {
-      _selectedImages.removeAt(index);
-      _uploadedImageUrls.removeAt(index);
-    });
+  void _removeImage(_AnswerOwner? owner, _AnswerImage image) {
+    setState(() => _answerImages[owner]?.remove(image));
   }
 
   Widget _buildShortAnswerInputs() {
+    final owner = _imageOwner;
+    final images = _selectedImages.toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -3328,13 +3273,13 @@ class _PresentationPageState extends State<PresentationPage>
             ),
           ],
         ),
-        if (_selectedImages.isNotEmpty) ...[
+        if (images.isNotEmpty) ...[
           const SizedBox(height: 8),
           SizedBox(
             height: 80,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
-              itemCount: _selectedImages.length,
+              itemCount: images.length,
               itemBuilder: (context, index) {
                 return Padding(
                   padding: const EdgeInsets.only(right: 8),
@@ -3343,7 +3288,7 @@ class _PresentationPageState extends State<PresentationPage>
                       ClipRRect(
                         borderRadius: BorderRadius.circular(8),
                         child: Image.file(
-                          File(_selectedImages[index].path),
+                          File(images[index].file.path),
                           width: 80,
                           height: 80,
                           fit: BoxFit.cover,
@@ -3353,7 +3298,7 @@ class _PresentationPageState extends State<PresentationPage>
                         right: 4,
                         top: 4,
                         child: GestureDetector(
-                          onTap: () => _removeImage(index),
+                          onTap: () => _removeImage(owner, images[index]),
                           child: Container(
                             padding: const EdgeInsets.all(2),
                             decoration: BoxDecoration(

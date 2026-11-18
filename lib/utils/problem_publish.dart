@@ -101,7 +101,8 @@ ResyncDecision pickResyncProblemId({
   required List timeline,
   required DateTime now,
   required int? currentLessonSlideIndex,
-  required Set<String> alreadySubmitted,
+  Set<String> alreadySubmitted = const {},
+  String? currentLessonPresentationId,
   Duration window = const Duration(minutes: 3),
 }) {
   Map<dynamic, dynamic>? latest;
@@ -113,6 +114,12 @@ ResyncDecision pickResyncProblemId({
   }
   if (latest == null) {
     return (problemId: null, reason: 'timeline 里没有 problem 事件');
+  }
+
+  final pres = latest['pres']?.toString();
+  if (currentLessonPresentationId != null &&
+      pres != currentLessonPresentationId) {
+    return (problemId: null, reason: '最新发题事件不属于老师当前的课件');
   }
 
   final problemId = latest['prob'].toString();
